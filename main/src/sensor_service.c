@@ -167,6 +167,12 @@ esp_err_t sensor_service_stop(sensor_service_handle_t service_handle)
         ESP_LOGE(TAG, "Failed to disable sensor bus: %s", esp_err_to_name(ret));
         return ret;
     }
+    ret = ext_probe_deinit(&service_handle->ext_probe);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to deinitialize external probe: %s", EXT_PROBE_STATUS_TO_TEXT(service_handle->ext_probe.status));
+        return ret;
+    }
     ESP_LOGI(TAG, "Sensor service stopped");
     return ESP_OK;
 }
