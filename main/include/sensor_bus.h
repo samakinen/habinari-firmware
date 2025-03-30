@@ -39,8 +39,8 @@ typedef struct
     float scd4x_humidity;
     float bme68x_temperature;
     float bme68x_humidity;
-    int bme68x_pressure;
-    int bme68x_gas_resistance;
+    float bme68x_pressure;
+    float bme68x_gas_resistance;
     uint16_t scd4x_co2;
     uint16_t updated_mask; // Values updated in last measurement
 } sensor_bus_results_t;

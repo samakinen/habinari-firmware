@@ -1,3 +1,5 @@
+#pragma once
+
 #include <esp_err.h>
 #include "sensor_bus.h"
 #include "ext_probe.h"
@@ -13,8 +15,8 @@
 typedef struct {
     float temperature; // Internal temperature sensor in C
     float humidity; // Internal humidity sensor in %RH
-    int pressure; // Internal pressure sensor in Pa
-    int gas_resistance; // Internal gas resistance sensor in Ohm
+    float pressure; // Internal pressure sensor in Pa
+    float gas_resistance; // Internal gas resistance sensor in Ohm
     int co2; // Internal CO2 sensor in ppm
     float ext_probe_temperature; // External probe temperature in C
     float ext_probe_humidity; // External probe humidity in %RH

@@ -24,7 +24,7 @@ bool request_toggle = false;
 
 void update_sensor_data(const sensor_data_t *data)
 {
-    ESP_LOGI(TAG, "Air (T=%.2f °C RH=%.2f %% P=%d Pa R=%d CO\u2082=%d ppm) Ground (T=%.2f °C RH=%.2f %%), Updated: %s%s%s%s%s%s%s",
+    ESP_LOGI(TAG, "Air (T=%.2f °C RH=%.2f %% P=%.2f Pa R=%.2f CO\u2082=%d ppm) Ground (T=%.2f °C RH=%.2f %%), Updated: %s%s%s%s%s%s%s",
              data->temperature, data->humidity, data->pressure, data->gas_resistance, data->co2, data->ext_probe_temperature, data->ext_probe_humidity,
              (data->updated_mask & SENSOR_TEMPERATURE) ? "T" : "",
              (data->updated_mask & SENSOR_HUMIDITY) ? "H" : "",
