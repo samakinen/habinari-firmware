@@ -1,0 +1,16 @@
+version: 0.0.1
+description: HDC302x temperature and humidity sensor for the ESP-IDF
+url: https://github.com/samakinen/hdc302x/
+repository: https://github.com/samakinen/hdc302x.git
+issues: https://github.com/samakinen/hdc302x/issues
+maintainers:
+  - "Sami Mäkinen <sami.makinen@flou.io>"
+tags:
+  - hdc302x
+  - sensor
+  - temperature
+  - humidity
+  - i2c
+  - driver
+dependencies:
+  idf : ">=5.3"

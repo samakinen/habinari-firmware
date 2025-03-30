@@ -1,0 +1,13 @@
+/build/
+
+dependencies.lock
+managed_components/
+sdkconfig
+sdkconfig.old
+
+.vscode/
+
+venv/
+.env/
+.mypy_cache/
+__pycache__/

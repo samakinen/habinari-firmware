@@ -1,0 +1,17 @@
+version: 0.0.1
+description: BME68x sensor for the ESP-IDF
+url: https://github.com/samakinen/esp-components/
+repository: https://github.com/samakinen/esp-components.git
+issues: https://github.com/samakinen/esp-components/issues
+maintainers:
+  - "Sami Mäkinen <sami.makinen@flou.io>"
+tags:
+  - bme688
+  - sensor
+  - temperature
+  - humidity
+  - gas
+  - i2c
+  - driver
+dependencies:
+  idf : ">=5.3"

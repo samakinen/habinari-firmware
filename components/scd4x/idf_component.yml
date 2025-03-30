@@ -1,0 +1,17 @@
+version: 0.0.1
+description: SCD4x CO2 sensor for the ESP-IDF
+url: https://github.com/samakinen/esp-components/
+repository: https://github.com/samakinen/esp-components.git
+issues: https://github.com/samakinen/esp-components/issues
+maintainers:
+  - "Sami Mäkinen <sami.makinen@flou.io>"
+tags:
+  - scd4x
+  - co2
+  - sensor
+  - temperature
+  - humidity
+  - i2c
+  - driver
+dependencies:
+  idf : ">=5.3"
