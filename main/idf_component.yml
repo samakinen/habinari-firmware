@@ -1,2 +1,3 @@
 dependencies:
   pedrominatel/sht4x: '*'
+  espressif/esp-modbus: '*'

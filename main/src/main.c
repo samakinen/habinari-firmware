@@ -15,12 +15,16 @@
 #include "sdkconfig.h"
 #include "sensor_service.h"
 #include <string.h>
+#include "mb_rtu_slave.h"
 
 static const char *TAG = "example";
 
 int count = 0;
 sensor_service_t sensor_service;
 bool request_toggle = false;
+
+mb_rtu_slave_t mb_rtu_slave = {0};
+uint8_t slave_address = 0x01; // Modbus slave address
 
 void update_sensor_data(const sensor_data_t *data)
 {
@@ -33,6 +37,7 @@ void update_sensor_data(const sensor_data_t *data)
              (data->updated_mask & SENSOR_CO2) ? "C" : "",
              (data->updated_mask & SENSOR_EXT_PROBE_TEMPERATURE) ? "t" : "",
              (data->updated_mask & SENSOR_EXT_PROBE_HUMIDITY) ? "h" : "");
+    mb_rtu_slave_set_sensor_data(&mb_rtu_slave, data); // Update Modbus registers with new sensor data
 }
 
 void IRAM_ATTR button_isr_handler(void *arg)
@@ -53,13 +58,16 @@ void toggle_server(sensor_service_t *service)
     }
 }
 
-#define BLINK_PERIOD 5000
+#define BLINK_PERIOD 2000
 #define BLINK_DURATION 50
+bool led_status = false;
 void app_main(void)
 {
+    uint8_t requested_slave_address = slave_address;
     init_pins();
+    mb_rtu_slave_init(&mb_rtu_slave, slave_address); // Initialize Modbus RTU slave with address 0x01
+
     sensor_service_init(&sensor_service, update_sensor_data);
-    // sensor_service_start(&sensor_service);
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PIN_PROG_BTN),
@@ -73,14 +81,25 @@ void app_main(void)
     gpio_install_isr_service(0);
     gpio_isr_handler_add(PIN_PROG_BTN, (gpio_isr_t)button_isr_handler, &sensor_service);
 
+
+
     while (1) {
+        led_status = mb_rtu_slave.coil_reg_params.led_on;
+        requested_slave_address = mb_rtu_slave.holding_reg_params.slave_address;
+        if (requested_slave_address != slave_address) {
+            sensor_service_stop(&sensor_service); // Stop sensor service if running
+            mb_rtu_slave_deinit(&mb_rtu_slave); // Deinitialize Modbus RTU slave
+            mb_rtu_slave_init(&mb_rtu_slave, requested_slave_address); // Reinitialize with new address
+            sensor_service_init(&sensor_service, update_sensor_data); // Reinitialize sensor service
+            ESP_LOGI(TAG, "Slave address changed to %d", requested_slave_address);
+        }
         vTaskDelay(BLINK_PERIOD / portTICK_PERIOD_MS);
         if (request_toggle) {
             request_toggle = false;
             toggle_server(&sensor_service);
         }
-        gpio_set_level(PIN_LED, 1);
+        gpio_set_level(PIN_LED, !led_status);
         vTaskDelay(BLINK_DURATION / portTICK_PERIOD_MS);
-        gpio_set_level(PIN_LED, 0);
+        gpio_set_level(PIN_LED, led_status);
     }
 }

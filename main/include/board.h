@@ -22,6 +22,9 @@
 #define PIN_LED GPIO_NUM_20
 #define PIN_RS485_TEN GPIO_NUM_21
 
+#define MODBUS_RTU_UART_NUM UART_NUM_1
+#define MODBUS_RTU_UART_BAUDRATE 9600
+
 // Time to wait for the probe to stabilize
 #define PROBE_STABILIZE_TIME 250
 
