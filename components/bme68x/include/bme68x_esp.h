@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-#include "driver/i2c_master.h"
+#include <driver/i2c_master.h>
 #include "bme68x.h"
 
 BME68X_INTF_RET_TYPE bme68x_i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf_ptr);

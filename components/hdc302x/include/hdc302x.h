@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-#include "driver/i2c_master.h"
+#include <driver/i2c_master.h>
 
 #define HDC203X_ADDR_0 0x44
 #define HDC203X_ADDR_1 0x45
