@@ -13,9 +13,18 @@
 			},
 			"extensions": [
 				"espressif.esp-idf-extension",
-				"espressif.esp-idf-web"
+				"espressif.esp-idf-web",
+				"ms-vscode.cpptools",
+				"ms-vscode.cpptools-extension-pack",
+				"twxs.cmake",
+				"ms-vscode.cmake-tools"
 			]
 		}
 	},
-	"runArgs": ["--privileged"]
+	"runArgs": ["--privileged"],
+    "mounts": [
+        "type=volume,target=${containerWorkspaceFolder}/build,source=esp-idf-build-volume"
+    ],
+    "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder},type=bind,consistency=cached",
+    "postCreateCommand": "mkdir -p ${containerWorkspaceFolder}/build && chmod -R 777 ${containerWorkspaceFolder}/build"
 }
