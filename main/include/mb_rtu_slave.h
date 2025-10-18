@@ -40,6 +40,8 @@ typedef struct
 typedef struct
 {
     uint16_t slave_address; // 400001
+    uint16_t knx_test_data; // 400002
+    uint16_t knx_lenght; // 400003
 } holding_reg_params_t;
 #pragma pack(pop)
 

@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-#include "driver/i2c_master.h"
+#include <driver/i2c_master.h>
 #include "bme68x_esp.h"
 
 #define SENSOR_BUS_SPEED 400000 // 400kHz

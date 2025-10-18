@@ -18,9 +18,11 @@ esp_err_t init_pins(void)
     //bit mask of the pins that you want to set
     io_conf.pin_bit_mask = (1ULL << PIN_2V8_EN) | 
                            (1ULL << PIN_LED) | 
-                           (1ULL << PIN_RS485_TEN);
-    //disable pull-down mode
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+                           (1ULL << PIN_RS485_TEN) |
+                           (1ULL << PIN_PROBE_EN) |
+                           (1ULL << PIN_KNX_TX);
+    //enable pull-down mode
+    io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
     //disable pull-up mode
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     //disable interrupt
@@ -38,7 +40,6 @@ esp_err_t init_pins(void)
     //bit mask of the pins that you want to set
     io_conf.pin_bit_mask = (1ULL << PIN_PROBE_EN) | 
                            (1ULL << PIN_KNX_OK) | 
-                           (1ULL << PIN_KNX_TX) | 
                            (1ULL << PIN_KNX_RX) | 
                            (1ULL << PIN_SDA) | 
                            (1ULL << PIN_SCL) | 
