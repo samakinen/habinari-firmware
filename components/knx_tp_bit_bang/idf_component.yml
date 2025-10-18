@@ -1,0 +1,5 @@
+version: "1.0.0"
+description: "KNX TP Bit-bang and TP-UART Emulation Component"
+url: "https://github.com/samakinen/knx_tp_bit_bang"
+dependencies:
+  idf: ">=5.0.0"

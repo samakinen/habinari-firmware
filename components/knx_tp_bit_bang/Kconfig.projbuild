@@ -1,0 +1,69 @@
+menu "KNX TP Bit Bang Configuration"
+
+    config KNX_TP_TX_PIN
+        int "KNX TP TX GPIO Pin"
+        range 0 48
+        default 4
+        help
+            GPIO pin number for KNX TP transmission.
+            Using compile-time constants enables maximum optimization.
+
+    config KNX_TP_RX_PIN
+        int "KNX TP RX GPIO Pin"
+        range 0 48
+        default 5
+        help
+            GPIO pin number for KNX TP reception.
+            Using compile-time constants enables maximum optimization.
+
+    config KNX_DEBUG_GPIO
+        bool "Enable Debug GPIO for Logic Analyzer"
+        default n
+        help
+            Enable debug GPIO toggling for logic analyzer debugging.
+            This adds overhead to ISR execution and should be disabled in production.
+
+    config KNX_DEBUG_GPIO_PIN
+        int "Debug GPIO Pin"
+        range 0 48
+        default 20
+        depends on KNX_DEBUG_GPIO
+        help
+            GPIO pin number for debug output to logic analyzer.
+
+    config KNX_OPTIMIZE_ISR
+        bool "Enable ISR optimizations"
+        default y
+        help
+            Enable compiler optimizations and branch prediction hints for ISR functions.
+            Recommended for production builds.
+
+    config KNX_USE_DIRECT_GPIO
+        bool "Use Direct GPIO Register Access"
+        default y
+        help
+            Use direct register access instead of gpio_set_level() for maximum performance.
+            Provides 5-20x faster GPIO operations in ISR context.
+
+    config KNX_ENABLE_TASK_NOTIFICATIONS
+        bool "Enable Task Notifications from ISR"
+        default n
+        help
+            Enable task notifications from ISR context. Disable for maximum ISR performance.
+            When disabled, task notification code is completely compiled out.
+
+    config KNX_ENABLE_COLLISION_DETECTION
+        bool "Enable Bus Collision Detection"
+        default n
+        help
+            Enable collision detection in RX ISR. Disable for maximum performance.
+            When disabled, collision detection code is compiled out.
+
+    config KNX_ENABLE_ADVANCED_OPTIMIZATIONS
+        bool "Enable Advanced Performance Optimizations"
+        default y
+        help
+            Enable advanced optimizations like lookup tables, branch prediction hints,
+            and memory access pattern optimization. Recommended for production.
+
+endmenu
