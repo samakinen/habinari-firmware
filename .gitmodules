@@ -1,3 +1,6 @@
-[submodule "dependencies/knx"]
-	path = dependencies/knx
-	url = https://github.com/thelsing/knx.git
+[submodule "components/knx_tp_bit_bang/knx"]
+	path = components/knx_tp_bit_bang/knx
+	url = https://github.com/OpenKNX/knx.git
+[submodule "components/knx_tp_bit_bang/tpuart"]
+	path = components/knx_tp_bit_bang/tpuart
+	url = https://github.com/OpenKNX/tpuart.git
