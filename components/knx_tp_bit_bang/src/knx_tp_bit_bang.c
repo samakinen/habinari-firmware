@@ -4,6 +4,7 @@
 #include "driver/gpio.h"
 #include "driver/gptimer.h"
 #include "knx_tp_bit_bang.h"
+#include <string.h>
 
 static const char *TAG = "KNX_TP_BIT_BANG";
 
@@ -28,13 +29,19 @@ esp_err_t knx_tp_bit_bang_init(knx_tp_bit_bang_t *bit_bang)
     bit_bang->timer = NULL;
     bit_bang->tx_state = KNX_TP_BIT_BANG_TX_STATE_IDLE;
     bit_bang->rx_state = KNX_TP_BIT_BANG_RX_STATE_IDLE;
-
-    bit_bang->tx_timer_count = 0;
-    bit_bang->rx_timer_count = 0;
+    bit_bang->pending_ack_byte = 0;  // No pending ACK request
     
-    // Initialize address filtering
+    // Initialize task notification handle to NULL
+    bit_bang->xTaskToNotify = NULL;
+
+    // Initialize device address for TPUART individual address filtering
     bit_bang->device_address = 0x0000;  // Default device address (can be changed later)
-    bit_bang->group_address_count = 0;  // No group addresses by default
+
+    // Initialize TX result tracking
+    bit_bang->last_tx_result.length = 0; // No result pending
+    bit_bang->last_tx_result.ack = KNX_TX_ACK_NONE;
+    bit_bang->last_tx_result.errors = 0;
+    bit_bang->last_tx_result.timestamp = 0;
 
     // Configure timer
     gptimer_config_t timer_config = {
@@ -105,6 +112,21 @@ esp_err_t knx_tp_bit_bang_init(knx_tp_bit_bang_t *bit_bang)
     return ESP_OK;
 }
 
+esp_err_t knx_tp_bit_bang_set_device_address(knx_tp_bit_bang_t *bit_bang, uint16_t address)
+{
+    if (bit_bang == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    bit_bang->device_address = address;
+    char addr_str[16];
+    snprintf(addr_str, sizeof(addr_str), "%d.%d.%d", 
+             (address >> 12) & 0x0F, (address >> 8) & 0x0F, address & 0xFF);
+    ESP_LOGI(TAG, "TPUART device individual address set to %s (0x%04X)", addr_str, address);
+    
+    return ESP_OK;
+}
+
 // Performance monitoring function
 void knx_tp_bit_bang_get_performance_stats(knx_tp_bit_bang_t *bit_bang, 
                                            uint32_t *tx_timer_count, 
@@ -114,12 +136,14 @@ void knx_tp_bit_bang_get_performance_stats(knx_tp_bit_bang_t *bit_bang,
         return;
     }
     
+    // Timer count fields were removed from the structure in TPUART optimization
+    // Return zeros to maintain API compatibility
     if (tx_timer_count != NULL) {
-        *tx_timer_count = bit_bang->tx_timer_count;
+        *tx_timer_count = 0; // No longer tracked
     }
     
     if (rx_timer_count != NULL) {
-        *rx_timer_count = bit_bang->rx_timer_count;
+        *rx_timer_count = 0; // No longer tracked
     }
 }
 
@@ -151,20 +175,82 @@ esp_err_t knx_tp_bit_bang_receive(knx_tp_bit_bang_t *bit_bang, uint8_t *data, ui
     return ESP_OK;
 }
 
-// Ring buffer API implementation
-
-// Ring buffer API implementation
-
-bool knx_tp_bit_bang_pop_telegram(knx_tp_bit_bang_t *bit_bang, knx_ring_buffer_entry_t *entry)
+// Transmit API: copy telegram to TX buffer and kick off transmission
+esp_err_t knx_tp_bit_bang_send(knx_tp_bit_bang_handle_t bit_bang, uint8_t *data, uint16_t length)
 {
-    if (bit_bang == NULL || entry == NULL) {
+    if (bit_bang == NULL || data == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (length == 0 || length > KNX_MAX_TELEGRAM_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (bit_bang->tx_state > KNX_TP_BIT_BANG_TX_STATE_LAST_IDLE) {
+        // Busy transmitting another telegram
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Copy telegram bytes into the HW buffer; checksum is expected to be included by caller
+    memcpy(bit_bang->tx_buffer, data, length);
+    bit_bang->tx_telegram_length = (uint8_t)length;
+
+    // Debug: Log all TX bytes
+    ESP_LOGI("KnxTpBitBang", "TX Start: %d bytes:", length);
+    for (int i = 0; i < length && i < 16; i++) {
+        ESP_LOGI("KnxTpBitBang", "  TX[%d] = 0x%02X", i, data[i]);
+    }
+
+    // Start transmission; ISR will handle slot timing and per-bit signaling
+    return knx_tp_bit_bang_tx_enable(bit_bang);
+}
+
+esp_err_t knx_tp_bit_bang_deinit(knx_tp_bit_bang_t *bit_bang)
+{
+    if (bit_bang == NULL) return ESP_ERR_INVALID_ARG;
+
+    // Stop and delete timer if created
+    if (bit_bang->timer) {
+        gptimer_stop(bit_bang->timer);
+        gptimer_disable(bit_bang->timer);
+        // Unregister callbacks by registering an empty callbacks struct
+        gptimer_event_callbacks_t empty_cbs = { 0 };
+        gptimer_register_event_callbacks(bit_bang->timer, &empty_cbs, NULL);
+        gptimer_del_timer(bit_bang->timer);
+        bit_bang->timer = NULL;
+    }
+
+    // Remove RX GPIO ISR handler
+    gpio_isr_handler_remove(CONFIG_KNX_TP_RX_PIN);
+
+    // Reset states
+    bit_bang->flags = 0;
+    bit_bang->tx_state = KNX_TP_BIT_BANG_TX_STATE_IDLE;
+    bit_bang->rx_state = KNX_TP_BIT_BANG_RX_STATE_IDLE;
+    bit_bang->tx_alarm_value = 0;
+    bit_bang->rx_alarm_value = 0;
+    return ESP_OK;
+}
+
+// Ring buffer API implementation
+
+// Ring buffer API implementation
+
+bool knx_tp_bit_bang_pop_data(knx_tp_bit_bang_t *bit_bang, uint8_t *out)
+{
+    if (bit_bang == NULL || out == NULL) {
         return false;
     }
     
-    return knx_ring_buffer_pop(&bit_bang->rx_ring_buffer, entry);
+    knx_ring_buffer_data_t msg;
+    if (knx_ring_buffer_pop_msg(&bit_bang->rx_ring_buffer, &msg)) {
+        if (msg.type == KNX_TP_BIT_BANG_MSG_TYPE_DATA) {
+            *out = msg.data;
+            return true;
+        }
+    }
+    return false;
 }
 
-uint8_t knx_tp_bit_bang_telegrams_available(knx_tp_bit_bang_t *bit_bang)
+uint8_t knx_tp_bit_bang_data_available(knx_tp_bit_bang_t *bit_bang)
 {
     if (bit_bang == NULL) {
         return 0;
@@ -192,97 +278,26 @@ void knx_format_individual_address(uint16_t addr, char* out, size_t out_size)
     snprintf(out, out_size, "%u.%u.%u", area, line, device);
 }
 
+// =====================
+// TX result interface
+// =====================
+
+bool knx_tp_bit_bang_fetch_tx_result(knx_tp_bit_bang_t *bit_bang, knx_tx_result_t *out)
+{
+    if (bit_bang == NULL || out == NULL) return false;
+    // Use length as validity sentinel: 0 = no result pending
+    if (bit_bang->last_tx_result.length == 0) return false;
+    // Read out and clear the latch
+    *out = bit_bang->last_tx_result;
+    bit_bang->last_tx_result.length = 0; // Mark consumed
+    return true;
+}
+
 void knx_format_group_address(uint16_t addr, char* out, size_t out_size)
 {
     uint8_t main = (addr >> 11) & 0x1F;
     uint8_t middle = (addr >> 8) & 0x07;
     uint8_t sub = addr & 0xFF;
     snprintf(out, out_size, "%u/%u/%u", main, middle, sub);
-}
-
-uint16_t knx_tp_bit_bang_triplet_to_address(uint8_t main, uint8_t middle, uint8_t sub)
-{
-    return ((main & 0x1F) << 11) | ((middle & 0x07) << 8) | (sub & 0xFF);
-}
-
-esp_err_t knx_tp_bit_bang_set_device_address(knx_tp_bit_bang_t *bit_bang, uint16_t address)
-{
-    if (bit_bang == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    bit_bang->device_address = address;
-    char addr_str[16];
-    knx_format_individual_address(address, addr_str, sizeof(addr_str));
-    ESP_LOGI(TAG, "Device individual address set to %s", addr_str);
-    
-    return ESP_OK;
-}
-
-esp_err_t knx_tp_bit_bang_add_group_address(knx_tp_bit_bang_t *bit_bang, uint16_t group_address)
-{
-    if (bit_bang == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    char addr_str[16];
-    knx_format_group_address(group_address, addr_str, sizeof(addr_str));
-    // Check if list is full
-    if (bit_bang->group_address_count >= KNX_TP_BIT_BANG_MAX_GROUP_ADDRESSES) {
-        ESP_LOGE(TAG, "Group address list is full (%d addresses)", KNX_TP_BIT_BANG_MAX_GROUP_ADDRESSES);
-        return ESP_ERR_NO_MEM;
-    }
-    
-    // Check if address already exists
-    for (uint8_t i = 0; i < bit_bang->group_address_count; i++) {
-        if (bit_bang->group_addresses[i] == group_address) {
-            ESP_LOGW(TAG, "Group address %s already in list", addr_str);
-            return ESP_OK;  // Already exists, not an error
-        }
-    }
-    
-    // Add new address
-    bit_bang->group_addresses[bit_bang->group_address_count] = group_address;
-    bit_bang->group_address_count++;
-
-    ESP_LOGI(TAG, "Added group address %s (total: %d)", addr_str, bit_bang->group_address_count);
-
-    return ESP_OK;
-}
-
-esp_err_t knx_tp_bit_bang_remove_group_address(knx_tp_bit_bang_t *bit_bang, uint16_t group_address)
-{
-    if (bit_bang == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    // Find and remove the address
-    for (uint8_t i = 0; i < bit_bang->group_address_count; i++) {
-        if (bit_bang->group_addresses[i] == group_address) {
-            // Shift remaining addresses down
-            for (uint8_t j = i; j < bit_bang->group_address_count - 1; j++) {
-                bit_bang->group_addresses[j] = bit_bang->group_addresses[j + 1];
-            }
-            bit_bang->group_address_count--;
-            char addr_str[16];
-            knx_format_group_address(group_address, addr_str, sizeof(addr_str));
-            ESP_LOGI(TAG, "Removed group address %s (remaining: %d)", addr_str, bit_bang->group_address_count);
-            return ESP_OK;
-        }
-    }
-    
-    ESP_LOGW(TAG, "Group address 0x%04X not found in list", group_address);
-    return ESP_ERR_NOT_FOUND;
-}
-
-esp_err_t knx_tp_bit_bang_clear_group_addresses(knx_tp_bit_bang_t *bit_bang)
-{
-    if (bit_bang == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    bit_bang->group_address_count = 0;
-    ESP_LOGI(TAG, "Cleared all group addresses");
-    
-    return ESP_OK;
 }
 

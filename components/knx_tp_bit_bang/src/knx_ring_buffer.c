@@ -24,14 +24,9 @@ void knx_ring_buffer_init(knx_ring_buffer_t *rb)
     rb->dropped_count = 0;
 }
 
-bool IRAM_ATTR knx_ring_buffer_push(knx_ring_buffer_t *rb, 
-                                    const uint8_t *data, 
-                                    uint8_t length,
-                                    uint8_t errors,
-                                    uint32_t parity_bits,
-                                    uint64_t timestamp)
+bool IRAM_ATTR knx_ring_buffer_push_msg(knx_ring_buffer_t *rb, knx_ring_buffer_data_t data)
 {
-    if (rb == NULL || data == NULL || length == 0 || length > KNX_RING_BUFFER_TELEGRAM_MAX_SIZE) {
+    if (rb == NULL) {
         return false;
     }
     
@@ -40,59 +35,37 @@ bool IRAM_ATTR knx_ring_buffer_push(knx_ring_buffer_t *rb,
     
     // Check if buffer is full (head would catch up to tail)
     if (next_head == rb->tail) {
-        // Buffer full - drop telegram and increment counter
+        // Buffer full - drop byte and increment counter
         rb->dropped_count++;
         return false;
     }
     
-    // Get pointer to current slot
-    knx_ring_buffer_entry_t *entry = &rb->buffer[rb->head];
-    
-    // Copy telegram data efficiently
-    for (uint8_t i = 0; i < length; i++) {
-        entry->data[i] = data[i];
-    }
-    
-    // Store metadata
-    entry->length = length;
-    entry->errors = errors;
-    entry->parity_bits = parity_bits;
-    entry->timestamp = timestamp;
+    // Store the byte
+    rb->buffer[rb->head] = data;
     
     // Memory barrier to ensure all writes complete before updating head
     // This prevents the consumer from seeing partially written data
     __asm__ __volatile__("" ::: "memory");
     
-    // Update head index (makes telegram visible to consumer)
+    // Update head index (makes byte visible to consumer)
     rb->head = next_head;
     
     return true;
 }
 
-bool knx_ring_buffer_pop(knx_ring_buffer_t *rb, knx_ring_buffer_entry_t *entry)
+bool knx_ring_buffer_pop_msg(knx_ring_buffer_t *rb, knx_ring_buffer_data_t *out)
 {
-    if (rb == NULL || entry == NULL) {
+    if (rb == NULL || out == NULL) {
         return false;
     }
     
     // Check if buffer is empty
     if (rb->tail == rb->head) {
-        return false; // No telegrams available
+        return false; // No bytes available
     }
     
-    // Get pointer to current slot
-    const knx_ring_buffer_entry_t *src = &rb->buffer[rb->tail];
-    
-    // Copy telegram data efficiently
-    for (uint8_t i = 0; i < src->length; i++) {
-        entry->data[i] = src->data[i];
-    }
-    
-    // Copy metadata
-    entry->length = src->length;
-    entry->errors = src->errors;
-    entry->parity_bits = src->parity_bits;
-    entry->timestamp = src->timestamp;
+    // Read the byte
+    *out = rb->buffer[rb->tail];
     
     // Memory barrier to ensure read completes before updating tail
     // This prevents the producer from overwriting data we're still reading
@@ -100,6 +73,30 @@ bool knx_ring_buffer_pop(knx_ring_buffer_t *rb, knx_ring_buffer_entry_t *entry)
     
     // Update tail index (frees slot for reuse)
     rb->tail = (rb->tail + 1) & (KNX_RING_BUFFER_SIZE - 1);
+    
+    return true;
+}
+
+bool knx_ring_buffer_peek_msg(const knx_ring_buffer_t *rb, uint8_t offset, knx_ring_buffer_data_t *out)
+{
+    if (rb == NULL || out == NULL) {
+        return false;
+    }
+    
+    // Check if buffer has enough messages for the requested offset
+    const uint8_t available = (rb->head - rb->tail) & (KNX_RING_BUFFER_SIZE - 1);
+    if (offset >= available) {
+        return false; // Not enough messages in buffer
+    }
+    
+    // Calculate the index to peek at
+    const uint8_t peek_index = (rb->tail + offset) & (KNX_RING_BUFFER_SIZE - 1);
+    
+    // Read the message without modifying the tail
+    *out = rb->buffer[peek_index];
+    
+    // Memory barrier to ensure consistent read
+    __asm__ __volatile__("" ::: "memory");
     
     return true;
 }
