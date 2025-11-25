@@ -65,10 +65,19 @@ esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, uint8_t sda_io, uint
 {
     esp_err_t ret;
     i2c_master_bus_config_t i2c_bus_config = {
+        // Some targets (e.g., ESP32) don't support LP I2C; fall back gracefully
+        #ifdef SOC_LP_I2C_SUPPORTED
         .i2c_port = lp_i2c ? LP_I2C_NUM_0 : I2C_NUM_0,
+        #else
+        .i2c_port = I2C_NUM_0,
+        #endif
         .sda_io_num = sda_io,
         .scl_io_num = scl_io,
+        #ifdef SOC_LP_I2C_SUPPORTED
         .clk_source = lp_i2c ? LP_I2C_SCLK_DEFAULT : I2C_CLK_SRC_DEFAULT,
+        #else
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        #endif
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = false,
     };

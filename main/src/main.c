@@ -20,6 +20,8 @@
 #include "mb_rtu_slave.h"
 //#include "knx_interface.h"
 #include "knx_tp_bit_bang.h"
+// KNX stack test runner
+void knx_stack_test_start(void);
 
 static const char *TAG = "example";
 
@@ -95,10 +97,13 @@ void app_main(void)
 
     // Configure KNX addressing and AUTO_ACK
     knx_tp_bit_bang_set_device_address(&knx_bit_bang, 0x1101);  // Set device address to 1.1.1
-    knx_tp_bit_bang_add_group_address(&knx_bit_bang, 0x0801);   // Listen to group 1/0/1
-    knx_tp_bit_bang_add_group_address(&knx_bit_bang, knx_tp_bit_bang_triplet_to_address(0, 0, 225));   // Listen to group 0/0/225
-    knx_bit_bang.flags |= KNX_TP_BIT_BANG_FLAG_AUTO_ACK;        // Enable AUTO_ACK
-    knx_bit_bang.flags |= KNX_TP_BIT_BANG_FLAG_PROMISCUOUS;      // Enable PROMISCUOUS mode
+    // KNX configuration will be handled by interface layer
+    // For now just initialize the basic bit-bang driver
+    
+    ESP_LOGI(TAG, "KNX bit-bang driver basic initialization complete");
+
+    // Start KNX TPUART stack test task (runs in background)
+    knx_stack_test_start();
 
     mb_rtu_slave.holding_reg_params.knx_test_data = 0b0000000010110111;
     mb_rtu_slave.holding_reg_params.knx_lenght = 1;
@@ -127,42 +132,24 @@ void app_main(void)
             request_toggle = false;
             //toggle_server(&sensor_service);
             ESP_LOGI(TAG, "Sending KNX data...");
-            memcpy(knx_bit_bang.tx_buffer, sample_data, sample_data_len);
-            knx_bit_bang.tx_telegram_length = sample_data_len;
-            knx_bit_bang.tx_state = KNX_TP_BIT_BANG_TX_STATE_IDLE; // Reset TX status
-            knx_bit_bang.rx_state = KNX_TP_BIT_BANG_RX_STATE_IDLE; // Reset RX status
-
-            knx_tp_bit_bang_tx_enable(&knx_bit_bang);
+            knx_tp_bit_bang_send(&knx_bit_bang, sample_data, sample_data_len);
             ESP_LOGI(TAG, "KNX bit-bang tx_state %d rx_state %d error flags: %d", 
-                     knx_bit_bang.tx_state, knx_bit_bang.rx_state, (int)knx_bit_bang.errors);
+                     knx_bit_bang.tx_state, knx_bit_bang.rx_state, (int)knx_bit_bang.rx_errors);
         }
-        if (last_counter != knx_bit_bang.rx_timer_count + knx_bit_bang.tx_timer_count) {
-            last_counter = knx_bit_bang.rx_timer_count + knx_bit_bang.tx_timer_count;
-            print_data(&knx_bit_bang);
-        }
+        // Performance monitoring moved to interface layer
+        // Basic status check only
 
-        knx_ring_buffer_entry_t telegram;
-        while (knx_tp_bit_bang_pop_telegram(&knx_bit_bang, &telegram)) {
-            ESP_LOGI(TAG, "=== KNX Telegram Received ===");
-            ESP_LOGI(TAG, "  Length: %u bytes, Errors: 0x%02x, Timestamp: %llu us",
-                     telegram.length, telegram.errors, telegram.timestamp);
-            
-            // Print telegram as binary string
-            static char rx_bin_line[512];
-            buffer_to_binary_string(telegram.data, telegram.length, rx_bin_line, sizeof(rx_bin_line));
-            ESP_LOGI(TAG, "  Binary: %s", rx_bin_line);
-            
-            // Parse and display telegram details
-            log_knx_tp1_telegram(telegram.data, telegram.length);
+        // Drain any received bytes (demo printing raw stream)
+        uint8_t rx_byte;
+        int print_count = 0;
+        while (knx_tp_bit_bang_pop_data(&knx_bit_bang, &rx_byte)) {
+            ESP_LOGI(TAG, "RX byte: 0x%02X", rx_byte);
+            if (++print_count > 64) break; // avoid log floods
         }
         
-        // Check for dropped telegrams
-        uint32_t dropped = knx_tp_bit_bang_get_dropped_count(&knx_bit_bang);
-        if (dropped > 0) {
-            ESP_LOGW(TAG, "Ring buffer overflow! %lu telegrams dropped", dropped);
-            knx_ring_buffer_reset_dropped_count(&knx_bit_bang.rx_ring_buffer);
-        }
-    vTaskDelay(BLINK_PERIOD / portTICK_PERIOD_MS);
+        // Ring buffer monitoring moved to interface layer
+        
+        vTaskDelay(BLINK_PERIOD / portTICK_PERIOD_MS);
 
     }
 }

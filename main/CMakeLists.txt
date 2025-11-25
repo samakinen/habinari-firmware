@@ -6,6 +6,7 @@ idf_component_register(SRCS "src/sensor_service.c"
                             "src/sensor_bus.c"
                             "src/sensor_service.c"
                             "src/mb_rtu_slave.c"
+                            "src/knx_stack_test.cpp"
                        INCLUDE_DIRS "include"
                        REQUIRES
                          driver
