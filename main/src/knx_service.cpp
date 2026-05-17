@@ -28,6 +28,7 @@ using namespace sensor_board_knx;
 namespace {
 
 static constexpr const char *TAG = "knx_service";
+static constexpr uint32_t kKnxServiceTaskStackSize = 16384;
 
 struct SharedState {
     SemaphoreHandle_t mutex{nullptr};
@@ -446,7 +447,7 @@ extern "C" esp_err_t knx_service_start(void)
         return err;
     }
 
-    BaseType_t created = xTaskCreate(knxServiceTask, "knx_service", 8192, nullptr, 8, nullptr);
+    BaseType_t created = xTaskCreate(knxServiceTask, "knx_service", kKnxServiceTaskStackSize, nullptr, 8, nullptr);
     if (created != pdPASS) {
         return ESP_FAIL;
     }
