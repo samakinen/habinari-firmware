@@ -267,6 +267,9 @@ void knxServiceTask(void *arg)
     auto bindings = makeCommissionedBindings(kSensorBoardProduct)
         .onStateWrite<SensorBoardPort::ThermostatSetpoint>([](float value) {
             LockGuard lock(g_state.mutex);
+            if (std::fabs(g_state.thermostatSetpointC - value) < 0.01f) {
+                return;
+            }
             g_state.thermostatSetpointC = value;
             g_state.pendingThermostatSetpointPublish = true;
             recalculateRequestsLocked(g_state);
@@ -278,6 +281,9 @@ void knxServiceTask(void *arg)
         })
         .onStateWrite<SensorBoardPort::VentilationSetpoint>([](float value) {
             LockGuard lock(g_state.mutex);
+            if (std::fabs(g_state.ventilationSetpointPpm - value) < 0.5f) {
+                return;
+            }
             g_state.ventilationSetpointPpm = value;
             g_state.pendingVentilationSetpointPublish = true;
             recalculateRequestsLocked(g_state);
@@ -325,12 +331,18 @@ void knxServiceTask(void *arg)
         })
         .onParameterChanged<SensorBoardParameter::DefaultThermostatSetpoint>([](float value) {
             LockGuard lock(g_state.mutex);
+            if (std::fabs(g_state.thermostatSetpointC - value) < 0.01f) {
+                return;
+            }
             g_state.thermostatSetpointC = value;
             g_state.pendingThermostatSetpointPublish = true;
             recalculateRequestsLocked(g_state);
         })
         .onParameterChanged<SensorBoardParameter::DefaultVentilationSetpoint>([](float value) {
             LockGuard lock(g_state.mutex);
+            if (std::fabs(g_state.ventilationSetpointPpm - value) < 0.5f) {
+                return;
+            }
             g_state.ventilationSetpointPpm = value;
             g_state.pendingVentilationSetpointPublish = true;
             recalculateRequestsLocked(g_state);
