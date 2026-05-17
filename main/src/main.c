@@ -74,7 +74,6 @@ void app_main(void)
 
     sensor_service_init(&sensor_service, update_sensor_data);
     sensor_service_start(&sensor_service);
-    knx_service_start();
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PIN_PROG_BTN),
@@ -82,10 +81,15 @@ void app_main(void)
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_NEGEDGE
-    };    gpio_config(&io_conf);    
-    // Install GPIO ISR service at low priority so GPTimer ISR can preempt it
+    };
+    gpio_config(&io_conf);
+
+    // Install GPIO ISR service before KNX initialization if KNstaX is not doing it.
+    // This must happen before knx_service_start() when CONFIG_KNX_TP1_BITBANG_INSTALL_ISR_SERVICE is disabled.
     gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_IRAM);
     gpio_isr_handler_add(PIN_PROG_BTN, (gpio_isr_t)button_isr_handler, &sensor_service);
+
+    knx_service_start();
 
     while (1) {
         led_status = mb_rtu_slave.coil_reg_params.led_on;
