@@ -103,7 +103,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxApduLength = 254,
             },
             PersistencePolicy{
-                .namespacePrefix = "sensor_board_tp1",
+                .namespacePrefix = "sensorboard_tp1",
                 .schemaVersion = 1,
                 .persistKnxState = true,
             }),
