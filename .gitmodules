@@ -4,3 +4,5 @@
 [submodule "components/knx_tp_bit_bang/tpuart"]
 	path = components/knx_tp_bit_bang/tpuart
 	url = https://github.com/OpenKNX/tpuart.git
+[submodule "components/KNstaX"]
+	path = components/KNstaX

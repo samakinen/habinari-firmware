@@ -18,10 +18,7 @@
 #include "sensor_service.h"
 #include <string.h>
 #include "mb_rtu_slave.h"
-//#include "knx_interface.h"
-#include "knx_tp_bit_bang.h"
-// KNX stack test runner
-void knx_stack_test_start(void);
+#include "knx_service.h"
 
 static const char *TAG = "example";
 
@@ -44,6 +41,7 @@ void update_sensor_data(const sensor_data_t *data)
              (data->updated_mask & SENSOR_EXT_PROBE_TEMPERATURE) ? "t" : "",
              (data->updated_mask & SENSOR_EXT_PROBE_HUMIDITY) ? "h" : "");
     mb_rtu_slave_set_sensor_data(&mb_rtu_slave, data); // Update Modbus registers with new sensor data
+    knx_service_update_sensor_data(data);
 }
 
 void IRAM_ATTR button_isr_handler(void *arg)
@@ -68,9 +66,6 @@ void toggle_server(sensor_service_t *service)
 #define BLINK_DURATION 50
 bool led_status = false;
 
-// KNX helper functions moved to knx_helpers.c
-#include "knx_helpers.h"
-
 void app_main(void)
 {
     uint8_t requested_slave_address = slave_address;
@@ -78,6 +73,8 @@ void app_main(void)
     mb_rtu_slave_init(&mb_rtu_slave, slave_address); // Initialize Modbus RTU slave with address 0x01
 
     sensor_service_init(&sensor_service, update_sensor_data);
+    sensor_service_start(&sensor_service);
+    knx_service_start();
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PIN_PROG_BTN),
@@ -89,33 +86,6 @@ void app_main(void)
     // Install GPIO ISR service at low priority so GPTimer ISR can preempt it
     gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_IRAM);
     gpio_isr_handler_add(PIN_PROG_BTN, (gpio_isr_t)button_isr_handler, &sensor_service);
-
-    // Define KNX pin configurations 
-    // Initialize KNX TP bit-bang with compile-time optimized pin configuration
-    knx_tp_bit_bang_t knx_bit_bang;
-    knx_tp_bit_bang_init(&knx_bit_bang);
-
-    // Configure KNX addressing and AUTO_ACK
-    knx_tp_bit_bang_set_device_address(&knx_bit_bang, 0x1101);  // Set device address to 1.1.1
-    // KNX configuration will be handled by interface layer
-    // For now just initialize the basic bit-bang driver
-    
-    ESP_LOGI(TAG, "KNX bit-bang driver basic initialization complete");
-
-    // Start KNX TPUART stack test task (runs in background)
-    knx_stack_test_start();
-
-    mb_rtu_slave.holding_reg_params.knx_test_data = 0b0000000010110111;
-    mb_rtu_slave.holding_reg_params.knx_lenght = 1;
-
-    unsigned char sample_data[] = {
-        0x9C, 0xFF, 0xFA, 0x11, 0x00, 0xE1, 0x00, 0x80, 0x16
-        //0xaa, 0x55, 0xcc, 0x33
-    };
-    uint32_t sample_data_len = sizeof(sample_data) / sizeof(sample_data[0]);
-
-
-    uint32_t last_counter = 0;
 
     while (1) {
         led_status = mb_rtu_slave.coil_reg_params.led_on;
@@ -130,23 +100,12 @@ void app_main(void)
         if (request_toggle) {
             ESP_LOGI(TAG, "Toggle server requested");
             request_toggle = false;
-            //toggle_server(&sensor_service);
-            ESP_LOGI(TAG, "Sending KNX data...");
-            knx_tp_bit_bang_send(&knx_bit_bang, sample_data, sample_data_len);
-            ESP_LOGI(TAG, "KNX bit-bang tx_state %d rx_state %d error flags: %d", 
-                     knx_bit_bang.tx_state, knx_bit_bang.rx_state, (int)knx_bit_bang.rx_errors);
+            knx_service_toggle_programming_mode();
         }
         // Performance monitoring moved to interface layer
         // Basic status check only
 
         // Drain any received bytes (demo printing raw stream)
-        uint8_t rx_byte;
-        int print_count = 0;
-        while (knx_tp_bit_bang_pop_data(&knx_bit_bang, &rx_byte)) {
-            ESP_LOGI(TAG, "RX byte: 0x%02X", rx_byte);
-            if (++print_count > 64) break; // avoid log floods
-        }
-        
         // Ring buffer monitoring moved to interface layer
         
         vTaskDelay(BLINK_PERIOD / portTICK_PERIOD_MS);
