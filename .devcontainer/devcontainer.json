@@ -9,7 +9,8 @@
 				"terminal.integrated.defaultProfile.linux": "bash",
 				"idf.espIdfPath": "/opt/esp/idf",
 				"idf.toolsPath": "/opt/esp",
-				"idf.gitPath": "/usr/bin/git"
+				"idf.gitPath": "/usr/bin/git",
+				"C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
 			},
 			"extensions": [
 				"espressif.esp-idf-extension",
@@ -17,7 +18,8 @@
 				"ms-vscode.cpptools",
 				"ms-vscode.cpptools-extension-pack",
 				"twxs.cmake",
-				"ms-vscode.cmake-tools"
+				"ms-vscode.cmake-tools",
+				"llvm-vs-code-extensions.vscode-clangd"
 			]
 		}
 	},
