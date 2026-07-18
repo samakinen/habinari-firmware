@@ -5,6 +5,8 @@
 
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -50,6 +52,7 @@ struct SharedState {
     float ventilationHysteresisPpm{kDefaultVentilationHysteresisPpm};
     bool thermostatRequest{false};
     bool ventilationBoostRequest{false};
+    knx_programming_mode_callback_t programmingModeCallback{nullptr};
 };
 
 SharedState g_state;
@@ -359,6 +362,15 @@ void knxServiceTask(void *arg)
         })
         .onProgrammingModeChanged([](bool enabled) {
             KNX_LOGI(TAG, "Programming mode: %s", enabled ? "ON" : "OFF");
+
+            knx_programming_mode_callback_t callback = nullptr;
+            {
+                LockGuard lock(g_state.mutex);
+                callback = g_state.programmingModeCallback;
+            }
+            if (callback != nullptr) {
+                callback(enabled);
+            }
         })
         .onLifecycleChanged([](DeviceLifecycleState state) {
             KNX_LOGI(TAG,
@@ -387,6 +399,27 @@ void knxServiceTask(void *arg)
     }
 
     auto app = std::move(appResult.value());
+
+    {
+        // KNX serial number (device object PID 11): derive from the
+        // factory-programmed base MAC so every board reports a unique,
+        // stable identity instead of all zeroes.
+        uint8_t mac[6] = {};
+        if (esp_read_mac(mac, ESP_MAC_BASE) == ESP_OK) {
+            app.deviceObject().setSerialNumber(std::span<const uint8_t>(mac, sizeof(mac)));
+        }
+    }
+
+    {
+        const auto ownAddress = app.individualAddress();
+        KNX_LOGI(TAG,
+                 "KNX own individual address: 0x%04X (%s)",
+                 ownAddress.raw,
+                 isInitialIndividualAddress(ownAddress) ? "initial/uncommissioned" :
+                 isIndividualBroadcastAddress(ownAddress) ? "broadcast" :
+                 isOperationalIndividualAddress(ownAddress) ? "operational" :
+                 "unknown");
+    }
 
     {
         LockGuard lock(g_state.mutex);
@@ -490,4 +523,25 @@ extern "C" void knx_service_toggle_programming_mode(void)
 
     LockGuard lock(g_state.mutex);
     g_state.toggleProgrammingModeRequested = true;
+}
+
+extern "C" void knx_service_reset_nvm(void)
+{
+    KNX_LOGW(TAG, "Resetting KNX NVM state and rebooting");
+    esp_err_t err = nvs_flash_erase();
+    if (err != ESP_OK) {
+        KNX_LOGE(TAG, "NVS erase failed: %s", esp_err_to_name(err));
+    }
+    esp_restart();
+}
+
+extern "C" void knx_service_set_programming_mode_callback(knx_programming_mode_callback_t callback)
+{
+    if (g_state.mutex == nullptr) {
+        g_state.programmingModeCallback = callback;
+        return;
+    }
+
+    LockGuard lock(g_state.mutex);
+    g_state.programmingModeCallback = callback;
 }

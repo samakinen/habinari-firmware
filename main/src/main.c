@@ -14,17 +14,19 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "sdkconfig.h"
 #include "sensor_service.h"
 #include <string.h>
 #include "mb_rtu_slave.h"
 #include "knx_service.h"
+#include "board.h"
 
 static const char *TAG = "example";
 
 int count = 0;
 sensor_service_t sensor_service;
-bool request_toggle = false;
+static volatile bool g_programming_mode_enabled = false;
 
 mb_rtu_slave_t mb_rtu_slave = {0};
 uint8_t slave_address = 0x01; // Modbus slave address
@@ -44,9 +46,9 @@ void update_sensor_data(const sensor_data_t *data)
     knx_service_update_sensor_data(data);
 }
 
-void IRAM_ATTR button_isr_handler(void *arg)
+static void programming_mode_changed_callback(bool enabled)
 {
-    request_toggle = true;
+    g_programming_mode_enabled = enabled;
 }
 
 void toggle_server(sensor_service_t *service)
@@ -62,57 +64,70 @@ void toggle_server(sensor_service_t *service)
     }
 }
 
-#define BLINK_PERIOD 2000
-#define BLINK_DURATION 50
-bool led_status = false;
+static const TickType_t kMainLoopPeriodTicks = pdMS_TO_TICKS(50);
+static const TickType_t kProgButtonLongPressTicks = pdMS_TO_TICKS(1000);
+static const TickType_t kProgButtonNvmResetTicks = pdMS_TO_TICKS(5000);
 
 void app_main(void)
 {
     uint8_t requested_slave_address = slave_address;
+    bool progBtnPressedLast = false;
+    int progActionsHandled = 0;
+    TickType_t progBtnPressedAt = 0;
+
     init_pins();
     mb_rtu_slave_init(&mb_rtu_slave, slave_address); // Initialize Modbus RTU slave with address 0x01
 
     sensor_service_init(&sensor_service, update_sensor_data);
     sensor_service_start(&sensor_service);
 
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << PIN_PROG_BTN),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE
-    };
-    gpio_config(&io_conf);
-
-    // Install GPIO ISR service before KNX initialization if KNstaX is not doing it.
-    // This must happen before knx_service_start() when CONFIG_KNX_TP1_BITBANG_INSTALL_ISR_SERVICE is disabled.
-    gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 | ESP_INTR_FLAG_IRAM);
-    gpio_isr_handler_add(PIN_PROG_BTN, (gpio_isr_t)button_isr_handler, &sensor_service);
-
+    knx_service_set_programming_mode_callback(programming_mode_changed_callback);
     knx_service_start();
 
     while (1) {
-        led_status = mb_rtu_slave.coil_reg_params.led_on;
         requested_slave_address = mb_rtu_slave.holding_reg_params.slave_address;
         if (requested_slave_address != slave_address) {
+            slave_address = requested_slave_address;
             sensor_service_stop(&sensor_service); // Stop sensor service if running
             mb_rtu_slave_deinit(&mb_rtu_slave); // Deinitialize Modbus RTU slave
             mb_rtu_slave_init(&mb_rtu_slave, requested_slave_address); // Reinitialize with new address
-            sensor_service_init(&sensor_service, update_sensor_data); // Reinitialize sensor service
+            sensor_service_init(&sensor_service, update_sensor_data);
+            sensor_service_start(&sensor_service); // Reinitialize sensor service
             ESP_LOGI(TAG, "Slave address changed to %d", requested_slave_address);
         }
-        if (request_toggle) {
-            ESP_LOGI(TAG, "Toggle server requested");
-            request_toggle = false;
-            knx_service_toggle_programming_mode();
+
+        // Active-low button: long press enters/exits KNX programming mode.
+        const bool progBtnPressed = (gpio_get_level(PIN_PROG_BTN) == 0);
+        if (progBtnPressed && !progBtnPressedLast) {
+            progBtnPressedAt = xTaskGetTickCount();
+            progActionsHandled = 0;
+        } else if (!progBtnPressed) {
+            progActionsHandled = 0;
+        } else  {
+            const TickType_t heldTicks = xTaskGetTickCount() - progBtnPressedAt;
+            if (progActionsHandled < 1 && heldTicks >= kProgButtonLongPressTicks) {
+                ESP_LOGI(TAG, "Programming button long-press detected");
+                knx_service_toggle_programming_mode();
+                progActionsHandled = 1;
+            } else if (progActionsHandled < 2 && heldTicks >= kProgButtonNvmResetTicks) {
+                ESP_LOGI(TAG, "Programming button 5s press detected: resetting NVM");
+                knx_service_reset_nvm();
+                progActionsHandled = 2;
+            }
         }
+        progBtnPressedLast = progBtnPressed;
+
+        // Keep LED on while KNX programming mode is active; otherwise allow Modbus coil control.
+        const bool ledOn = g_programming_mode_enabled || mb_rtu_slave.coil_reg_params.led_on;
+        gpio_set_level(PIN_LED, ledOn ? 1 : 0);
+
         // Performance monitoring moved to interface layer
         // Basic status check only
 
         // Drain any received bytes (demo printing raw stream)
         // Ring buffer monitoring moved to interface layer
         
-        vTaskDelay(BLINK_PERIOD / portTICK_PERIOD_MS);
+        vTaskDelay(kMainLoopPeriodTicks);
 
     }
 }
