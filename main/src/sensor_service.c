@@ -5,7 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const int REFRESH_RATE = 10000; // 10 second
+static const int REFRESH_RATE = 30000; // 30 seconds
 static const char *TAG = "sensor_service";
 
 esp_err_t sensor_service_init(sensor_service_handle_t handle, sensor_data_updated_callback_t callback)
