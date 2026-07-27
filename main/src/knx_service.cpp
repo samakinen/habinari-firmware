@@ -7,7 +7,9 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -39,6 +41,21 @@ static constexpr const char *TAG = "knx_service";
 // larger stack covers the transient startup peak with margin.
 //static constexpr uint32_t kKnxServiceTaskStackSize = 24576;
 static constexpr uint32_t kKnxServiceTaskStackSize = 64*1024;
+
+// --- Bus-citizenship: boot-storm mitigation -------------------------------
+// On a bus-wide power-up (line powered on) every device would otherwise dump
+// its full object set at t=0, swamping the shared ~50 telegram/s TP1 medium —
+// worse the more of these boards share a line. Two independent guards:
+//   1. A per-device random startup delay before the first full publish, so
+//      devices on the same line desynchronise instead of all firing at once.
+//   2. A global outbound telegram rate limit. The stack defers over-budget
+//      sends (coalescing each object to its latest value) and drains them from
+//      loop(), so even the initial burst and later change storms are spread
+//      over time with nothing dropped. Requires a monotonic time source, which
+//      also enables the cyclic status heartbeats (previously never armed).
+static constexpr uint32_t kStartupPublishMaxJitterMs = 8000;
+static constexpr uint32_t kMaxUnsolicitedTelegramsPerWindow = 5;
+static constexpr uint32_t kTelegramRateWindowMs = 1000;
 
 // ETS-configurable room-control tuning (see hvac_control.hpp). Snapshotted by
 // the control tick each second, so parameter changes apply within one tick.
@@ -1292,6 +1309,18 @@ void knxServiceTask(void *arg)
         }
     }
 
+    // Outbound transmit shaping. A monotonic millisecond clock is required for
+    // the global rate limiter, per-object cyclic heartbeats and min-interval
+    // floors to take effect (see applyTransmitPolicies + setTelegramRateLimit).
+    app.setTimeSource([]() -> uint32_t {
+        return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    });
+    app.setTelegramRateLimit(application::TelegramRateLimitConfig{
+        .maxTelegrams = kMaxUnsolicitedTelegramsPerWindow,
+        .perWindowMs = kTelegramRateWindowMs,
+        .minGapMs = 0,
+    });
+
     {
         const auto ownAddress = app.individualAddress();
         KNX_LOGI(TAG,
@@ -1413,6 +1442,15 @@ void knxServiceTask(void *arg)
     const TickType_t kActiveWorkPollTicks =
         (pdMS_TO_TICKS(2) > 0) ? pdMS_TO_TICKS(2) : 1;
 
+    // Boot-storm mitigation: hold the first full publish for a per-device random
+    // delay so a bus-wide power-up doesn't make every device transmit at t=0.
+    // The rate limiter above additionally spreads whatever burst does occur.
+    const uint32_t startupJitterMs =
+        (kStartupPublishMaxJitterMs > 0) ? (esp_random() % (kStartupPublishMaxJitterMs + 1u)) : 0u;
+    const TickType_t startupPublishReleaseTick =
+        xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs);
+    bool startupDelayLogged = false;
+
     for (;;) {
         app.loop();
 
@@ -1424,7 +1462,34 @@ void knxServiceTask(void *arg)
             runHvacControlTick(app, thermostat, ventilation, dtSeconds);
         }
 
-        if (app.lifecycleState() == DeviceLifecycleState::Operational) {
+        // Startup-delay gate: while closed we must NOT publish or consume the
+        // pending-publish flags (that would clear initialPublishPending before
+        // the burst is allowed out). Sensor updates keep accumulating in
+        // g_state and go out together once the gate opens.
+        const bool startupGateOpen =
+            static_cast<int32_t>(xTaskGetTickCount() - startupPublishReleaseTick) >= 0;
+
+        if (app.lifecycleState() == DeviceLifecycleState::Operational && !startupGateOpen) {
+            if (previousLifecycle != DeviceLifecycleState::Operational) {
+                LockGuard lock(g_state.mutex);
+                g_state.initialPublishPending = true;
+            }
+            if (!startupDelayLogged) {
+                KNX_LOGI(TAG, "Holding initial KNX publish for %u ms (boot-storm mitigation)",
+                         static_cast<unsigned>(startupJitterMs));
+                startupDelayLogged = true;
+            }
+            // A programming-mode toggle (button) must still be honoured promptly.
+            bool toggleRequested = false;
+            {
+                LockGuard lock(g_state.mutex);
+                toggleRequested = g_state.toggleProgrammingModeRequested;
+                g_state.toggleProgrammingModeRequested = false;
+            }
+            if (toggleRequested) {
+                app.toggleProgrammingMode();
+            }
+        } else if (app.lifecycleState() == DeviceLifecycleState::Operational) {
             if (previousLifecycle != DeviceLifecycleState::Operational) {
                 LockGuard lock(g_state.mutex);
                 g_state.initialPublishPending = true;
