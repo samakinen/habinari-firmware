@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 
 #include "knx/platform/esp32_platform.hpp"
@@ -21,8 +22,10 @@
 #include "knx/product/commissioned_product.hpp"
 #include "knx/util/log.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 
 using namespace knx;
@@ -56,6 +59,68 @@ static constexpr uint32_t kKnxServiceTaskStackSize = 64*1024;
 static constexpr uint32_t kStartupPublishMaxJitterMs = 8000;
 static constexpr uint32_t kMaxUnsolicitedTelegramsPerWindow = 5;
 static constexpr uint32_t kTelegramRateWindowMs = 1000;
+
+// --- KNX Data Secure ------------------------------------------------------
+// When enabled the device provisions a unique 16-byte AES-128 key on first
+// boot (hardware RNG), persists it in NVS, applies it as the KNX Data Secure
+// tool key and logs it every boot so an installer can capture it locally and
+// enter it together with the serial number into ETS for secure commissioning.
+// The self-generated key plays the role of the device's FDSK / initial tool
+// key. NOTE: knx_service_reset_nvm() erases the whole default NVS partition, so
+// a factory reset regenerates a fresh key (re-logged on the next boot); a real
+// immutable FDSK would live in eFuse or a dedicated protected partition.
+static constexpr bool kEnableKnxDataSecure = true;
+static constexpr const char *kSecureNvsNamespace = "knx_secure";
+static constexpr const char *kSecureNvsToolKeyBlob = "tool_key";
+
+// Render a byte buffer as an uppercase hex string (with optional separators)
+// into caller storage, for logging identity/credentials.
+void toHex(std::span<const uint8_t> bytes, char sep, char *out, size_t outLen)
+{
+    size_t pos = 0;
+    for (size_t i = 0; i < bytes.size() && pos + 3 < outLen; ++i) {
+        if (i != 0 && sep != '\0' && pos + 1 < outLen) {
+            out[pos++] = sep;
+        }
+        pos += static_cast<size_t>(std::snprintf(out + pos, outLen - pos, "%02X", bytes[i]));
+    }
+    if (outLen > 0) {
+        out[(pos < outLen) ? pos : (outLen - 1)] = '\0';
+    }
+}
+
+// Load the persisted KNX Data Secure tool key, generating and storing a fresh
+// random one on first boot. Returns true on success; `created` reports whether
+// a new key was generated this call.
+bool loadOrCreateToolKey(std::array<uint8_t, 16> &key, bool &created)
+{
+    created = false;
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(kSecureNvsNamespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Data Secure: nvs_open failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    size_t len = key.size();
+    err = nvs_get_blob(handle, kSecureNvsToolKeyBlob, key.data(), &len);
+    if (err == ESP_ERR_NVS_NOT_FOUND || (err == ESP_OK && len != key.size())) {
+        esp_fill_random(key.data(), key.size());
+        err = nvs_set_blob(handle, kSecureNvsToolKeyBlob, key.data(), key.size());
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        created = true;
+    }
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Data Secure: tool key %s failed: %s",
+                 created ? "generation" : "load", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
 
 // ETS-configurable room-control tuning (see hvac_control.hpp). Snapshotted by
 // the control tick each second, so parameter changes apply within one tick.
@@ -1302,10 +1367,18 @@ void knxServiceTask(void *arg)
     {
         // KNX serial number (device object PID 11): derive from the
         // factory-programmed base MAC so every board reports a unique,
-        // stable identity instead of all zeroes.
+        // stable identity instead of all zeroes. The MAC is globally unique,
+        // so this doubles as the device's manufacturing serial. It is logged
+        // below so it can be paired with the Data Secure key during ETS
+        // commissioning.
         uint8_t mac[6] = {};
         if (esp_read_mac(mac, ESP_MAC_BASE) == ESP_OK) {
             app.deviceObject().setSerialNumber(std::span<const uint8_t>(mac, sizeof(mac)));
+            char serialHex[3 * 6] = {};
+            toHex(std::span<const uint8_t>(mac, sizeof(mac)), ':', serialHex, sizeof(serialHex));
+            KNX_LOGI(TAG, "KNX serial number: %s", serialHex);
+        } else {
+            KNX_LOGW(TAG, "KNX serial number unavailable: esp_read_mac failed");
         }
     }
 
@@ -1320,6 +1393,32 @@ void knxServiceTask(void *arg)
         .perWindowMs = kTelegramRateWindowMs,
         .minGapMs = 0,
     });
+
+    if (kEnableKnxDataSecure) {
+        // Provision (first boot) or reuse a device-unique KNX Data Secure tool
+        // key and log it in hex so an installer can capture it locally and
+        // enter it, together with the serial number above, into ETS for secure
+        // commissioning. The generated key is the device's FDSK / initial tool
+        // key.
+        std::array<uint8_t, 16> toolKey{};
+        bool created = false;
+        if (loadOrCreateToolKey(toolKey, created)) {
+            char keyHex[3 * 16] = {};
+            toHex(std::span<const uint8_t>(toolKey.data(), toolKey.size()), ' ', keyHex, sizeof(keyHex));
+            const auto secureResult = app.applyEtsToolKey(toolKey);
+            if (secureResult.isError()) {
+                KNX_LOGE(TAG, "Data Secure: applyEtsToolKey failed: %d",
+                         static_cast<int>(secureResult.error()));
+            } else {
+                KNX_LOGW(TAG,
+                         "KNX Data Secure ENABLED. Tool key (%s) — enter into ETS with the "
+                         "serial number for secure commissioning: %s",
+                         created ? "generated" : "stored", keyHex);
+            }
+        }
+    } else {
+        KNX_LOGI(TAG, "KNX Data Secure disabled (plain commissioning)");
+    }
 
     {
         const auto ownAddress = app.individualAddress();
