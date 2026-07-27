@@ -7,19 +7,27 @@
 #define SENSOR_TEMPERATURE           (1 << 0)
 #define SENSOR_HUMIDITY              (1 << 1)
 #define SENSOR_PRESSURE              (1 << 2)
-#define SENSOR_GAS_RESISTANCE        (1 << 3)
 #define SENSOR_CO2                   (1 << 4)
 #define SENSOR_EXT_PROBE_TEMPERATURE (1 << 5)
 #define SENSOR_EXT_PROBE_HUMIDITY    (1 << 6)
+// BME688 air-quality (BSEC-derived; see components/bsec2). Only populated when
+// built with CONFIG_BME688_USE_BSEC. air_quality_accuracy travels with iaq.
+#define SENSOR_IAQ                   (1 << 7)
+#define SENSOR_CO2_EQUIVALENT        (1 << 8)
+#define SENSOR_VOC_EQUIVALENT        (1 << 9)
 
 typedef struct {
     float temperature; // Internal temperature sensor in C
     float humidity; // Internal humidity sensor in %RH
     float pressure; // Internal pressure sensor in Pa
-    float gas_resistance; // Internal gas resistance sensor in Ohm
     int co2; // Internal CO2 sensor in ppm
     float ext_probe_temperature; // External probe temperature in C
     float ext_probe_humidity; // External probe humidity in %RH
+    // BME688 air quality (BSEC). Complementary to the SCD4x true CO2 above.
+    float iaq; // Indoor air-quality index 0..500 (lower = cleaner)
+    uint8_t air_quality_accuracy; // BSEC calibration status 0..3
+    float co2_equivalent; // Estimated CO2-equivalent in ppm
+    float voc_equivalent; // Estimated breath-VOC-equivalent in ppm
     unsigned int updated_mask; // Values updated in last measurement
 } sensor_data_t;
 

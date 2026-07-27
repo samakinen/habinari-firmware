@@ -1,0 +1,33 @@
+menu "BME688 air quality (BSEC)"
+
+    config BME688_USE_BSEC
+        bool "Enable Bosch BSEC air-quality fusion for BME688"
+        default n
+        help
+            Compile the BSEC integration that turns the BME688 raw gas signal
+            into IAQ / CO2-equivalent / breath-VOC-equivalent outputs. Requires
+            the proprietary Bosch BSEC library and headers to be installed under
+            components/bsec2/bosch/ (see components/bsec2/README.md). The library
+            is NOT redistributable and is therefore not committed to this
+            repository. When disabled the firmware builds with no air-quality
+            outputs and no external dependency.
+
+    config BME688_BSEC_SAMPLE_RATE_ULP
+        bool "Use ULP (~300 s) sample rate instead of LP (~3 s)"
+        depends on BME688_USE_BSEC
+        default n
+        help
+            LP (low power, ~3 s cycle) gives responsive IAQ at higher power draw.
+            ULP (ultra-low power, ~300 s) minimises power for battery use at the
+            cost of responsiveness.
+
+    config BME688_BSEC_STATE_SAVE_INTERVAL_MIN
+        int "BSEC calibration-state save interval (minutes, 0 = never)"
+        depends on BME688_USE_BSEC
+        default 60
+        help
+            How often the BSEC calibration state is persisted to NVS so the gas
+            baseline and accuracy survive reboots. State is only saved once BSEC
+            reports high accuracy.
+
+endmenu

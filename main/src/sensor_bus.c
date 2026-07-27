@@ -3,6 +3,7 @@
 #include "hdc302x.h"
 #include "scd4x.h"
 #include "bme68x_esp.h"
+#include "bsec_integration.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -20,6 +21,14 @@ esp_err_t sensor_bus_init(sensor_bus_handle_t sensor_bus)
     }
     sensor_bus->hdc302x_device_handle = NULL;
     sensor_bus->scd4x_device_handle = NULL;
+    if (sensor_bus->bme68x_mutex == NULL)
+    {
+        sensor_bus->bme68x_mutex = xSemaphoreCreateMutex();
+        if (sensor_bus->bme68x_mutex == NULL)
+        {
+            return ESP_ERR_NO_MEM;
+        }
+    }
     return ESP_OK;
 }
 
@@ -64,6 +73,22 @@ esp_err_t init_bme68x(sensor_bus_handle_t sensor_bus_handle)
         conf.os_hum, conf.os_temp, conf.os_pres, conf.filter, conf.odr);
 
     sensor_bus_handle->bme68x_wait_time = bme68x_get_meas_dur(BME68X_FORCED_MODE, &conf, &sensor_bus_handle->bme68x_dev) / 1000;
+
+    // Hand the BME688 to BSEC for air-quality fusion when compiled in
+    // (CONFIG_BME688_USE_BSEC). BSEC then owns the gas-measurement cadence
+    // (heater profile + timing) via its own task, and this reader pulls the
+    // fused outputs. Inert no-op in stub builds — then this reader does its own
+    // BME688 forced T/H/P reads instead (see sensor_bus_read).
+    esp_err_t bsec_ret = bsec_integration_init(&sensor_bus_handle->bme68x_dev,
+                                               sensor_bus_handle->bme68x_mutex);
+    if (bsec_ret == ESP_OK)
+    {
+        bsec_integration_start();
+    }
+    else
+    {
+        ESP_LOGW(TAG, "BSEC init failed: %s", esp_err_to_name(bsec_ret));
+    }
     return ESP_OK;
 }
 
@@ -191,24 +216,54 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
     {
         results->updated_mask |= SENSOR_HDC302X_TEMPERATURE | SENSOR_HDC302X_HUMIDITY;
     }
-    rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &sensor_bus_handle->bme68x_dev);
-    if (rslt != BME68X_OK)
+    if (bsec_integration_available())
     {
-        ESP_LOGE(TAG, "Failed to set BME68x op mode: %d", rslt);
+        // BSEC owns the BME688 and produces fused T/H/P + air-quality outputs on
+        // its own cadence; just snapshot the latest here.
+        bsec_air_quality_t aq;
+        if (bsec_integration_get_latest(&aq))
+        {
+            results->bme68x_temperature = aq.comp_temperature;
+            results->bme68x_humidity = aq.comp_humidity;
+            results->bme68x_pressure = aq.pressure;
+            results->updated_mask |= SENSOR_BME68X_TEMPERATURE | SENSOR_BME68X_HUMIDITY | SENSOR_BME68X_PRESSURE;
+            // Only surface air quality once BSEC has started calibrating
+            // (accuracy 0 = unreliable warm-up).
+            if (aq.iaq_accuracy > 0)
+            {
+                results->bme68x_iaq = aq.iaq;
+                results->bme68x_iaq_accuracy = aq.iaq_accuracy;
+                results->bme68x_co2_equivalent = aq.co2_equivalent;
+                results->bme68x_voc_equivalent = aq.voc_equivalent;
+                results->updated_mask |= SENSOR_BME68X_IAQ | SENSOR_BME68X_CO2_EQUIVALENT | SENSOR_BME68X_VOC_EQUIVALENT;
+            }
+        }
     }
-    vTaskDelay(pdMS_TO_TICKS(sensor_bus_handle->bme68x_wait_time + 10)); // wait for measurement to complete
-    rslt = bme68x_get_data(BME68X_FORCED_MODE, &data, &n_data, &sensor_bus_handle->bme68x_dev);
-    if (rslt != BME68X_OK && rslt != BME68X_W_NO_NEW_DATA)
+    else
     {
-        ESP_LOGE(TAG, "Failed to get BME68x data: %d", rslt);
-    }
-    if (n_data > 0 && rslt==BME68X_OK)
-    {
-        results->bme68x_temperature = data.temperature / 100.0f;
-        results->bme68x_humidity = data.humidity / 1000.0f;
-        results->bme68x_pressure = data.pressure;
-        results->bme68x_gas_resistance = data.gas_resistance;
-        results->updated_mask |= SENSOR_BME68X_TEMPERATURE | SENSOR_BME68X_HUMIDITY | SENSOR_BME68X_PRESSURE | SENSOR_BME68X_GAS_RESISTANCE;
+        // No BSEC: read BME688 temperature/humidity/pressure directly (forced
+        // mode, gas heater unused). The mutex is uncontended here since the BSEC
+        // task does not run, but keeps the access pattern uniform.
+        xSemaphoreTake(sensor_bus_handle->bme68x_mutex, portMAX_DELAY);
+        rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &sensor_bus_handle->bme68x_dev);
+        if (rslt != BME68X_OK)
+        {
+            ESP_LOGE(TAG, "Failed to set BME68x op mode: %d", rslt);
+        }
+        vTaskDelay(pdMS_TO_TICKS(sensor_bus_handle->bme68x_wait_time + 10)); // wait for measurement to complete
+        rslt = bme68x_get_data(BME68X_FORCED_MODE, &data, &n_data, &sensor_bus_handle->bme68x_dev);
+        xSemaphoreGive(sensor_bus_handle->bme68x_mutex);
+        if (rslt != BME68X_OK && rslt != BME68X_W_NO_NEW_DATA)
+        {
+            ESP_LOGE(TAG, "Failed to get BME68x data: %d", rslt);
+        }
+        if (n_data > 0 && rslt == BME68X_OK)
+        {
+            results->bme68x_temperature = data.temperature / 100.0f;
+            results->bme68x_humidity = data.humidity / 1000.0f;
+            results->bme68x_pressure = data.pressure;
+            results->updated_mask |= SENSOR_BME68X_TEMPERATURE | SENSOR_BME68X_HUMIDITY | SENSOR_BME68X_PRESSURE;
+        }
     }
 
     if (results->updated_mask & SENSOR_BME68X_PRESSURE)

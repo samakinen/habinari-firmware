@@ -52,10 +52,21 @@ static void sensor_service_update_results(sensor_data_t *sensor_data, sensor_bus
         sensor_data->pressure = sensor_bus_results->bme68x_pressure;
         sensor_data->updated_mask |= SENSOR_PRESSURE;
     }
-    if (sensor_bus_results->updated_mask & SENSOR_BME68X_GAS_RESISTANCE)
+    if (sensor_bus_results->updated_mask & SENSOR_BME68X_IAQ)
     {
-        sensor_data->gas_resistance = sensor_bus_results->bme68x_gas_resistance;
-        sensor_data->updated_mask |= SENSOR_GAS_RESISTANCE;
+        sensor_data->iaq = sensor_bus_results->bme68x_iaq;
+        sensor_data->air_quality_accuracy = sensor_bus_results->bme68x_iaq_accuracy;
+        sensor_data->updated_mask |= SENSOR_IAQ;
+    }
+    if (sensor_bus_results->updated_mask & SENSOR_BME68X_CO2_EQUIVALENT)
+    {
+        sensor_data->co2_equivalent = sensor_bus_results->bme68x_co2_equivalent;
+        sensor_data->updated_mask |= SENSOR_CO2_EQUIVALENT;
+    }
+    if (sensor_bus_results->updated_mask & SENSOR_BME68X_VOC_EQUIVALENT)
+    {
+        sensor_data->voc_equivalent = sensor_bus_results->bme68x_voc_equivalent;
+        sensor_data->updated_mask |= SENSOR_VOC_EQUIVALENT;
     }
     if (sensor_bus_results->updated_mask & SENSOR_SCD4X_CO2)
     {

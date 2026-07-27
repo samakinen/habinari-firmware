@@ -33,12 +33,13 @@ uint8_t slave_address = 0x01; // Modbus slave address
 
 void update_sensor_data(const sensor_data_t *data)
 {
-    ESP_LOGI(TAG, "Air (T=%.2f °C RH=%.2f %% P=%.2f Pa R=%.2f CO\u2082=%d ppm) Ground (T=%.2f °C RH=%.2f %%), Updated: %s%s%s%s%s%s%s",
-             data->temperature, data->humidity, data->pressure, data->gas_resistance, data->co2, data->ext_probe_temperature, data->ext_probe_humidity,
+    ESP_LOGI(TAG, "Air (T=%.2f °C RH=%.2f %% P=%.2f Pa IAQ=%.0f(acc%u) CO2eq=%.0f VOC=%.2f CO\u2082=%d ppm) Ground (T=%.2f °C RH=%.2f %%), Updated: %s%s%s%s%s%s%s",
+             data->temperature, data->humidity, data->pressure, data->iaq, (unsigned)data->air_quality_accuracy,
+             data->co2_equivalent, data->voc_equivalent, data->co2, data->ext_probe_temperature, data->ext_probe_humidity,
              (data->updated_mask & SENSOR_TEMPERATURE) ? "T" : "",
              (data->updated_mask & SENSOR_HUMIDITY) ? "H" : "",
              (data->updated_mask & SENSOR_PRESSURE) ? "P" : "",
-             (data->updated_mask & SENSOR_GAS_RESISTANCE) ? "R" : "",
+             (data->updated_mask & SENSOR_IAQ) ? "A" : "",
              (data->updated_mask & SENSOR_CO2) ? "C" : "",
              (data->updated_mask & SENSOR_EXT_PROBE_TEMPERATURE) ? "t" : "",
              (data->updated_mask & SENSOR_EXT_PROBE_HUMIDITY) ? "h" : "");
@@ -83,7 +84,7 @@ void app_main(void)
 
     knx_service_set_programming_mode_callback(programming_mode_changed_callback);
     knx_service_start();
-
+    int count = 0;
     while (1) {
         requested_slave_address = mb_rtu_slave.holding_reg_params.slave_address;
         if (requested_slave_address != slave_address) {
@@ -119,7 +120,10 @@ void app_main(void)
 
         // Keep LED on while KNX programming mode is active; otherwise allow Modbus coil control.
         const bool ledOn = g_programming_mode_enabled || mb_rtu_slave.coil_reg_params.led_on;
-        gpio_set_level(PIN_LED, ledOn ? 1 : 0);
+        // TODO: TESTING LED
+        //gpio_set_level(PIN_LED, ledOn ? 1 : 0);
+        count++;
+        //gpio_set_level(PIN_PROBE_EN, (count/100 % 2) ? 0 : 1);
 
         // Performance monitoring moved to interface layer
         // Basic status check only

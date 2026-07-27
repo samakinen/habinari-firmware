@@ -37,8 +37,7 @@ esp_err_t init_pins(void)
     //set as input mode
     io_conf.mode = GPIO_MODE_INPUT;
     //bit mask of the pins that you want to set
-    io_conf.pin_bit_mask = (1ULL << PIN_PROBE_EN) | 
-                           (1ULL << PIN_KNX_OK) | 
+    io_conf.pin_bit_mask = (1ULL << PIN_KNX_OK) | 
                            (1ULL << PIN_SDA) | 
                            (1ULL << PIN_SCL) | 
                            (1ULL << PIN_PROG_BTN) | 

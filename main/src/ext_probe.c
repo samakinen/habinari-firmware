@@ -33,6 +33,7 @@ static ext_probe_status_t ext_probe_reg_enable()
     {
         // if the probe is shorted, disable the probe power supply
         ext_probe_reg_disable();
+        ESP_LOGE(TAG, "External probe short-circuit detected, disabling power supply");
         return EXT_PROBE_SHORT_CIRCUIT;
     }
     return EXT_PROBE_OPERATIONAL;
