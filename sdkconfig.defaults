@@ -6,5 +6,19 @@ CONFIG_KNX_TP1_BITBANG_RX_DOMINANT_HIGH=y
 CONFIG_KNX_TP1_BITBANG_SAMPLE_OFFSET_US=70
 CONFIG_KNX_TP1_BITBANG_START_BIT_VALIDATION_US=10
 CONFIG_KNX_TP1_BITBANG_ISR_SERVICE_FLAGS=1032
+# STKNX KNX_OK on PIN_KNX_OK (GPIO3), see main/include/board.h.
+# Polarity below assumes the transceiver drives the pin high while the bus
+# supply is good; flip to "is not set" if the schematic says otherwise.
+CONFIG_KNX_TP1_BITBANG_LINK_PIN=3
+CONFIG_KNX_TP1_BITBANG_LINK_ACTIVE_HIGH=y
+# CONFIG_KNX_TP1_BITBANG_LINK_PULLUP is not set
+CONFIG_KNX_TP1_BITBANG_LINK_DOWN_DEBOUNCE_US=20000
+CONFIG_KNX_TP1_BITBANG_LINK_UP_DEBOUNCE_US=200000
+# This board holds 3V3 up for seconds on bulk capacitance after the bus dies,
+# so the debounced task-context notification arrives with time to spare and the
+# interrupt-context power-fail hook is not needed. Enable it on a redesign with
+# a shorter hold-up time.
+# CONFIG_KNX_TP1_BITBANG_LINK_POWERFAIL_ISR is not set
 CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=y
-CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=yCONFIG_KNX_RX_TASK_STACK_SIZE=8192
+CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
+CONFIG_KNX_RX_TASK_STACK_SIZE=8192

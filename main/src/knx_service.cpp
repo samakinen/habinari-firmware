@@ -663,7 +663,24 @@ util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platfo
     dependencies.bitbangTp1Driver = &bitbangDriver;
 #endif
 
-    return physical::createTp1PhysicalForPlatform(selection, dependencies);
+    auto physicalResult = physical::createTp1PhysicalForPlatform(selection, dependencies);
+    if (physicalResult.isOk() && physicalResult.value()) {
+        // STKNX drives PIN_KNX_OK (GPIO3) while the bus supply is good. The
+        // stack uses it to stop transmitting into a dead bus; here it is only
+        // reported, so a field log shows bus outages and returns explicitly
+        // rather than as a burst of unacknowledged transmissions.
+        physicalResult.value()->setLinkStateCallback(
+            [](const physical::LinkStatus &status, void *) {
+                if (status.state == physical::LinkState::Down) {
+                    KNX_LOGW(TAG, "KNX bus power lost — transmission suspended");
+                } else {
+                    KNX_LOGI(TAG, "KNX bus power %s", physical::linkStateToString(status.state));
+                }
+            },
+            nullptr);
+    }
+
+    return physicalResult;
 }
 
 PublishSnapshot takePublishSnapshot()
