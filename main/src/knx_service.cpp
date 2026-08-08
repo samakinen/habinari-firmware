@@ -95,6 +95,22 @@ void toHex(std::span<const uint8_t> bytes, char sep, char *out, size_t outLen)
     }
 }
 
+// CRC-4 (generator polynomial x^4 + x + 1, "10011") over a byte span, folded
+// in one nibble at a time. This is the check value ETS expects in the trailing
+// bits of a printed device certificate; without it the certificate is rejected
+// as mistyped.
+uint8_t crc4(std::span<const uint8_t> bytes)
+{
+    static constexpr uint8_t kTable[16] = {0x0, 0x3, 0x6, 0x5, 0xC, 0xF, 0xA, 0x9,
+                                           0xB, 0x8, 0xD, 0xE, 0x7, 0x4, 0x1, 0x2};
+    uint8_t crc = 0;
+    for (const uint8_t byte : bytes) {
+        crc = kTable[crc ^ (byte >> 4)];
+        crc = kTable[crc ^ (byte & 0x0Fu)];
+    }
+    return crc;
+}
+
 // Render bytes as RFC 4648 base32 (uppercase A-Z2-7, no '=' padding) into
 // caller storage. Returns the number of characters written.
 size_t toBase32(std::span<const uint8_t> bytes, char *out, size_t outLen)
@@ -111,7 +127,7 @@ size_t toBase32(std::span<const uint8_t> bytes, char *out, size_t outLen)
             out[pos++] = kAlphabet[(buffer >> bits) & 0x1Fu];
         }
     }
-    // Trailing bits are left-aligned into a final character (22 bytes -> 36
+    // Trailing bits are left-aligned into a final character (23 bytes -> 37
     // characters, so this always fires for a device certificate).
     if (bits > 0 && pos + 1 < outLen) {
         out[pos++] = kAlphabet[(buffer << (5 - bits)) & 0x1Fu];
@@ -122,23 +138,35 @@ size_t toBase32(std::span<const uint8_t> bytes, char *out, size_t outLen)
     return pos;
 }
 
-// Format the ETS device certificate: base32(serial[6] || key[16]) — 22 bytes,
-// 36 characters — printed as the six dash-separated groups of six that ETS's
-// "Add device certificate" dialog expects. ETS decodes it back into the serial
-// number and the FDSK, which it then uses as the initial tool key; here that
-// role is played by the NVS-provisioned key.
+// Format the ETS device certificate: base32(serial[6] || key[16] || crc4) —
+// printed as the six dash-separated groups of six that ETS's "Add device
+// certificate" dialog expects. ETS decodes it back into the serial number and
+// the FDSK, which it then uses as the initial tool key; here that role is
+// played by the NVS-provisioned key.
+//
+// The 176 payload bits do not fill a whole number of base32 characters: the
+// 36th character carries the last payload bit plus the four CRC-4 bits over
+// the 22 payload bytes. Encoding the CRC as a 23rd byte (high nibble) lines
+// those bits up, and the 37th character it produces is pad-only and dropped.
 void formatDeviceCertificate(std::span<const uint8_t, 6> serial,
                              const std::array<uint8_t, 16> &key,
                              char *out,
                              size_t outLen)
 {
-    std::array<uint8_t, 22> payload{};
+    static constexpr size_t kCertificateChars = 36;
+
+    std::array<uint8_t, 23> payload{};
     std::copy(serial.begin(), serial.end(), payload.begin());
     std::copy(key.begin(), key.end(), payload.begin() + serial.size());
+    payload.back() = static_cast<uint8_t>(
+        crc4(std::span<const uint8_t>(payload.data(), payload.size() - 1)) << 4);
 
     char raw[40] = {};
-    const size_t rawLen = toBase32(std::span<const uint8_t>(payload.data(), payload.size()),
-                                  raw, sizeof(raw));
+    size_t rawLen = toBase32(std::span<const uint8_t>(payload.data(), payload.size()),
+                             raw, sizeof(raw));
+    if (rawLen > kCertificateChars) {
+        rawLen = kCertificateChars;
+    }
 
     size_t pos = 0;
     for (size_t i = 0; i < rawLen && pos + 1 < outLen; ++i) {
