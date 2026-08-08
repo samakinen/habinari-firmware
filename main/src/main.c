@@ -120,8 +120,7 @@ void app_main(void)
 
         // Keep LED on while KNX programming mode is active; otherwise allow Modbus coil control.
         const bool ledOn = g_programming_mode_enabled || mb_rtu_slave.coil_reg_params.led_on;
-        // TODO: TESTING LED
-        //gpio_set_level(PIN_LED, ledOn ? 1 : 0);
+        gpio_set_level(PIN_LED, ledOn ? 1 : 0);
         count++;
         //gpio_set_level(PIN_PROBE_EN, (count/100 % 2) ? 0 : 1);
 

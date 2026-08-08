@@ -1,6 +1,6 @@
 param(
-    [string]$InputXml = "build/ets_export/sensor_board_tp1_ets.knxprod.xml",
-    [string]$OutputKnxprod = "build/ets_export/sensor_board_tp1_ets.knxprod"
+    [string]$InputXml = "ets_export/sensor_board_tp1_ets.knxprod.xml",
+    [string]$OutputKnxprod = "ets_export/sensor_board_tp1_ets.knxprod"
 )
 
 $producer = Get-Command OpenKNXproducer -ErrorAction SilentlyContinue

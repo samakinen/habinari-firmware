@@ -4,3 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(sensor-board)
+
+# Keep the ETS product export in sync with main/include/knx_product.hpp.
+# Disable with `idf.py -DSENSOR_BOARD_ETS_EXPORT=OFF build`.
+include("${CMAKE_SOURCE_DIR}/cmake/ets_export.cmake")

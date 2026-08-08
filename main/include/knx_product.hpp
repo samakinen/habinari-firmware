@@ -403,6 +403,20 @@ inline constexpr auto kSensorBoardProduct =
                 .namespacePrefix = "sensorboard_tp1",
                 .schemaVersion = 1,
                 .persistKnxState = true,
+            },
+            // Must stay in step with kEnableKnxDataSecure in knx_service.cpp:
+            // this is only what the ETS catalogue entry advertises, and a
+            // device that claims Data Secure but cannot honour it fails
+            // commissioning. No per-object requirement, so enabling Data
+            // Secure stays the integrator's choice and the board still
+            // commissions into plain, non-secure installations.
+            SecurityPolicy{
+                .dataSecureCapable = true,
+                .groupObjectRequirement = SecurityRequirement::None,
+                .individualAddressEntries = 8,
+                // 0 → one group-key slot per group object.
+                .groupKeyTableEntries = 0,
+                .p2pKeyTableEntries = 1,
             }),
         makeParameterSchema(
             parameter<SensorBoardParameter::DefaultVentilationSetpoint>(

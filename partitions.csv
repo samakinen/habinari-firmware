@@ -1,0 +1,23 @@
+# Partition layout for the 4 MB flash on this board.
+#
+# The chip is 4 MB but the build was configured for 2 MB, so half the flash was
+# unreachable and the single 1 MB app partition sat at 96 % full.
+#
+# Two OTA slots rather than one big factory app: 03/05/03 §1.5.5 makes a
+# firmware-update path mandatory for devices supporting KNX Data Security, and
+# leaves the mechanism implementation specific. There is no KNX-standard update
+# service to implement, so whatever we build later (a manufacturer ETS App, a
+# bus protocol of our own, or a local updater) needs somewhere to stage the new
+# image. Reserving the slot now costs nothing; retrofitting it later would
+# invalidate every commissioned device's flash layout.
+#
+# nvs is enlarged to 32 KB: commissioned state is ~23 property blobs including a
+# 256-byte parameter block and a 152-byte association table, and the download
+# rewrites them repeatedly.
+#
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x8000
+otadata,    data, ota,     0x11000,  0x2000
+phy_init,   data, phy,     0x13000,  0x1000
+ota_0,      app,  ota_0,   0x20000,  0x1E0000
+ota_1,      app,  ota_1,   0x200000, 0x1E0000

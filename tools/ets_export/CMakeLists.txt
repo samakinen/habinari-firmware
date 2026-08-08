@@ -8,6 +8,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
 
+# Where the finished .knxprod.xml / .json land.  Defaults to the build tree so a
+# standalone `cmake -S tools/ets_export -B <dir>` keeps everything in one place;
+# the firmware build overrides it to <repo>/ets_export so the artefacts survive
+# an `idf.py fullclean`.
+set(ETS_EXPORT_OUTPUT_DIR "${CMAKE_BINARY_DIR}" CACHE PATH
+    "Directory receiving the generated ETS product export")
+
 set(KNX_PLATFORM linux CACHE STRING "Host platform for KNstaX export build" FORCE)
 set(KNX_BUILD_EXAMPLES OFF CACHE BOOL "Disable KNstaX examples for export build" FORCE)
 set(KNX_SECURE_ENABLED OFF CACHE BOOL "Disable KNX secure for export-only build" FORCE)
@@ -20,5 +27,5 @@ include("${REPO_ROOT}/components/KNstaX/cmake/knx_product.cmake")
 knx_commissioned_product(sensor_board_tp1_ets
     DEFINITION  "${REPO_ROOT}/main/include/knx_product.hpp"
     SYMBOL      sensor_board_knx::kSensorBoardProduct
-    OUTPUT_DIR  "${CMAKE_BINARY_DIR}"
+    OUTPUT_DIR  "${ETS_EXPORT_OUTPUT_DIR}"
 )

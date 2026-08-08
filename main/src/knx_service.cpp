@@ -22,11 +22,13 @@
 #include "knx/product/commissioned_product.hpp"
 #include "knx/util/log.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <span>
 
 using namespace knx;
 using namespace knx::application;
@@ -36,14 +38,18 @@ using namespace sensor_board_knx;
 namespace {
 
 static constexpr const char *TAG = "knx_service";
-// The commissioned-product start path holds several multi-KB objects on this
-// stack at once (bindings builder ~3 KB, Result<runtime> ~5 KB, plus the BAU
-// init call tree with NVS/logging). With 15 ports and 15 ETS parameters the
-// old 16 KB stack overflowed at startup (hardware stack guard → Breakpoint
-// panic). The runtime itself is heap-allocated after start (see below); the
-// larger stack covers the transient startup peak with margin.
-//static constexpr uint32_t kKnxServiceTaskStackSize = 24576;
-static constexpr uint32_t kKnxServiceTaskStackSize = 64*1024;
+// Startup, not the service loop, sets this task's stack peak. The commissioned
+// runtime is ~34 KB for this product and is built directly on the heap by
+// startCommissionedProduct(), so it never crosses this stack; what remains here
+// is the bindings builder (~5.7 KB, plus the by-value copy handed to the start
+// call) and the BAU init call tree with NVS/crypto/logging under it. Measured
+// frames after the heap-handle change: knxServiceTask 12,352 B +
+// startCommissionedProduct 96 B, against 85,712 B when the runtime was still
+// returned by value — which overflowed even a 64 KB stack.
+//
+// The high-water mark is logged once below; retune this from that number rather
+// than from guesswork if the product grows.
+static constexpr uint32_t kKnxServiceTaskStackSize = 32 * 1024;
 
 // --- Bus-citizenship: boot-storm mitigation -------------------------------
 // On a bus-wide power-up (line powered on) every device would otherwise dump
@@ -86,6 +92,63 @@ void toHex(std::span<const uint8_t> bytes, char sep, char *out, size_t outLen)
     }
     if (outLen > 0) {
         out[(pos < outLen) ? pos : (outLen - 1)] = '\0';
+    }
+}
+
+// Render bytes as RFC 4648 base32 (uppercase A-Z2-7, no '=' padding) into
+// caller storage. Returns the number of characters written.
+size_t toBase32(std::span<const uint8_t> bytes, char *out, size_t outLen)
+{
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    uint32_t buffer = 0;
+    int bits = 0;
+    size_t pos = 0;
+    for (const uint8_t byte : bytes) {
+        buffer = (buffer << 8) | byte;
+        bits += 8;
+        while (bits >= 5 && pos + 1 < outLen) {
+            bits -= 5;
+            out[pos++] = kAlphabet[(buffer >> bits) & 0x1Fu];
+        }
+    }
+    // Trailing bits are left-aligned into a final character (22 bytes -> 36
+    // characters, so this always fires for a device certificate).
+    if (bits > 0 && pos + 1 < outLen) {
+        out[pos++] = kAlphabet[(buffer << (5 - bits)) & 0x1Fu];
+    }
+    if (outLen > 0) {
+        out[pos] = '\0';
+    }
+    return pos;
+}
+
+// Format the ETS device certificate: base32(serial[6] || key[16]) — 22 bytes,
+// 36 characters — printed as the six dash-separated groups of six that ETS's
+// "Add device certificate" dialog expects. ETS decodes it back into the serial
+// number and the FDSK, which it then uses as the initial tool key; here that
+// role is played by the NVS-provisioned key.
+void formatDeviceCertificate(std::span<const uint8_t, 6> serial,
+                             const std::array<uint8_t, 16> &key,
+                             char *out,
+                             size_t outLen)
+{
+    std::array<uint8_t, 22> payload{};
+    std::copy(serial.begin(), serial.end(), payload.begin());
+    std::copy(key.begin(), key.end(), payload.begin() + serial.size());
+
+    char raw[40] = {};
+    const size_t rawLen = toBase32(std::span<const uint8_t>(payload.data(), payload.size()),
+                                  raw, sizeof(raw));
+
+    size_t pos = 0;
+    for (size_t i = 0; i < rawLen && pos + 1 < outLen; ++i) {
+        if (i != 0 && (i % 6) == 0 && pos + 1 < outLen) {
+            out[pos++] = '-';
+        }
+        out[pos++] = raw[i];
+    }
+    if (outLen > 0) {
+        out[pos] = '\0';
     }
 }
 
@@ -904,10 +967,10 @@ void knxServiceTask(void *arg)
     // connection events) — the development default while the stack is being
     // brought up. Switch to Info for production builds: INFO carries only
     // state changes (address, lifecycle, load state) and WARN/ERROR faults.
-    knx::log::setLevel(knx::log::Level::Info);
+    knx::log::setLevel(knx::log::Level::Debug);
     // knx::log routes through esp_log, whose runtime default level (Info)
     // would otherwise silently drop the Debug output enabled above.
-    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("*", ESP_LOG_DEBUG);
     // Suppress ModBus driver/infrastructure noise to focus on KNX application.
     // esp_log matches these tags exactly (no prefix matching), so every
     // component-specific tag needs its own entry.
@@ -929,13 +992,12 @@ void knxServiceTask(void *arg)
         return;
     }
 
-    // The runtime is kept on the heap: it is a multi-KB object that would
-    // otherwise stay resident on this task's stack for the task's lifetime.
-    // The bindings builder and the start Result (also multi-KB) are scoped so
-    // their stack space is released before the service loop runs.
-    using AppRuntime = CommissionedProductRuntime<std::remove_cvref_t<decltype(kSensorBoardProduct)>,
-                                                  kDefaultBindingCapacity>;
-    std::unique_ptr<AppRuntime> appPtr;
+    // startCommissionedProduct() builds the runtime on the heap and hands back
+    // an owning handle: at ~34 KB it cannot travel through a stack frame. The
+    // bindings builder is still a stack object, so it stays scoped so its space
+    // is released before the service loop runs.
+    CommissionedProductHandle<std::remove_cvref_t<decltype(kSensorBoardProduct)>,
+                              kDefaultBindingCapacity> appPtr;
     {
     auto bindings = makeCommissionedBindings(kSensorBoardProduct)
         // Room setpoint write from an HMI / HA target_temperature: update the
@@ -1375,11 +1437,15 @@ void knxServiceTask(void *arg)
         return;
     }
 
-    // Same move the previous stack-local `app` performed — the runtime's move
-    // constructor rewires its internal callbacks — just targeting heap storage.
-    appPtr = std::make_unique<AppRuntime>(std::move(appResult.value()));
-    } // release bindings builder + start Result stack space
+    // Already heap-constructed by startCommissionedProduct — just take ownership.
+    appPtr = std::move(appResult.value());
+    } // release the bindings builder's stack space
     auto &app = *appPtr;
+
+    // Kept in scope for the Data Secure block below: the ETS device
+    // certificate encodes the serial number together with the key.
+    uint8_t serialNumber[6] = {};
+    bool hasSerialNumber = false;
 
     {
         // KNX serial number (device object PID 11): derive from the
@@ -1391,6 +1457,8 @@ void knxServiceTask(void *arg)
         uint8_t mac[6] = {};
         if (esp_read_mac(mac, ESP_MAC_BASE) == ESP_OK) {
             app.deviceObject().setSerialNumber(std::span<const uint8_t>(mac, sizeof(mac)));
+            std::copy(std::begin(mac), std::end(mac), std::begin(serialNumber));
+            hasSerialNumber = true;
             char serialHex[3 * 6] = {};
             toHex(std::span<const uint8_t>(mac, sizeof(mac)), ':', serialHex, sizeof(serialHex));
             KNX_LOGI(TAG, "KNX serial number: %s", serialHex);
@@ -1428,9 +1496,21 @@ void knxServiceTask(void *arg)
                          static_cast<int>(secureResult.error()));
             } else {
                 KNX_LOGW(TAG,
-                         "KNX Data Secure ENABLED. Tool key (%s) — enter into ETS with the "
-                         "serial number for secure commissioning: %s",
+                         "KNX Data Secure ENABLED. Tool key (%s): %s",
                          created ? "generated" : "stored", keyHex);
+                // ETS asks for the device certificate, not the raw key: same
+                // secret, base32-encoded together with the serial number.
+                if (hasSerialNumber) {
+                    char certificate[48] = {};
+                    formatDeviceCertificate(std::span<const uint8_t, 6>(serialNumber, 6),
+                                            toolKey, certificate, sizeof(certificate));
+                    KNX_LOGW(TAG,
+                             "KNX Data Secure device certificate (enter in ETS): %s",
+                             certificate);
+                } else {
+                    KNX_LOGW(TAG,
+                             "KNX Data Secure device certificate unavailable: no serial number");
+                }
             }
         }
     } else {
@@ -1566,6 +1646,13 @@ void knxServiceTask(void *arg)
     const TickType_t startupPublishReleaseTick =
         xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs);
     bool startupDelayLogged = false;
+
+    // Startup is this task's stack peak, and it is now behind us. Report what
+    // was left so kKnxServiceTaskStackSize can be retuned from measurement.
+    KNX_LOGI(TAG,
+             "Stack headroom after startup: %u of %u bytes free",
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+             static_cast<unsigned>(kKnxServiceTaskStackSize));
 
     for (;;) {
         app.loop();

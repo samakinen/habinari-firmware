@@ -22,3 +22,15 @@ CONFIG_KNX_TP1_BITBANG_LINK_UP_DEBOUNCE_US=200000
 CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=y
 CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
 CONFIG_KNX_RX_TASK_STACK_SIZE=8192
+# Bring-up default: compile in KNX_LOGD so the per-frame RX/TX dumps exist.
+# The runtime level is already set to Debug in knx_service.cpp; without this
+# compile-time gate at 4 those calls expand to ((void)0) and nothing is logged.
+# Production (sdkconfig.prod) leaves KNX_DEBUG_ENABLED off entirely.
+CONFIG_KNX_DEBUG_ENABLED=y
+CONFIG_KNX_LOG_LEVEL=4
+# Board has 4 MB flash; the default 2 MB left half of it unreachable.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+# Two OTA app slots + larger NVS; see partitions.csv for the rationale.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

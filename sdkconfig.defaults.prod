@@ -1,0 +1,20 @@
+# Production/release overrides.
+# Layer this on top of sdkconfig.defaults:
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.prod" build
+#
+# ── Section A: debug-strip (pure size, no functional change) ──────────────
+# Optimize for size (-Os) instead of debug (-Og).
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# Keep abort() on assert failure, but drop the message + __FILE__ strings.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+# Compile out ESP_LOGD/ESP_LOGV format strings (max log level == default == INFO).
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+# Quieter bootloader (drops INFO strings from the 2nd-stage bootloader).
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# ── Section B: Modbus feature trim (functional — RTU-only device) ─────────
+# This board speaks Modbus RTU over serial only. Dropping TCP + ASCII + mDNS
+# removes the esp_netif/lwip dependency (~105 KB) via linker gc-sections.
+# CONFIG_FMB_COMM_MODE_TCP_EN is not set
+# CONFIG_FMB_COMM_MODE_ASCII_EN is not set
+# CONFIG_FMB_MDNS_INTEGRATION_ENABLE is not set
