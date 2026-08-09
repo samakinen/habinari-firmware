@@ -1,0 +1,46 @@
+menu "Sensor board device secret"
+
+    config SENSOR_BOARD_ROOT_SECRET_EFUSE_BLOCK
+        int "eFuse key block holding the device root secret (0-5 = BLOCK_KEY0..KEY5)"
+        range 0 5
+        default 5
+        help
+            Which of the six HMAC-capable eFuse key blocks stores this device's
+            256-bit root secret, from which the KNX Data Secure FDSK is derived.
+
+            Keep this at the top of the range: Secure Boot v2 and flash
+            encryption allocate key blocks from BLOCK_KEY0 upwards, so a low
+            index will eventually collide with them. The firmware refuses to
+            provision a block that is already used for another purpose.
+
+    config SENSOR_BOARD_ROOT_SECRET_BURN
+        bool "Burn the device root secret into eFuse (IRREVERSIBLE)"
+        default n
+        help
+            When disabled (the default) the firmware performs the entire
+            provisioning path on every boot but writes no fuse: it gathers a
+            candidate root secret, runs the RNG sanity gate, and logs the FDSK
+            and ETS device certificate the candidate would produce. That is the
+            dry run used to check the values on real hardware first.
+
+            Enabling this makes the next boot of an unprovisioned device write
+            the secret into the configured key block permanently. The block is
+            read- and write-protected by the write, so the secret can never be
+            read back afterwards, only used through the HMAC peripheral.
+
+            Devices already commissioned with the legacy NVS-stored tool key
+            get a different FDSK once this is enabled, and must be
+            re-commissioned in ETS with the newly printed certificate.
+
+    config SENSOR_BOARD_ROOT_SECRET_LOG_DRY_RUN_SECRET
+        bool "Log the candidate root secret during a dry run"
+        depends on !SENSOR_BOARD_ROOT_SECRET_BURN
+        default y
+        help
+            Print the raw 32-byte candidate root secret over the console during
+            a dry run, alongside the FDSK and certificate it derives. The
+            candidate is discarded either way, so this leaks nothing about a
+            provisioned device — but turn it off if the console output is
+            logged somewhere that should never carry key-shaped material.
+
+endmenu

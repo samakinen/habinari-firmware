@@ -1,5 +1,6 @@
 /build/
 /build_prod/
+/build_host_tests/
 
 dependencies.lock
 managed_components/

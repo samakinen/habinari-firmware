@@ -1,6 +1,8 @@
 #include "knx_service.h"
 
 #include "board.h"
+#include "device_identity.hpp"
+#include "device_secret.hpp"
 #include "hvac_control.hpp"
 #include "knx_product.hpp"
 
@@ -67,118 +69,28 @@ static constexpr uint32_t kMaxUnsolicitedTelegramsPerWindow = 5;
 static constexpr uint32_t kTelegramRateWindowMs = 1000;
 
 // --- KNX Data Secure ------------------------------------------------------
-// When enabled the device provisions a unique 16-byte AES-128 key on first
-// boot (hardware RNG), persists it in NVS, applies it as the KNX Data Secure
-// tool key and logs it every boot so an installer can capture it locally and
-// enter it together with the serial number into ETS for secure commissioning.
-// The self-generated key plays the role of the device's FDSK / initial tool
-// key. NOTE: knx_service_reset_nvm() erases the whole default NVS partition, so
-// a factory reset regenerates a fresh key (re-logged on the next boot); a real
-// immutable FDSK would live in eFuse or a dedicated protected partition.
+// The device's FDSK / initial tool key is derived from a 256-bit root secret
+// held in a read-protected eFuse key block (see device_secret.hpp), so it
+// survives a factory reset and the same firmware image still gives every board
+// a different key. It is logged every boot, together with the serial number
+// and the ETS device certificate, so an installer can capture it locally for
+// secure commissioning.
+//
+// Until that eFuse block is provisioned — which is deliberately off by default
+// while the dry run is being checked on hardware — the device falls back to
+// the legacy behaviour: a random 16-byte key generated on first boot and kept
+// in NVS. That key does NOT survive knx_service_reset_nvm(), which erases the
+// whole default NVS partition, so a factory reset regenerates it and the
+// previously printed certificate stops matching the device.
 static constexpr bool kEnableKnxDataSecure = true;
 static constexpr const char *kSecureNvsNamespace = "knx_secure";
 static constexpr const char *kSecureNvsToolKeyBlob = "tool_key";
 
-// Render a byte buffer as an uppercase hex string (with optional separators)
-// into caller storage, for logging identity/credentials.
-void toHex(std::span<const uint8_t> bytes, char sep, char *out, size_t outLen)
-{
-    size_t pos = 0;
-    for (size_t i = 0; i < bytes.size() && pos + 3 < outLen; ++i) {
-        if (i != 0 && sep != '\0' && pos + 1 < outLen) {
-            out[pos++] = sep;
-        }
-        pos += static_cast<size_t>(std::snprintf(out + pos, outLen - pos, "%02X", bytes[i]));
-    }
-    if (outLen > 0) {
-        out[(pos < outLen) ? pos : (outLen - 1)] = '\0';
-    }
-}
-
-// CRC-4 (generator polynomial x^4 + x + 1, "10011") over a byte span, folded
-// in one nibble at a time. This is the check value ETS expects in the trailing
-// bits of a printed device certificate; without it the certificate is rejected
-// as mistyped.
-uint8_t crc4(std::span<const uint8_t> bytes)
-{
-    static constexpr uint8_t kTable[16] = {0x0, 0x3, 0x6, 0x5, 0xC, 0xF, 0xA, 0x9,
-                                           0xB, 0x8, 0xD, 0xE, 0x7, 0x4, 0x1, 0x2};
-    uint8_t crc = 0;
-    for (const uint8_t byte : bytes) {
-        crc = kTable[crc ^ (byte >> 4)];
-        crc = kTable[crc ^ (byte & 0x0Fu)];
-    }
-    return crc;
-}
-
-// Render bytes as RFC 4648 base32 (uppercase A-Z2-7, no '=' padding) into
-// caller storage. Returns the number of characters written.
-size_t toBase32(std::span<const uint8_t> bytes, char *out, size_t outLen)
-{
-    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    uint32_t buffer = 0;
-    int bits = 0;
-    size_t pos = 0;
-    for (const uint8_t byte : bytes) {
-        buffer = (buffer << 8) | byte;
-        bits += 8;
-        while (bits >= 5 && pos + 1 < outLen) {
-            bits -= 5;
-            out[pos++] = kAlphabet[(buffer >> bits) & 0x1Fu];
-        }
-    }
-    // Trailing bits are left-aligned into a final character (23 bytes -> 37
-    // characters, so this always fires for a device certificate).
-    if (bits > 0 && pos + 1 < outLen) {
-        out[pos++] = kAlphabet[(buffer << (5 - bits)) & 0x1Fu];
-    }
-    if (outLen > 0) {
-        out[pos] = '\0';
-    }
-    return pos;
-}
-
-// Format the ETS device certificate: base32(serial[6] || key[16] || crc4) —
-// printed as the six dash-separated groups of six that ETS's "Add device
-// certificate" dialog expects. ETS decodes it back into the serial number and
-// the FDSK, which it then uses as the initial tool key; here that role is
-// played by the NVS-provisioned key.
-//
-// The 176 payload bits do not fill a whole number of base32 characters: the
-// 36th character carries the last payload bit plus the four CRC-4 bits over
-// the 22 payload bytes. Encoding the CRC as a 23rd byte (high nibble) lines
-// those bits up, and the 37th character it produces is pad-only and dropped.
-void formatDeviceCertificate(std::span<const uint8_t, 6> serial,
-                             const std::array<uint8_t, 16> &key,
-                             char *out,
-                             size_t outLen)
-{
-    static constexpr size_t kCertificateChars = 36;
-
-    std::array<uint8_t, 23> payload{};
-    std::copy(serial.begin(), serial.end(), payload.begin());
-    std::copy(key.begin(), key.end(), payload.begin() + serial.size());
-    payload.back() = static_cast<uint8_t>(
-        crc4(std::span<const uint8_t>(payload.data(), payload.size() - 1)) << 4);
-
-    char raw[40] = {};
-    size_t rawLen = toBase32(std::span<const uint8_t>(payload.data(), payload.size()),
-                             raw, sizeof(raw));
-    if (rawLen > kCertificateChars) {
-        rawLen = kCertificateChars;
-    }
-
-    size_t pos = 0;
-    for (size_t i = 0; i < rawLen && pos + 1 < outLen; ++i) {
-        if (i != 0 && (i % 6) == 0 && pos + 1 < outLen) {
-            out[pos++] = '-';
-        }
-        out[pos++] = raw[i];
-    }
-    if (outLen > 0) {
-        out[pos] = '\0';
-    }
-}
+// Hex, base32, CRC-4 and ETS device-certificate rendering now live in
+// device_identity.hpp so the root-secret dry run can print the same
+// certificate and the encoding is covered by host tests.
+using sensor_board::identity::formatDeviceCertificate;
+using sensor_board::identity::toHex;
 
 // Load the persisted KNX Data Secure tool key, generating and storing a fresh
 // random one on first boot. Returns true on success; `created` reports whether
@@ -211,6 +123,34 @@ bool loadOrCreateToolKey(std::array<uint8_t, 16> &key, bool &created)
         return false;
     }
     return true;
+}
+
+// Where the factory tool key came from. The two differ in shelf life: the
+// eFuse-derived FDSK is fixed for the life of the chip, while the NVS key is
+// erased by a factory reset.
+enum class ToolKeySource { EfuseDerived, NvsFallback };
+
+// Resolve the device's factory tool key, preferring the FDSK derived from the
+// eFuse root secret and falling back to the legacy NVS key while that block is
+// still unprovisioned. `serial` is null when the MAC read failed, which rules
+// out the derived path (the serial is part of the KDF message).
+bool resolveFactoryToolKey(const uint8_t *serial,
+                           std::array<uint8_t, 16> &key,
+                           ToolKeySource &source,
+                           bool &created)
+{
+    created = false;
+    if (serial != nullptr) {
+        const auto resolved =
+            sensor_board::secret::resolveFdsk(std::span<const uint8_t, 6>(serial, 6));
+        if (resolved.fdskValid) {
+            key = resolved.fdsk;
+            source = ToolKeySource::EfuseDerived;
+            return true;
+        }
+    }
+    source = ToolKeySource::NvsFallback;
+    return loadOrCreateToolKey(key, created);
 }
 
 // ETS-configurable room-control tuning (see hvac_control.hpp). Snapshotted by
@@ -1544,14 +1484,17 @@ void knxServiceTask(void *arg)
     });
 
     if (kEnableKnxDataSecure) {
-        // Provision (first boot) or reuse a device-unique KNX Data Secure tool
-        // key and log it in hex so an installer can capture it locally and
-        // enter it, together with the serial number above, into ETS for secure
-        // commissioning. The generated key is the device's FDSK / initial tool
-        // key.
+        // Resolve the device-unique KNX Data Secure factory tool key and log it
+        // in hex so an installer can capture it locally and enter it, together
+        // with the serial number above, into ETS for secure commissioning.
+        // This key is the device's FDSK / initial tool key: derived from the
+        // eFuse root secret once that is provisioned, otherwise the legacy
+        // NVS-stored random key.
         std::array<uint8_t, 16> toolKey{};
         bool created = false;
-        if (loadOrCreateToolKey(toolKey, created)) {
+        ToolKeySource keySource = ToolKeySource::NvsFallback;
+        if (resolveFactoryToolKey(hasSerialNumber ? serialNumber : nullptr, toolKey, keySource,
+                                  created)) {
             char keyHex[3 * 16] = {};
             toHex(std::span<const uint8_t>(toolKey.data(), toolKey.size()), ' ', keyHex, sizeof(keyHex));
 
@@ -1578,14 +1521,24 @@ void knxServiceTask(void *arg)
                 } else {
                     KNX_LOGW(TAG,
                              "KNX Data Secure ENABLED. Tool key (%s): %s",
-                             created ? "generated" : "stored", keyHex);
+                             keySource == ToolKeySource::EfuseDerived
+                                 ? "derived from the eFuse root secret"
+                                 : (created ? "NVS, generated" : "NVS, stored"),
+                             keyHex);
+                }
+
+                if (keySource == ToolKeySource::NvsFallback) {
+                    KNX_LOGW(TAG,
+                             "This device has no eFuse root secret yet, so the key above lives "
+                             "in NVS and a factory reset will replace it — the certificate "
+                             "below is only valid until then.");
                 }
 
                 // The certificate is the device's factory identity and is what
                 // an installer enters into ETS, so it is logged on every boot
                 // whether or not ETS has since installed a key of its own.
                 if (hasSerialNumber) {
-                    char certificate[48] = {};
+                    char certificate[sensor_board::identity::kCertificateBufferSize] = {};
                     formatDeviceCertificate(std::span<const uint8_t, 6>(serialNumber, 6),
                                             toolKey, certificate, sizeof(certificate));
                     KNX_LOGW(TAG,
