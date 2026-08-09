@@ -24,4 +24,19 @@ if(CONFIG_BME688_USE_BSEC)
     endif()
     target_include_directories(${COMPONENT_LIB} PRIVATE "${BSEC_DIR}/include")
     target_link_libraries(${COMPONENT_LIB} PRIVATE "${BSEC_DIR}/lib/libalgobsec.a")
+
+    # The BSEC tuning blob (also non-redistributable, also dropped in locally).
+    # Detected here rather than with __has_include in the source: ccache cannot
+    # know that a previously absent file has appeared, so it would keep serving
+    # the object compiled without the blob. A compile definition changes the
+    # command line, which ccache does hash. CONFIGURE_DEPENDS re-runs the glob
+    # on every build, so adding the blob later triggers a reconfigure by itself.
+    file(GLOB BSEC_CONFIG_BLOB CONFIGURE_DEPENDS "${BSEC_DIR}/config/bsec_config.inc")
+    if(BSEC_CONFIG_BLOB)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE BSEC_HAVE_CONFIG=1)
+    else()
+        message(STATUS
+            "bsec2: no configuration blob at ${BSEC_DIR}/config/bsec_config.inc — "
+            "IAQ/CO2-eq/VOC-eq will stay at zero (see components/bsec2/README.md).")
+    endif()
 endif()

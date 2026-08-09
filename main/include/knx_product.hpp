@@ -398,6 +398,12 @@ inline constexpr auto kSensorBoardProduct =
                 .applicationVersion = 3,
                 .firmwareRevision = 1,
                 .maxApduLength = 254,
+                // Feeds both the device's PID_HARDWARE_TYPE / PID_VERSION /
+                // PID_ORDER_INFO and the generated knxprod's hardware entry,
+                // which ETS cross-checks before allowing a download.
+                .hardwareSerialNumber = 1,
+                .hardwareVersion = 1,
+                .orderNumber = "SBTP1",
             },
             PersistencePolicy{
                 .namespacePrefix = "sensorboard_tp1",

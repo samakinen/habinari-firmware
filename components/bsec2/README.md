@@ -34,7 +34,35 @@ air-quality output.
      include/bsec_interface.h
      include/bsec_datatypes.h
      include/bsec_interface_multi.h   (if present in your package)
+     config/bsec_config.inc           <- see "Configuration blob" below
    ```
+
+### Configuration blob (required for IAQ / CO2-eq / VOC-eq)
+
+`config/bsec_config.inc` is **not optional if you want air quality**. BSEC needs
+a tuning blob describing supply voltage, sample rate and calibration horizon,
+applied via `bsec_set_configuration()` *before* subscribing. Without it BSEC
+falls back to a built-in default whose rate does not match an LP/ULP
+subscription; `bsec_update_subscription()` then returns
+`BSEC_W_SU_SAMPLERATEMISMATCH` (14) and **never emits the gas-derived outputs**,
+so IAQ, CO2-equivalent and breath-VOC-equivalent all sit at zero indefinitely.
+The firmware logs a warning saying exactly this when the blob is absent.
+
+In the BSEC package the blobs live under `config/`, one directory per profile,
+e.g. `config/bme688/bme688_sel_iaq_33v_3s_4d/bsec_iaq.txt`. Pick the profile
+matching your **supply voltage** (3.3 V here), **sample rate** (3 s = LP,
+300 s = ULP — must agree with `CONFIG_BME688_BSEC_SAMPLE_RATE_*`) and
+calibration horizon (4 d / 28 d). `bsec_iaq.txt` is already a bare
+comma-separated byte list, which is exactly what the `#include` inside the array
+initialiser expects:
+
+```
+cp <bsec-package>/config/bme688/bme688_sel_iaq_33v_3s_4d/bsec_iaq.txt \
+   components/bsec2/bosch/config/bsec_config.inc
+```
+
+It is covered by the same Bosch license as the library, so it is git-ignored and
+not committed. The build detects it with `__has_include` — no menuconfig switch.
 
 4. Enable it:
 
@@ -66,6 +94,8 @@ package:
   `..._SENSOR_HEAT_COMPENSATED_TEMPERATURE/HUMIDITY`),
 - `bsec_bme_settings_t` / `bsec_input_t` / `bsec_output_t` field names,
 - `BSEC_MAX_STATE_BLOB_SIZE`, `BSEC_MAX_WORKBUFFER_SIZE`, `BSEC_NUMBER_OUTPUTS`,
-  `BSEC_MAX_PHYSICAL_SENSOR`, `BSEC_SAMPLE_RATE_LP/ULP`,
-- whether your version wants a `bsec_set_configuration()` blob (for a specific
-  IAQ/voltage/duration profile) before subscription.
+  `BSEC_MAX_PHYSICAL_SENSOR`, `BSEC_SAMPLE_RATE_LP/ULP`.
+
+The `bsec_set_configuration()` question above is settled: this version does want
+a blob, and omitting it is what produced the observed warning 14 with all-zero
+air-quality outputs. See "Configuration blob".

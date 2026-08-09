@@ -428,12 +428,16 @@ struct PublishSnapshot {
     uint16_t hvacControllerStatus{0};
 };
 
+// A port the ETS project left unlinked publishes as a successful no-op, so
+// nothing here fires for unused datapoints; see reportUnlinkedPorts for the
+// one-shot inventory of those. Anything that does reach this log is a genuine
+// send failure, printed by name because the bare enum value was unreadable.
 template <typename AppT>
 void publishPort(AppT &app, SensorBoardPort port, float value, const char *label)
 {
     const auto result = app.publish(port, value);
     if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %d", label, static_cast<int>(result.error()));
+        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
     }
 }
 
@@ -442,7 +446,7 @@ void publishPort(AppT &app, SensorBoardPort port, bool value, const char *label)
 {
     const auto result = app.publish(port, value);
     if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %d", label, static_cast<int>(result.error()));
+        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
     }
 }
 
@@ -451,7 +455,7 @@ void publishPort(AppT &app, SensorBoardPort port, uint8_t value, const char *lab
 {
     const auto result = app.publish(port, value);
     if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %d", label, static_cast<int>(result.error()));
+        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
     }
 }
 
@@ -460,7 +464,39 @@ void publishPort(AppT &app, SensorBoardPort port, uint16_t value, const char *la
 {
     const auto result = app.publish(port, value);
     if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %d", label, static_cast<int>(result.error()));
+        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
+    }
+}
+
+// One-shot inventory of transmitting communication objects that the ETS project
+// linked no group address to. Publishing on them is a silent no-op, so without
+// this the integrator has no way to tell "configured off" from "broken". Logged
+// once per transition into Operational (i.e. after every download).
+template <typename AppT>
+void reportUnlinkedPorts(AppT &app)
+{
+    const auto &compiled = app.compiledEndpoint();
+    const auto &runtimeObjects = compiled.runtime.communicationObjects;
+    const auto &exportObjects = compiled.exportDescriptor.communicationObjects;
+
+    unsigned unlinked = 0;
+    for (size_t slot = 0; slot < runtimeObjects.size(); ++slot) {
+        const auto &descriptor = runtimeObjects[slot];
+        if (!descriptor.transmit || app.isPortLinked(descriptor.logicalId)) {
+            continue;
+        }
+        ++unlinked;
+        KNX_LOGI(TAG,
+                 "CO #%u \"%.*s\" has no group address - not transmitted",
+                 static_cast<unsigned>(exportObjects[slot].exportNumber),
+                 static_cast<int>(exportObjects[slot].displayName.size()),
+                 exportObjects[slot].displayName.data());
+    }
+
+    if (unlinked == 0) {
+        KNX_LOGI(TAG, "All transmitting communication objects are linked");
+    } else {
+        KNX_LOGI(TAG, "%u transmitting communication object(s) unlinked in this project", unlinked);
     }
 }
 
@@ -1518,16 +1554,36 @@ void knxServiceTask(void *arg)
         if (loadOrCreateToolKey(toolKey, created)) {
             char keyHex[3 * 16] = {};
             toHex(std::span<const uint8_t>(toolKey.data(), toolKey.size()), ' ', keyHex, sizeof(keyHex));
-            const auto secureResult = app.applyEtsToolKey(toolKey);
+
+            // ETS installs its own tool key during secure commissioning and
+            // then restarts the device; the stack restores that key from its
+            // own persistence. Re-applying the factory key here would put the
+            // device back on its FDSK behind ETS's back, and the first thing
+            // ETS does after the restart — an S-A_Sync_Request — then fails to
+            // verify ("no SyncResponse was received; probably the key did not
+            // match"). So the factory key is only applied when the device does
+            // not already carry one.
+            const bool provisionedKeyInForce = app.hasEtsToolKey();
+            const auto secureResult = provisionedKeyInForce ? app.enableSecurityMode()
+                                                            : app.applyEtsToolKey(toolKey);
             if (secureResult.isError()) {
                 KNX_LOGE(TAG, "Data Secure: applyEtsToolKey failed: %d",
                          static_cast<int>(secureResult.error()));
             } else {
-                KNX_LOGW(TAG,
-                         "KNX Data Secure ENABLED. Tool key (%s): %s",
-                         created ? "generated" : "stored", keyHex);
-                // ETS asks for the device certificate, not the raw key: same
-                // secret, base32-encoded together with the serial number.
+                if (provisionedKeyInForce) {
+                    KNX_LOGW(TAG,
+                             "KNX Data Secure ENABLED. Keeping the tool key already on the "
+                             "device; the factory key below was not re-applied and is only "
+                             "valid again after a factory reset.");
+                } else {
+                    KNX_LOGW(TAG,
+                             "KNX Data Secure ENABLED. Tool key (%s): %s",
+                             created ? "generated" : "stored", keyHex);
+                }
+
+                // The certificate is the device's factory identity and is what
+                // an installer enters into ETS, so it is logged on every boot
+                // whether or not ETS has since installed a key of its own.
                 if (hasSerialNumber) {
                     char certificate[48] = {};
                     formatDeviceCertificate(std::span<const uint8_t, 6>(serialNumber, 6),
@@ -1699,6 +1755,14 @@ void knxServiceTask(void *arg)
         // g_state and go out together once the gate opens.
         const bool startupGateOpen =
             static_cast<int32_t>(xTaskGetTickCount() - startupPublishReleaseTick) >= 0;
+
+        // Becoming Operational means the association table is now the project's
+        // (fresh boot or a just-finished download), so this is the point at
+        // which "which objects did ETS actually link?" can be answered.
+        if (app.lifecycleState() == DeviceLifecycleState::Operational
+            && previousLifecycle != DeviceLifecycleState::Operational) {
+            reportUnlinkedPorts(app);
+        }
 
         if (app.lifecycleState() == DeviceLifecycleState::Operational && !startupGateOpen) {
             if (previousLifecycle != DeviceLifecycleState::Operational) {

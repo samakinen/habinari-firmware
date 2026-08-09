@@ -147,6 +147,56 @@ static void bsec_state_load(void)
     free(work);
 }
 
+// BSEC ships a per-configuration tuning blob (sensor supply voltage, sample
+// rate, calibration horizon) that must be applied before subscribing. Without
+// it BSEC runs its built-in default, whose rate does not match an LP/ULP
+// subscription — bsec_update_subscription() then answers
+// BSEC_W_SU_SAMPLERATEMISMATCH (14) and never emits the gas-derived outputs, so
+// IAQ / CO2-eq / VOC-eq stay at zero forever.
+//
+// The blob is part of the Bosch BSEC release and is no more redistributable
+// than the library itself, so it is not committed. Drop the matching
+// bsec_iaq.txt byte array in as components/bsec2/bosch/config/bsec_config.inc
+// (see README.md) and it is compiled in; without it we keep the previous
+// behaviour and say plainly why air quality will not work.
+//
+// BSEC_HAVE_CONFIG is set by CMakeLists.txt, deliberately NOT by __has_include
+// here. ccache's direct mode hashes the source plus the headers a previous
+// compile actually opened; a file that did not exist when __has_include was
+// evaluated is not among them. Dropping the blob in later therefore left the
+// hash unchanged and ccache served the stale "no blob" object — the build
+// looked clean while the firmware still logged warning 14. Deciding in CMake
+// puts the flag on the command line, which ccache does hash.
+#ifdef BSEC_HAVE_CONFIG
+static const uint8_t s_bsec_config[] = {
+#include "bosch/config/bsec_config.inc"
+};
+#endif
+
+static void bsec_config_load(void)
+{
+#ifdef BSEC_HAVE_CONFIG
+    uint8_t *work = malloc(BSEC_MAX_WORKBUFFER_SIZE);
+    if (work == NULL) {
+        ESP_LOGE(TAG, "OOM applying BSEC configuration");
+        return;
+    }
+    bsec_library_return_t rc =
+        bsec_set_configuration(s_bsec_config, sizeof(s_bsec_config), work, BSEC_MAX_WORKBUFFER_SIZE);
+    if (rc != BSEC_OK) {
+        ESP_LOGW(TAG, "bsec_set_configuration failed: %d", rc);
+    } else {
+        ESP_LOGI(TAG, "applied BSEC configuration (%u bytes)", (unsigned)sizeof(s_bsec_config));
+    }
+    free(work);
+#else
+    ESP_LOGW(TAG,
+             "no BSEC configuration blob compiled in — expect "
+             "BSEC_W_SU_SAMPLERATEMISMATCH (14) and no IAQ/CO2-eq/VOC-eq output. "
+             "See components/bsec2/README.md.");
+#endif
+}
+
 static void bsec_state_save(void)
 {
     uint8_t *state = malloc(BSEC_MAX_STATE_BLOB_SIZE);
@@ -345,6 +395,9 @@ esp_err_t bsec_integration_init(struct bme68x_dev *dev, SemaphoreHandle_t bus_mu
         return ESP_FAIL;
     }
 
+    // Order matters: configuration first (it resets the library state), then
+    // the saved calibration state, then the subscription.
+    bsec_config_load();
     bsec_state_load();
 
     // Subscribe to the virtual sensors we expose, all at the configured rate.

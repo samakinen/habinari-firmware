@@ -3,9 +3,25 @@ CONFIG_KNX_TP1_BITBANG_RX_PIN=5
 # CONFIG_KNX_TP1_BITBANG_RX_PULLUP is not set
 CONFIG_KNX_TP1_BITBANG_TX_DOMINANT_HIGH=y
 CONFIG_KNX_TP1_BITBANG_RX_DOMINANT_HIGH=y
-CONFIG_KNX_TP1_BITBANG_SAMPLE_OFFSET_US=70
-CONFIG_KNX_TP1_BITBANG_START_BIT_VALIDATION_US=10
-CONFIG_KNX_TP1_BITBANG_ISR_SERVICE_FLAGS=1032
+# Mid-bit-cell sampling. A received bit is decoded from the sticky flag the RX
+# edge ISR sets, not from the bus level, so this point only has to sit between
+# this cell's edge and the next one — it does NOT have to be inside the 35 µs
+# dominant pulse. At 70 µs a sampling alarm more than 34 µs late already landed
+# past the following cell's edge and stole its bit; measured ISR jitter on this
+# board peaked at 51 µs. 52 µs splits the 104 µs cell evenly and doubles the
+# late-alarm tolerance.
+CONFIG_KNX_TP1_BITBANG_SAMPLE_OFFSET_US=52
+# The start-bit re-read has a harder limit than the sample point: it must land
+# while the bus is still dominant, i.e. within zeroActiveTimeUs (35 µs) of the
+# edge, minus GPIO-ISR entry latency and timer lateness. Held at the Kconfig
+# minimum on purpose — the trade is glitch rejection against latency tolerance,
+# and on this board latency is the failure mode. driver.linkCounters()
+# .startValidationRejects says whether it needs to go the other way.
+CONFIG_KNX_TP1_BITBANG_START_BIT_VALIDATION_US=5
+# ESP_INTR_FLAG_LEVEL3 — matches the gptimer interrupt priority so the RX edge
+# and bit-timer ISRs cannot preempt each other. ESP_INTR_FLAG_IRAM is added
+# unconditionally by the driver itself and must not be relied on from here.
+CONFIG_KNX_TP1_BITBANG_ISR_SERVICE_FLAGS=8
 # STKNX KNX_OK on PIN_KNX_OK (GPIO3), see main/include/board.h.
 # Polarity below assumes the transceiver drives the pin high while the bus
 # supply is good; flip to "is not set" if the schematic says otherwise.
@@ -21,6 +37,13 @@ CONFIG_KNX_TP1_BITBANG_LINK_UP_DEBOUNCE_US=200000
 # CONFIG_KNX_TP1_BITBANG_LINK_POWERFAIL_ISR is not set
 CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=y
 CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
+# Adds ESP_INTR_FLAG_IRAM to the gptimer interrupt. Without it the bit-timing
+# alarm is masked for the whole duration of a flash erase/write (NVS commit on
+# an ETS download), which stretches or drops whichever TP1 bit was mid-flight.
+# The two options above are what make it legal: the alarm callback and the
+# gptimer_set_alarm_action()/gptimer_get_raw_count() calls the ISR makes are
+# then all IRAM-resident.
+CONFIG_GPTIMER_ISR_CACHE_SAFE=y
 CONFIG_KNX_RX_TASK_STACK_SIZE=8192
 # Bring-up default: compile in KNX_LOGD so the per-frame RX/TX dumps exist.
 # The runtime level is already set to Debug in knx_service.cpp; without this
