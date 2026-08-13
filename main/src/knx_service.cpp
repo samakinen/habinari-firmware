@@ -153,66 +153,156 @@ bool resolveFactoryToolKey(const uint8_t *serial,
     return loadOrCreateToolKey(key, created);
 }
 
-// ETS-configurable room-control tuning (see hvac_control.hpp). Snapshotted by
-// the control tick each second, so parameter changes apply within one tick.
-struct HvacSettings {
-    float ventilationSetpointPpm{kDefaultVentilationSetpointPpm};
-    float thermostatHysteresisC{kDefaultThermostatHysteresisC};
-    float ventilationHysteresisPpm{kDefaultVentilationHysteresisPpm};
-    float heatingKp{kDefaultHeatingKp};
-    float heatingTiSeconds{kDefaultHeatingTiSeconds};
-    float heatingTdSeconds{kDefaultHeatingTdSeconds};
-    float coolingKp{kDefaultCoolingKp};
-    float coolingTiSeconds{kDefaultCoolingTiSeconds};
-    float coolingTdSeconds{kDefaultCoolingTdSeconds};
-    float coolingDeadbandK{kDefaultCoolingDeadbandK};
-    float maxFloorTemperatureC{kDefaultMaxFloorTemperatureC};
-    float floorHysteresisK{kDefaultFloorHysteresisK};
-    float humidityBoostPct{kDefaultHumidityBoostPct};
-    float humidityBoostHysteresisPct{kDefaultHumidityBoostHysteresisPct};
+namespace hvac_ns = sensor_board::hvac;
 
-    // --- Append-only greenfield thermostat-model additions ---
+// ETS-configurable tuning (see hvac_control.hpp). Snapshotted by the control
+// tick each second, so parameter changes apply within one tick.
+struct HvacSettings {
+    // --- Measurement publishing (KNX sensor FB Heartbeat/MinRepTime/COV) ---
+    uint32_t heartbeatSeconds{kDefaultMeasurementHeartbeatSeconds};
+    uint32_t minRepTimeSeconds{kDefaultMeasurementMinRepTimeSeconds};
+    float roomTemperatureOffsetK{kDefaultRoomTemperatureOffsetK};
+    float roomTemperatureCovK{kDefaultRoomTemperatureCovK};
+    float roomHumidityOffsetPct{kDefaultRoomHumidityOffsetPct};
+    float roomHumidityCovPct{kDefaultRoomHumidityCovPct};
+    float co2CovPpm{static_cast<float>(kDefaultCo2CovPpm)};
+    float pressureCovPa{static_cast<float>(kDefaultPressureCovPa)};
+    float airQualityCovIndex{static_cast<float>(kDefaultAirQualityCovIndex)};
+    float floorTemperatureOffsetK{kDefaultFloorTemperatureOffsetK};
+    float floorTemperatureCovK{kDefaultFloorTemperatureCovK};
+    float floorHumidityCovPct{kDefaultFloorHumidityCovPct};
+    float derivedCov{kDefaultDerivedCovK};
+    float altitudeM{static_cast<float>(kDefaultAltitudeM)};
+
+    // --- Room control: general ---
     bool controllerDefaultEnable{kDefaultControllerEnable != 0};
-    sensor_board::hvac::OperatingPreset defaultHvacOperatingMode{
-        static_cast<sensor_board::hvac::OperatingPreset>(kDefaultHvacOperatingMode)};
-    sensor_board::hvac::ControllerMode defaultControllerMode{
-        static_cast<sensor_board::hvac::ControllerMode>(kDefaultControllerMode)};
+    hvac_ns::OperatingPreset defaultHvacOperatingMode{
+        static_cast<hvac_ns::OperatingPreset>(kDefaultHvacOperatingMode)};
+    hvac_ns::ControllerMode defaultControllerMode{
+        static_cast<hvac_ns::ControllerMode>(kDefaultControllerMode)};
+    bool heatingEnabled{kDefaultHeatingEnabled != 0};
+    bool coolingEnabled{kDefaultCoolingEnabled != 0};
+    hvac_ns::HeatCoolChangeoverMode heatCoolChangeoverMode{
+        static_cast<hvac_ns::HeatCoolChangeoverMode>(kDefaultHeatCoolChangeoverMode)};
+    bool heatCoolChangeoverPolarityInverted{kDefaultHeatCoolChangeoverPolarity != 0};
+    float minimumHeatCoolChangeoverSeconds{
+        static_cast<float>(kDefaultMinimumHeatCoolChangeoverSeconds)};
+    hvac_ns::WindowOpenBehavior windowOpenBehavior{
+        static_cast<hvac_ns::WindowOpenBehavior>(kDefaultWindowOpenBehavior)};
+    hvac_ns::PresenceBehavior presenceBehavior{
+        static_cast<hvac_ns::PresenceBehavior>(kDefaultPresenceBehavior)};
+    hvac_ns::SensorFaultBehavior sensorFaultBehavior{
+        static_cast<hvac_ns::SensorFaultBehavior>(kDefaultSensorFaultBehavior)};
+
+    // --- Setpoint ladder ---
     float comfortHeatingSetpointC{kDefaultComfortHeatingSetpointC};
-    float standbyHeatingSetpointC{kDefaultStandbyHeatingSetpointC};
-    float economyHeatingSetpointC{kDefaultEconomyHeatingSetpointC};
+    float standbyHeatingReductionK{kDefaultStandbyHeatingReductionK};
+    float economyHeatingReductionK{kDefaultEconomyHeatingReductionK};
     float protectionHeatingSetpointC{kDefaultProtectionHeatingSetpointC};
-    float comfortCoolingSetpointC{kDefaultComfortCoolingSetpointC};
-    float standbyCoolingSetpointC{kDefaultStandbyCoolingSetpointC};
-    float economyCoolingSetpointC{kDefaultEconomyCoolingSetpointC};
+    float coolingDeadbandK{kDefaultCoolingDeadbandK};
+    float standbyCoolingIncreaseK{kDefaultStandbyCoolingIncreaseK};
+    float economyCoolingIncreaseK{kDefaultEconomyCoolingIncreaseK};
     float protectionCoolingSetpointC{kDefaultProtectionCoolingSetpointC};
     float minSetpointC{kDefaultMinSetpointC};
     float maxSetpointC{kDefaultMaxSetpointC};
     float maxSetpointShiftK{kDefaultMaxSetpointShiftK};
-    bool heatingEnabled{kDefaultHeatingEnabled != 0};
-    bool coolingEnabled{kDefaultCoolingEnabled != 0};
-    sensor_board::hvac::HeatCoolChangeoverMode heatCoolChangeoverMode{
-        static_cast<sensor_board::hvac::HeatCoolChangeoverMode>(kDefaultHeatCoolChangeoverMode)};
-    bool heatCoolChangeoverPolarityInverted{kDefaultHeatCoolChangeoverPolarity != 0};
-    sensor_board::hvac::ControlAlgorithm heatingControlAlgorithm{
-        static_cast<sensor_board::hvac::ControlAlgorithm>(kDefaultHeatingControlAlgorithm)};
-    sensor_board::hvac::ControlAlgorithm coolingControlAlgorithm{
-        static_cast<sensor_board::hvac::ControlAlgorithm>(kDefaultCoolingControlAlgorithm)};
-    uint8_t heatingMinOutputPercent{static_cast<uint8_t>(kDefaultHeatingMinimumOutputPercent)};
-    uint8_t coolingMinOutputPercent{static_cast<uint8_t>(kDefaultCoolingMinimumOutputPercent)};
-    uint8_t heatingMaxOutputPercent{static_cast<uint8_t>(kDefaultHeatingMaximumOutputPercent)};
-    uint8_t coolingMaxOutputPercent{static_cast<uint8_t>(kDefaultCoolingMaximumOutputPercent)};
-    sensor_board::hvac::BinaryDemandStrategy binaryDemandStrategy{
-        static_cast<sensor_board::hvac::BinaryDemandStrategy>(kDefaultBinaryDemandStrategy)};
-    uint8_t binaryDemandThresholdPercent{static_cast<uint8_t>(kDefaultBinaryDemandThresholdPercent)};
-    float minimumHeatCoolChangeoverSeconds{static_cast<float>(kDefaultMinimumHeatCoolChangeoverSeconds)};
-    sensor_board::hvac::WindowOpenBehavior windowOpenBehavior{
-        static_cast<sensor_board::hvac::WindowOpenBehavior>(kDefaultWindowOpenBehavior)};
-    sensor_board::hvac::PresenceBehavior presenceBehavior{
-        static_cast<sensor_board::hvac::PresenceBehavior>(kDefaultPresenceBehavior)};
-    sensor_board::hvac::SensorFaultBehavior sensorFaultBehavior{
-        static_cast<sensor_board::hvac::SensorFaultBehavior>(kDefaultSensorFaultBehavior)};
-    float temperatureChangeThresholdC{kDefaultTemperatureChangeThresholdCenti / 100.0f};
-    uint32_t cyclicStatusIntervalSeconds{kDefaultCyclicStatusIntervalSeconds};
+
+    // --- Heating / cooling loops ---
+    hvac_ns::ControlAlgorithm heatingControlAlgorithm{
+        static_cast<hvac_ns::ControlAlgorithm>(kDefaultHeatingControlAlgorithm)};
+    float heatingKp{kDefaultHeatingKp};
+    float heatingTiSeconds{static_cast<float>(kDefaultHeatingTiSeconds)};
+    float heatingTdSeconds{static_cast<float>(kDefaultHeatingTdSeconds)};
+    uint8_t heatingMinOutputPercent{kDefaultHeatingMinimumOutputPercent};
+    uint8_t heatingMaxOutputPercent{kDefaultHeatingMaximumOutputPercent};
+    hvac_ns::ControlAlgorithm coolingControlAlgorithm{
+        static_cast<hvac_ns::ControlAlgorithm>(kDefaultCoolingControlAlgorithm)};
+    float coolingKp{kDefaultCoolingKp};
+    float coolingTiSeconds{static_cast<float>(kDefaultCoolingTiSeconds)};
+    float coolingTdSeconds{static_cast<float>(kDefaultCoolingTdSeconds)};
+    uint8_t coolingMinOutputPercent{kDefaultCoolingMinimumOutputPercent};
+    uint8_t coolingMaxOutputPercent{kDefaultCoolingMaximumOutputPercent};
+    float thermostatHysteresisC{kDefaultThermostatHysteresisC};
+    hvac_ns::BinaryDemandStrategy binaryDemandStrategy{
+        static_cast<hvac_ns::BinaryDemandStrategy>(kDefaultBinaryDemandStrategy)};
+    uint8_t binaryDemandThresholdPercent{kDefaultBinaryDemandThresholdPercent};
+    float frostAlarmTemperatureC{kDefaultFrostAlarmTemperatureC};
+    float overheatAlarmTemperatureC{kDefaultOverheatAlarmTemperatureC};
+
+    // --- Floor temperature ---
+    float maxFloorTemperatureC{kDefaultMaxFloorTemperatureC};
+    float minFloorTemperatureC{kDefaultMinFloorTemperatureC};
+    float floorHysteresisK{kDefaultFloorHysteresisK};
+    uint8_t floorComfortOutputPercent{kDefaultFloorComfortOutputPercent};
+
+    // --- Condensation protection ---
+    hvac_ns::DewPointSurfaceSource dewPointSurfaceSource{
+        static_cast<hvac_ns::DewPointSurfaceSource>(kDefaultDewPointSurfaceSource)};
+    float dewPointMarginK{kDefaultDewPointMarginK};
+    float dewPointHysteresisK{kDefaultDewPointHysteresisK};
+    bool blockCoolingOnDewPointAlarm{kDefaultBlockCoolingOnDewPointAlarm != 0};
+
+    // --- Slab moisture ---
+    float floorMoistureThresholdPct{kDefaultFloorMoistureThresholdPct};
+    float floorMoistureHysteresisPct{kDefaultFloorMoistureHysteresisPct};
+    float floorMoistureExcessGm3{kDefaultFloorMoistureExcessGm3};
+
+    // --- Ventilation / air quality ---
+    float ventilationSetpointPpm{static_cast<float>(kDefaultVentilationSetpointPpm)};
+    float ventilationBandPpm{static_cast<float>(kDefaultVentilationBandPpm)};
+    float humidityBoostPct{kDefaultHumidityBoostPct};
+    float humidityBandPct{kDefaultHumidityBandPct};
+    float vocThresholdIndex{static_cast<float>(kDefaultVocThresholdIndex)};
+    float vocBandIndex{static_cast<float>(kDefaultVocBandIndex)};
+    uint8_t ventilationBaseDemandPercent{kDefaultVentilationBaseDemandPercent};
+    uint8_t ventilationManualDemandPercent{kDefaultVentilationManualDemandPercent};
+};
+
+// Everything the control tick computes and the bus can read back. Kept as one
+// struct so provideState (read requests, arbitrary thread) and the publish path
+// see exactly the same values.
+struct ControlOutputs {
+    // Derived measurements.
+    float roomDewPointC{0.0f};
+    float roomAbsoluteHumidityGm3{0.0f};
+    float floorAbsoluteHumidityGm3{0.0f};
+    float seaLevelPressurePa{0.0f};
+    float dewPointMarginK{0.0f};
+    bool dewPointAlarm{false};
+    bool floorMoistureAlarm{false};
+    bool freeCoolingAvailable{false};
+    bool freeDryingAvailable{false};
+
+    // Thermostat.
+    bool heatingRequest{false};
+    bool coolingRequest{false};
+    uint8_t heatingControlPercent{0};
+    uint8_t coolingControlPercent{0};
+    bool floorLimitActive{false};
+    bool floorComfortActive{false};
+    bool heatCoolModeHeating{true};  // DPT 1.100: 1 = heat
+    bool enableHeat{false};
+    bool enableCool{false};
+    float activeSetpointC{kDefaultComfortHeatingSetpointC};
+    float heatingSetpointC{kDefaultComfortHeatingSetpointC};
+    float coolingSetpointC{kDefaultComfortHeatingSetpointC + kDefaultCoolingDeadbandK};
+    float setpointShiftFeedbackK{0.0f};
+    hvac_ns::OperatingPreset activePreset{hvac_ns::OperatingPreset::Comfort};
+    hvac_ns::ControllerMode activeControllerMode{hvac_ns::ControllerMode::Auto};
+    uint16_t controllerStatus{0};  // DPT 22.101 StatusRHCC
+
+    // Ventilation.
+    uint8_t ventilationDemandPercent{0};
+    hvac_ns::VentilationLevel ventilationLevel{hvac_ns::VentilationLevel::Off};
+    bool ventilationBoostRequest{false};
+    bool dehumidifyRequest{false};
+    uint16_t airQualityStatus{0};
+
+    // Diagnostics.
+    bool deviceFault{false};
+    uint8_t roomSensorStatus{0};
+    uint8_t floorProbeStatus{0};
+    uint8_t airQualitySensorStatus{0};
 };
 
 struct SharedState {
@@ -220,69 +310,35 @@ struct SharedState {
     TaskHandle_t taskHandle{nullptr};
     sensor_data_t latestSensorData{};
     uint32_t availableMask{0};
-    uint32_t pendingSensorMask{0};
     bool hasSensorData{false};
     bool started{false};
-    bool initialPublishPending{true};
     bool toggleProgrammingModeRequested{false};
-    bool pendingThermostatSetpointPublish{true};
-    bool pendingVentilationSetpointPublish{true};
-    bool pendingThermostatRequestPublish{true};
-    bool pendingVentilationBoostPublish{true};
-    bool pendingCoolingRequestPublish{true};
-    bool pendingHeatingControlPublish{true};
-    bool pendingCoolingControlPublish{true};
-    bool pendingFloorLimitPublish{true};
-    // --- Append-only greenfield thermostat-model additions ---
-    bool pendingControllerEnablePublish{true};
-    bool pendingHvacOperatingModePublish{true};
-    bool pendingControllerModePublish{true};
-    bool pendingHeatCoolStatePublish{true};
-    bool pendingActiveSetpointPublish{true};
-    bool pendingSetpointShiftFeedbackPublish{true};
-    bool pendingControllerFaultPublish{true};
-    bool pendingSensorFaultStatusPublish{true};
-    bool pendingHeatingBlockedPublish{true};
-    bool pendingCoolingBlockedPublish{true};
-    bool pendingVentilationDemandPublish{true};
-    bool pendingVentilationLevelPublish{true};
-    bool pendingVentilationModePublish{true};
-    bool pendingVentilationActivePublish{true};
-    bool pendingIaqStatusPublish{true};
-    bool pendingHvacControllerStatusPublish{true};
     HvacSettings hvac{};
-    // Controller outputs (written by the control tick, read by provideState
-    // and the publish path).
-    bool thermostatRequest{false};        // heating demand
-    bool coolingRequest{false};
-    bool ventilationBoostRequest{false};
-    bool floorLimitActive{false};
-    uint8_t heatingControlPercent{0};
-    uint8_t coolingControlPercent{0};
-    // --- Append-only greenfield thermostat-model additions ---
-    // Mode/state inputs (bus-writable, mirrored back via provideState).
-    bool controllerEnable{true};
-    sensor_board::hvac::OperatingPreset hvacOperatingMode{sensor_board::hvac::OperatingPreset::Comfort};
-    sensor_board::hvac::ControllerMode controllerMode{sensor_board::hvac::ControllerMode::Auto};
-    bool heatCoolChangeover{false};
+
+    // Bus-writable inputs, mirrored back via provideState.
+    bool controllerOnOff{true};
+    hvac_ns::OperatingPreset hvacOperatingMode{hvac_ns::OperatingPreset::Comfort};
+    hvac_ns::ControllerMode controllerMode{hvac_ns::ControllerMode::Auto};
+    bool changeOverStatus{false};
     bool windowOpen{false};
     bool presence{false};
-    bool presenceKnown{false};  // true once a Presence telegram has been received
+    bool presenceKnown{false};  // true once a presence telegram has been received
+    bool switchHeat{true};
+    bool switchCool{true};
+    bool externalDewPointAlarm{false};
     float setpointShiftK{0.0f};
-    sensor_board::hvac::VentilationMode ventilationMode{sensor_board::hvac::VentilationMode::Auto};
-    // Controller outputs.
-    sensor_board::hvac::HeatCoolState heatCoolState{sensor_board::hvac::HeatCoolState::Neutral};
-    float activeSetpointC{22.0f};
-    float setpointShiftFeedbackK{0.0f};
-    bool controllerFault{false};
-    bool heatingBlocked{false};
-    bool coolingBlocked{false};
-    uint16_t sensorFaultStatus{0};
-    uint8_t ventilationDemandPercent{0};
-    sensor_board::hvac::VentilationLevel ventilationLevel{sensor_board::hvac::VentilationLevel::Off};
-    bool ventilationActive{false};
-    uint16_t iaqStatus{0};
-    uint16_t hvacControllerStatus{0};  // DPT 22.101 StatusRHCC word
+    hvac_ns::VentilationMode ventilationMode{hvac_ns::VentilationMode::Auto};
+
+    // Neighbour-device inputs. Each stays invalid until a telegram arrives, so
+    // an unlinked object never fabricates an outside temperature of 0 °C.
+    float outsideTemperatureC{0.0f};
+    bool outsideTemperatureValid{false};
+    float outsideHumidityPct{0.0f};
+    bool outsideHumidityValid{false};
+    float flowTemperatureC{0.0f};
+    bool flowTemperatureValid{false};
+
+    ControlOutputs out{};
     knx_programming_mode_callback_t programmingModeCallback{nullptr};
 };
 
@@ -311,61 +367,23 @@ private:
     SemaphoreHandle_t mutex_;
 };
 
+// The per-port "has this changed?" bookkeeping this snapshot used to carry is
+// gone: the stack's GroupObjectTransmitPolicy already decides Send / Defer /
+// Suppress per object from the COV delta, the minimum repetition time and the
+// heartbeat (see applyTransmitPolicies), which is the same model the KNX sensor
+// FBs specify. So the loop publishes every port every tick and lets the policy
+// layer drop what has not moved — one place deciding, instead of two that could
+// disagree.
 struct PublishSnapshot {
     sensor_data_t sensorData{};
     uint32_t availableMask{0};
-    uint32_t pendingSensorMask{0};
-    bool publishAll{false};
-    bool publishThermostatSetpoint{false};
-    bool publishVentilationSetpoint{false};
-    bool publishThermostatRequest{false};
-    bool publishVentilationBoost{false};
-    bool publishCoolingRequest{false};
-    bool publishHeatingControl{false};
-    bool publishCoolingControl{false};
-    bool publishFloorLimit{false};
-    float thermostatSetpointC{kDefaultComfortHeatingSetpointC};
-    float ventilationSetpointPpm{kDefaultVentilationSetpointPpm};
-    bool thermostatRequest{false};
-    bool coolingRequest{false};
-    bool ventilationBoostRequest{false};
-    bool floorLimitActive{false};
-    uint8_t heatingControlPercent{0};
-    uint8_t coolingControlPercent{0};
+    HvacSettings settings{};
+    ControlOutputs out{};
+    hvac_ns::OperatingPreset hvacOperatingMode{hvac_ns::OperatingPreset::Comfort};
+    hvac_ns::ControllerMode controllerMode{hvac_ns::ControllerMode::Auto};
+    hvac_ns::VentilationMode ventilationMode{hvac_ns::VentilationMode::Auto};
+    bool controllerOnOff{true};
     bool toggleProgrammingMode{false};
-    // --- Append-only greenfield thermostat-model additions ---
-    bool publishControllerEnable{false};
-    bool publishHvacOperatingMode{false};
-    bool publishControllerMode{false};
-    bool publishHeatCoolState{false};
-    bool publishActiveSetpoint{false};
-    bool publishSetpointShiftFeedback{false};
-    bool publishControllerFault{false};
-    bool publishSensorFaultStatus{false};
-    bool publishHeatingBlocked{false};
-    bool publishCoolingBlocked{false};
-    bool publishVentilationDemand{false};
-    bool publishVentilationLevel{false};
-    bool publishVentilationMode{false};
-    bool publishVentilationActive{false};
-    bool publishIaqStatus{false};
-    bool publishHvacControllerStatus{false};
-    bool controllerEnable{true};
-    sensor_board::hvac::OperatingPreset hvacOperatingMode{sensor_board::hvac::OperatingPreset::Comfort};
-    sensor_board::hvac::ControllerMode controllerMode{sensor_board::hvac::ControllerMode::Auto};
-    sensor_board::hvac::HeatCoolState heatCoolState{sensor_board::hvac::HeatCoolState::Neutral};
-    float activeSetpointC{22.0f};
-    float setpointShiftFeedbackK{0.0f};
-    bool controllerFault{false};
-    uint16_t sensorFaultStatus{0};
-    bool heatingBlocked{false};
-    bool coolingBlocked{false};
-    uint8_t ventilationDemandPercent{0};
-    sensor_board::hvac::VentilationLevel ventilationLevel{sensor_board::hvac::VentilationLevel::Off};
-    sensor_board::hvac::VentilationMode ventilationMode{sensor_board::hvac::VentilationMode::Auto};
-    bool ventilationActive{false};
-    uint16_t iaqStatus{0};
-    uint16_t hvacControllerStatus{0};
 };
 
 // A port the ETS project left unlinked publishes as a successful no-op, so
@@ -440,118 +458,254 @@ void reportUnlinkedPorts(AppT &app)
     }
 }
 
-// Push the send-on-change / cyclic-heartbeat transmit policy (see
-// knx/application/group_object.hpp) to every transmitting port, driven from
-// the ETS-configurable `TemperatureChangeThresholdCenti` /
-// `CyclicStatusIntervalSeconds` parameters. Cheap and idempotent, so it is
-// simply re-applied every control tick (~1 Hz) instead of only reacting to
-// onParameterChanged - that keeps this in sync with the same
-// "reconfigure-from-settings-every-tick" pattern used for the controllers
-// below. Write-only CommandPorts (HeatCoolChangeover/SetpointShift/WindowOpen/
-// Presence) never transmit, so they are intentionally excluded.
+// Push the send-on-change / minimum-repetition / cyclic-heartbeat transmit
+// policy (see knx/application/group_object.hpp) to every transmitting port.
+//
+// This is the device's implementation of the KNX sensor Functional Block
+// sending model (Vol 7/19/20 clause 3.x: Heartbeat, MinRepTime, COVCondition):
+// the ETS parameters name those three quantities directly, and the stack turns
+// them into Send / Defer / Suppress decisions. The publish path therefore does
+// not filter anything itself.
+//
+// Cheap and idempotent, so it is simply re-applied every control tick (~1 Hz)
+// rather than only on onParameterChanged, which keeps it in step with the
+// "reconfigure-from-settings-every-tick" pattern used for the controllers.
+// Write-only CommandPorts never transmit and are intentionally absent.
 template <typename AppT>
 void applyTransmitPolicies(AppT &app, const HvacSettings &settings)
 {
-    GroupObjectTransmitPolicy temperatureLike{};
-    temperatureLike.onChangeEnabled = true;
-    temperatureLike.changeThreshold = static_cast<double>(settings.temperatureChangeThresholdC);
-    temperatureLike.cyclicIntervalMs = settings.cyclicStatusIntervalSeconds * 1000u;
+    const uint32_t heartbeatMs = settings.heartbeatSeconds * 1000u;
+    const uint32_t minRepMs = settings.minRepTimeSeconds * 1000u;
 
-    static constexpr SensorBoardPort kTemperatureLikePorts[] = {
-        SensorBoardPort::AirTemperature,
-        SensorBoardPort::ProbeTemperature,
-        SensorBoardPort::ActiveSetpointFeedback,
-        SensorBoardPort::SetpointShiftFeedback,
+    const auto covPolicy = [&](float threshold) {
+        GroupObjectTransmitPolicy policy{};
+        policy.onChangeEnabled = true;
+        policy.changeThreshold = static_cast<double>(threshold);
+        policy.cyclicIntervalMs = heartbeatMs;
+        policy.minIntervalMs = minRepMs;
+        return policy;
     };
-    for (const auto port : kTemperatureLikePorts) {
-        (void)app.setTransmitPolicy(port, temperatureLike);
+
+    // Analogue measurements and derived values: a per-measurand COV delta, since
+    // 0.2 is a sensible step in K and a meaningless one in ppm.
+    struct CovPort {
+        SensorBoardPort port;
+        float threshold;
+    };
+    const CovPort covPorts[] = {
+        {SensorBoardPort::RoomTemperature, settings.roomTemperatureCovK},
+        {SensorBoardPort::RoomHumidity, settings.roomHumidityCovPct},
+        {SensorBoardPort::RoomCo2, settings.co2CovPpm},
+        {SensorBoardPort::RoomAirPressure, settings.pressureCovPa},
+        {SensorBoardPort::RoomAirPressureSeaLevel, settings.pressureCovPa},
+        {SensorBoardPort::RoomAirQualityIndex, settings.airQualityCovIndex},
+        {SensorBoardPort::RoomCo2Equivalent, settings.co2CovPpm},
+        {SensorBoardPort::RoomVocEquivalent, settings.co2CovPpm},
+        {SensorBoardPort::RoomDewPoint, settings.derivedCov},
+        {SensorBoardPort::RoomAbsoluteHumidity, settings.derivedCov},
+        {SensorBoardPort::FloorTemperature, settings.floorTemperatureCovK},
+        {SensorBoardPort::FloorHumidity, settings.floorHumidityCovPct},
+        {SensorBoardPort::FloorAbsoluteHumidity, settings.derivedCov},
+        {SensorBoardPort::DewPointMargin, settings.derivedCov},
+        {SensorBoardPort::SetpointBase, settings.roomTemperatureCovK},
+        {SensorBoardPort::SetpointStatus, settings.roomTemperatureCovK},
+        {SensorBoardPort::SetpointHeatingStatus, settings.roomTemperatureCovK},
+        {SensorBoardPort::SetpointCoolingStatus, settings.roomTemperatureCovK},
+        {SensorBoardPort::SetpointShiftStatus, settings.roomTemperatureCovK},
+        {SensorBoardPort::Co2Setpoint, settings.co2CovPpm},
+    };
+    for (const auto &entry : covPorts) {
+        (void)app.setTransmitPolicy(entry.port, covPolicy(entry.threshold));
     }
 
-    // Cyclic heartbeat only (no meaningful engineering-unit delta) for the
-    // remaining measurement/status/mode ports.
-    GroupObjectTransmitPolicy cyclicOnly{};
-    cyclicOnly.cyclicIntervalMs = settings.cyclicStatusIntervalSeconds * 1000u;
+    // Discrete states, enumerations and status words: any change is meaningful,
+    // so only the heartbeat and the minimum repetition time apply.
+    GroupObjectTransmitPolicy discrete{};
+    discrete.onChangeEnabled = true;
+    discrete.changeThreshold = 0.0;  // <= 0 with onChange means "any change"
+    discrete.cyclicIntervalMs = heartbeatMs;
+    discrete.minIntervalMs = minRepMs;
 
-    static constexpr SensorBoardPort kCyclicOnlyPorts[] = {
-        SensorBoardPort::AirHumidity,
-        SensorBoardPort::AirPressure,
-        SensorBoardPort::Co2,
-        SensorBoardPort::AirQualityIndex,
-        SensorBoardPort::Co2Equivalent,
-        SensorBoardPort::VocEquivalent,
+    static constexpr SensorBoardPort kDiscretePorts[] = {
         SensorBoardPort::AirQualityAccuracy,
-        SensorBoardPort::ProbeHumidity,
-        SensorBoardPort::ThermostatSetpoint,
-        SensorBoardPort::VentilationSetpoint,
-        SensorBoardPort::ThermostatRequest,
-        SensorBoardPort::VentilationBoostRequest,
-        SensorBoardPort::CoolingRequest,
+        SensorBoardPort::FloorMoistureAlarm,
+        SensorBoardPort::FloorLimitActive,
+        SensorBoardPort::FloorComfortActive,
+        SensorBoardPort::DewPointAlarm,
+        SensorBoardPort::FreeCoolingAvailable,
+        SensorBoardPort::FreeDryingAvailable,
+        SensorBoardPort::ControllerOnOff,
+        SensorBoardPort::HvacModeStatus,
+        SensorBoardPort::ContrModeStatus,
+        SensorBoardPort::ContrModeSecondary,
         SensorBoardPort::HeatingControlValue,
         SensorBoardPort::CoolingControlValue,
-        SensorBoardPort::FloorLimitActive,
-        SensorBoardPort::ControllerEnable,
-        SensorBoardPort::HvacOperatingMode,
-        SensorBoardPort::ControllerMode,
-        SensorBoardPort::HeatCoolState,
-        SensorBoardPort::ControllerFault,
-        SensorBoardPort::SensorFaultStatus,
-        SensorBoardPort::HeatingBlocked,
-        SensorBoardPort::CoolingBlocked,
-        SensorBoardPort::VentilationDemandPercent,
-        SensorBoardPort::VentilationLevel,
+        SensorBoardPort::HeatingRequest,
+        SensorBoardPort::CoolingRequest,
+        SensorBoardPort::HeatCoolModeStatus,
+        SensorBoardPort::EnableHeatStatus,
+        SensorBoardPort::EnableCoolStatus,
+        SensorBoardPort::ControllerStatus,
+        SensorBoardPort::VentilationDemand,
+        SensorBoardPort::VentilationStage,
         SensorBoardPort::VentilationMode,
-        SensorBoardPort::VentilationActive,
-        SensorBoardPort::IaqStatus,
-        SensorBoardPort::HvacControllerStatus,
+        SensorBoardPort::VentilationBoostRequest,
+        SensorBoardPort::DehumidifyRequest,
+        SensorBoardPort::AirQualityStatus,
+        SensorBoardPort::DeviceFault,
+        SensorBoardPort::RoomSensorStatus,
+        SensorBoardPort::FloorProbeStatus,
+        SensorBoardPort::AirQualitySensorStatus,
     };
-    for (const auto port : kCyclicOnlyPorts) {
-        (void)app.setTransmitPolicy(port, cyclicOnly);
+    for (const auto port : kDiscretePorts) {
+        (void)app.setTransmitPolicy(port, discrete);
     }
 }
 
+// Corrected sensor readings: the ETS offsets are applied once, here, so every
+// consumer (control loops, derived values, published measurements) sees the
+// same number. Correcting only at the publish path would leave the controller
+// working from an uncorrected temperature, which is exactly the reading the
+// self-heating offset exists to fix.
+struct CorrectedReadings {
+    float roomTemperatureC{0.0f};
+    bool roomTemperatureValid{false};
+    float roomHumidityPct{0.0f};
+    bool roomHumidityValid{false};
+    float floorTemperatureC{0.0f};
+    bool floorTemperatureValid{false};
+    float floorHumidityPct{0.0f};
+    bool floorHumidityValid{false};
+    float co2Ppm{0.0f};
+    bool co2Valid{false};
+    float pressurePa{0.0f};
+    bool pressureValid{false};
+    float iaqIndex{0.0f};
+    bool iaqValid{false};
+
+    bool roomAirValid() const { return roomTemperatureValid && roomHumidityValid; }
+    bool floorProbeValid() const { return floorTemperatureValid && floorHumidityValid; }
+};
+
+CorrectedReadings correctReadings(const sensor_data_t &data,
+                                  uint32_t availableMask,
+                                  const HvacSettings &settings)
+{
+    CorrectedReadings r;
+    r.roomTemperatureValid = (availableMask & SENSOR_TEMPERATURE) != 0u;
+    r.roomTemperatureC = data.temperature + settings.roomTemperatureOffsetK;
+    r.roomHumidityValid = (availableMask & SENSOR_HUMIDITY) != 0u;
+    r.roomHumidityPct = hvac_ns::clampf(data.humidity + settings.roomHumidityOffsetPct, 0.0f, 100.0f);
+    r.floorTemperatureValid = (availableMask & SENSOR_EXT_PROBE_TEMPERATURE) != 0u;
+    r.floorTemperatureC = data.ext_probe_temperature + settings.floorTemperatureOffsetK;
+    r.floorHumidityValid = (availableMask & SENSOR_EXT_PROBE_HUMIDITY) != 0u;
+    r.floorHumidityPct = hvac_ns::clampf(data.ext_probe_humidity, 0.0f, 100.0f);
+    r.co2Valid = (availableMask & SENSOR_CO2) != 0u;
+    r.co2Ppm = static_cast<float>(data.co2);
+    r.pressureValid = (availableMask & SENSOR_PRESSURE) != 0u;
+    r.pressurePa = data.pressure;
+    r.iaqValid = (availableMask & SENSOR_IAQ) != 0u;
+    r.iaqIndex = data.iaq;
+    return r;
+}
+
 // Room-control tick: snapshot inputs + ETS tuning under the mutex, run the
-// (task-owned, lock-free) controllers, store the outputs back and flag the
-// changed ones for publishing. Called from the KNX task at ~1 Hz.
+// (task-owned, lock-free) controllers, store the outputs back. Called from the
+// KNX task at ~1 Hz. Nothing here decides what to transmit — that is the
+// transmit policy's job (see applyTransmitPolicies).
 template <typename AppT>
 void runHvacControlTick(AppT &app,
-                        sensor_board::hvac::ThermostatController &thermostat,
-                        sensor_board::hvac::VentilationController &ventilation,
+                        hvac_ns::ThermostatController &thermostat,
+                        hvac_ns::VentilationController &ventilation,
+                        hvac_ns::DewPointMonitor &dewPoint,
+                        hvac_ns::FloorMoistureMonitor &floorMoisture,
                         float dtSeconds)
 {
-    namespace hvac = sensor_board::hvac;
-
     HvacSettings settings;
-    hvac::ThermostatInputs thermostatIn;
-    hvac::VentilationInputs ventIn;
+    sensor_data_t sensorData{};
+    uint32_t availableMask = 0;
+    hvac_ns::ThermostatInputs thermostatIn;
+    hvac_ns::VentilationInputs ventIn;
+    float outsideTemperatureC = 0.0f;
+    bool outsideTemperatureValid = false;
+    float outsideHumidityPct = 0.0f;
+    bool outsideHumidityValid = false;
     {
         LockGuard lock(g_state.mutex);
         settings = g_state.hvac;
-        thermostatIn.roomTemperatureC = g_state.latestSensorData.temperature;
-        thermostatIn.roomTemperatureValid = (g_state.availableMask & SENSOR_TEMPERATURE) != 0u;
-        thermostatIn.floorTemperatureC = g_state.latestSensorData.ext_probe_temperature;
-        thermostatIn.floorTemperatureValid = (g_state.availableMask & SENSOR_EXT_PROBE_TEMPERATURE) != 0u;
-        thermostatIn.controllerEnable = g_state.controllerEnable;
+        sensorData = g_state.latestSensorData;
+        availableMask = g_state.availableMask;
+        thermostatIn.controllerEnable = g_state.controllerOnOff;
         thermostatIn.hvacOperatingMode = g_state.hvacOperatingMode;
         thermostatIn.controllerMode = g_state.controllerMode;
-        thermostatIn.heatCoolChangeoverBusValue = g_state.heatCoolChangeover;
+        thermostatIn.heatCoolChangeoverBusValue = g_state.changeOverStatus;
         thermostatIn.windowOpen = g_state.windowOpen;
         thermostatIn.presence = g_state.presence;
         thermostatIn.presenceValid = g_state.presenceKnown;
         thermostatIn.setpointShiftK = g_state.setpointShiftK;
-
-        ventIn.co2Ppm = static_cast<float>(g_state.latestSensorData.co2);
-        ventIn.co2Valid = (g_state.availableMask & SENSOR_CO2) != 0u;
-        ventIn.humidityPct = g_state.latestSensorData.humidity;
-        ventIn.humidityValid = (g_state.availableMask & SENSOR_HUMIDITY) != 0u;
+        thermostatIn.switchHeat = g_state.switchHeat;
+        thermostatIn.switchCool = g_state.switchCool;
+        thermostatIn.flowTemperatureC = g_state.flowTemperatureC;
+        thermostatIn.flowTemperatureValid = g_state.flowTemperatureValid;
+        thermostatIn.dewPointAlarm = g_state.externalDewPointAlarm;
         ventIn.mode = g_state.ventilationMode;
+        ventIn.occupied = g_state.presenceKnown ? g_state.presence : false;
+        outsideTemperatureC = g_state.outsideTemperatureC;
+        outsideTemperatureValid = g_state.outsideTemperatureValid;
+        outsideHumidityPct = g_state.outsideHumidityPct;
+        outsideHumidityValid = g_state.outsideHumidityValid;
     }
 
     applyTransmitPolicies(app, settings);
 
+    const CorrectedReadings readings = correctReadings(sensorData, availableMask, settings);
+
+    thermostatIn.roomTemperatureC = readings.roomTemperatureC;
+    thermostatIn.roomTemperatureValid = readings.roomTemperatureValid;
+    thermostatIn.floorTemperatureC = readings.floorTemperatureC;
+    thermostatIn.floorTemperatureValid = readings.floorTemperatureValid;
+    ventIn.co2Ppm = readings.co2Ppm;
+    ventIn.co2Valid = readings.co2Valid;
+    ventIn.humidityPct = readings.roomHumidityPct;
+    ventIn.humidityValid = readings.roomHumidityValid;
+    ventIn.vocIndex = readings.iaqIndex;
+    ventIn.vocValid = readings.iaqValid;
+
+    // --- Derived values and condensation / moisture monitors -----------------
+    dewPoint.configure({.surfaceSource = settings.dewPointSurfaceSource,
+                        .marginK = settings.dewPointMarginK,
+                        .hysteresisK = settings.dewPointHysteresisK});
+    const auto dewOut = dewPoint.update({
+        .roomTemperatureC = readings.roomTemperatureC,
+        .roomHumidityPct = readings.roomHumidityPct,
+        .roomAirValid = readings.roomAirValid(),
+        .floorTemperatureC = readings.floorTemperatureC,
+        .floorTemperatureValid = readings.floorTemperatureValid,
+        .flowTemperatureC = thermostatIn.flowTemperatureC,
+        .flowTemperatureValid = thermostatIn.flowTemperatureValid,
+    });
+
+    floorMoisture.configure({.thresholdPct = settings.floorMoistureThresholdPct,
+                             .hysteresisPct = settings.floorMoistureHysteresisPct,
+                             .absoluteExcessGm3 = settings.floorMoistureExcessGm3});
+    const auto moistureOut = floorMoisture.update({
+        .floorTemperatureC = readings.floorTemperatureC,
+        .floorHumidityPct = readings.floorHumidityPct,
+        .floorProbeValid = readings.floorProbeValid(),
+        .roomTemperatureC = readings.roomTemperatureC,
+        .roomHumidityPct = readings.roomHumidityPct,
+        .roomAirValid = readings.roomAirValid(),
+    });
+
+    // A locally derived condensation risk carries the same weight as one
+    // received on the DewPointStatus input; either blocks cooling.
+    thermostatIn.dewPointAlarm = thermostatIn.dewPointAlarm || dewOut.alarm;
+
+    // --- Thermostat ----------------------------------------------------------
     // Reconfigure from the ETS parameters every tick: configure() preserves
     // controller state (integrators, latches), so this is cheap and makes a
     // live ETS re-parameterisation take effect within one tick.
-    hvac::ThermostatConfig thermostatCfg;
+    hvac_ns::ThermostatConfig thermostatCfg;
     thermostatCfg.heatingPid = {.kp = settings.heatingKp,
                                 .tiSeconds = settings.heatingTiSeconds,
                                 .tdSeconds = settings.heatingTdSeconds};
@@ -559,21 +713,27 @@ void runHvacControlTick(AppT &app,
                                 .tiSeconds = settings.coolingTiSeconds,
                                 .tdSeconds = settings.coolingTdSeconds,
                                 .reverseActing = true};
-    thermostatCfg.heatingSetpoints = {.comfortC = settings.comfortHeatingSetpointC,
-                                      .standbyC = settings.standbyHeatingSetpointC,
-                                      .economyC = settings.economyHeatingSetpointC,
-                                      .protectionC = settings.protectionHeatingSetpointC};
-    thermostatCfg.coolingSetpoints = {.comfortC = settings.comfortCoolingSetpointC,
-                                      .standbyC = settings.standbyCoolingSetpointC,
-                                      .economyC = settings.economyCoolingSetpointC,
-                                      .protectionC = settings.protectionCoolingSetpointC};
+    thermostatCfg.setpoints = {
+        .comfortHeatingC = settings.comfortHeatingSetpointC,
+        .standbyHeatingReductionK = settings.standbyHeatingReductionK,
+        .economyHeatingReductionK = settings.economyHeatingReductionK,
+        .protectionHeatingC = settings.protectionHeatingSetpointC,
+        .coolingDeadbandK = settings.coolingDeadbandK,
+        .standbyCoolingIncreaseK = settings.standbyCoolingIncreaseK,
+        .economyCoolingIncreaseK = settings.economyCoolingIncreaseK,
+        .protectionCoolingC = settings.protectionCoolingSetpointC,
+    };
     thermostatCfg.minSetpointC = settings.minSetpointC;
     thermostatCfg.maxSetpointC = settings.maxSetpointC;
     thermostatCfg.maxSetpointShiftK = settings.maxSetpointShiftK;
-    thermostatCfg.coolingDeadbandK = settings.coolingDeadbandK;
     thermostatCfg.requestHysteresisK = settings.thermostatHysteresisC;
     thermostatCfg.maxFloorTemperatureC = settings.maxFloorTemperatureC;
+    thermostatCfg.minFloorTemperatureC = settings.minFloorTemperatureC;
     thermostatCfg.floorHysteresisK = settings.floorHysteresisK;
+    thermostatCfg.floorComfortOutputPercent = settings.floorComfortOutputPercent;
+    thermostatCfg.frostAlarmTemperatureC = settings.frostAlarmTemperatureC;
+    thermostatCfg.overheatAlarmTemperatureC = settings.overheatAlarmTemperatureC;
+    thermostatCfg.blockCoolingOnDewPointAlarm = settings.blockCoolingOnDewPointAlarm;
     thermostatCfg.heatingEnabled = settings.heatingEnabled;
     thermostatCfg.coolingEnabled = settings.coolingEnabled;
     thermostatCfg.heatCoolChangeoverMode = settings.heatCoolChangeoverMode;
@@ -593,108 +753,105 @@ void runHvacControlTick(AppT &app,
     thermostat.configure(thermostatCfg);
 
     ventilation.configure({.co2SetpointPpm = settings.ventilationSetpointPpm,
-                           .co2HysteresisPpm = settings.ventilationHysteresisPpm,
+                           .co2BandPpm = settings.ventilationBandPpm,
                            .humidityThresholdPct = settings.humidityBoostPct,
-                           .humidityHysteresisPct = settings.humidityBoostHysteresisPct});
+                           .humidityBandPct = settings.humidityBandPct,
+                           .vocThresholdIndex = settings.vocThresholdIndex,
+                           .vocBandIndex = settings.vocBandIndex,
+                           .baseDemandPercent = settings.ventilationBaseDemandPercent,
+                           .manualDemandPercent = settings.ventilationManualDemandPercent});
 
     const auto out = thermostat.update(thermostatIn, dtSeconds);
     const auto ventOut = ventilation.update(ventIn);
 
-    // Sensor-fault bitset (device-specific bit layout, documented next to
-    // SensorBoardPort::SensorFaultStatus): bit0=AirTemp, bit1=Humidity,
-    // bit2=Co2, bit3=ProbeTemperature, bit4=ProbeHumidity.
-    uint16_t faultBits = 0;
-    {
-        LockGuard lock(g_state.mutex);
-        if ((g_state.availableMask & SENSOR_TEMPERATURE) == 0u) faultBits |= (1u << 0);
-        if ((g_state.availableMask & SENSOR_HUMIDITY) == 0u) faultBits |= (1u << 1);
-        if ((g_state.availableMask & SENSOR_CO2) == 0u) faultBits |= (1u << 2);
-        if ((g_state.availableMask & SENSOR_EXT_PROBE_TEMPERATURE) == 0u) faultBits |= (1u << 3);
-        if ((g_state.availableMask & SENSOR_EXT_PROBE_HUMIDITY) == 0u) faultBits |= (1u << 4);
+    // --- Outside-air opportunity flags ---------------------------------------
+    // Both compare like with like: temperature for cooling, absolute humidity
+    // for drying. Comparing relative humidities would say cold outdoor air is
+    // "wetter" than warm indoor air, which is backwards.
+    ControlOutputs computed;
+    computed.freeCoolingAvailable =
+        outsideTemperatureValid && readings.roomTemperatureValid
+        && outsideTemperatureC < readings.roomTemperatureC - 1.0f
+        && readings.roomTemperatureC > out.coolingSetpointC;
+    if (outsideTemperatureValid && outsideHumidityValid && readings.roomAirValid()) {
+        const float outsideAbs =
+            hvac_ns::psychro::absoluteHumidityGm3(outsideTemperatureC, outsideHumidityPct);
+        computed.freeDryingAvailable =
+            outsideAbs < moistureOut.roomAbsoluteHumidityGm3 - 0.5f;
     }
 
-    uint16_t iaqBits = 0;
-    if (ventOut.humidityHigh) iaqBits |= static_cast<uint16_t>(hvac::IaqStatusBit::HumidityBoost);
-    if (ventOut.co2High) iaqBits |= static_cast<uint16_t>(hvac::IaqStatusBit::Co2Boost);
-    if (ventOut.sensorFault) iaqBits |= static_cast<uint16_t>(hvac::IaqStatusBit::SensorFault);
+    computed.roomDewPointC = dewOut.dewPointC;
+    computed.roomAbsoluteHumidityGm3 = moistureOut.roomAbsoluteHumidityGm3;
+    computed.floorAbsoluteHumidityGm3 = moistureOut.floorAbsoluteHumidityGm3;
+    computed.dewPointMarginK = dewOut.marginK;
+    computed.dewPointAlarm = thermostatIn.dewPointAlarm;
+    computed.floorMoistureAlarm = moistureOut.alarm;
+    computed.seaLevelPressurePa =
+        readings.pressureValid
+            ? hvac_ns::psychro::seaLevelPressurePa(readings.pressurePa, settings.altitudeM,
+                                                   readings.roomTemperatureC)
+            : 0.0f;
 
-    // KNX-standard room heating/cooling controller status word (DPT 22.101).
-    const uint16_t statusRhcc = hvac::packStatusRHCC(out);
+    computed.heatingRequest = out.heatingRequest;
+    computed.coolingRequest = out.coolingRequest;
+    computed.heatingControlPercent = out.heatingControlPercent;
+    computed.coolingControlPercent = out.coolingControlPercent;
+    computed.floorLimitActive = out.floorLimitActive;
+    computed.floorComfortActive = out.floorComfortActive;
+    // DPT 1.100 has no "neutral": the spec's own StatusRHCC wording treats
+    // heating as the default, so only active cooling reports 0.
+    computed.heatCoolModeHeating = out.heatCoolState != hvac_ns::HeatCoolState::Cooling;
+    computed.enableHeat = !out.heatingBlocked;
+    computed.enableCool = !out.coolingBlocked;
+    computed.activeSetpointC = out.activeSetpointC;
+    computed.heatingSetpointC = out.heatingSetpointC;
+    computed.coolingSetpointC = out.coolingSetpointC;
+    computed.setpointShiftFeedbackK = out.setpointShiftFeedbackK;
+    computed.activePreset = out.activePreset;
+    // ContrModeAct / ContrModeSecondary report what the controller resolved to,
+    // not what was requested: a Secondary RTC in the same room needs the
+    // decision, and Auto would tell it nothing.
+    computed.activeControllerMode =
+        out.heatCoolState == hvac_ns::HeatCoolState::Heating  ? hvac_ns::ControllerMode::Heat
+        : out.heatCoolState == hvac_ns::HeatCoolState::Cooling ? hvac_ns::ControllerMode::Cool
+        : (out.heatingBlocked && out.coolingBlocked)           ? hvac_ns::ControllerMode::Off
+                                                               : hvac_ns::ControllerMode::Auto;
+    computed.controllerStatus = hvac_ns::packStatusRHCC(out);
+
+    computed.ventilationDemandPercent = ventOut.demandPercent;
+    computed.ventilationLevel = ventOut.level;
+    computed.ventilationBoostRequest = ventOut.boostRequest;
+    computed.dehumidifyRequest = ventOut.dehumidifyRequest;
+
+    uint16_t iaqBits = 0;
+    if (ventOut.humidityHigh) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::HumidityBoost);
+    if (ventOut.co2High) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::Co2Boost);
+    if (ventOut.vocHigh) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::VocBoost);
+    if (ventOut.sensorFault) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::SensorFault);
+    if (ventOut.dehumidifyRequest) {
+        iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::DehumidifyRequest);
+    }
+    computed.airQualityStatus = iaqBits;
+
+    // Per-package StatusGen octets (DPT 21.001). "Never delivered a reading" is
+    // reported as OutOfService rather than Fault: an installation without the
+    // optional floor probe is correctly configured, not broken.
+    const bool anySensorData = g_state.hasSensorData;
+    computed.roomSensorStatus =
+        hvac_ns::packStatusGen(anySensorData, readings.roomAirValid());
+    computed.floorProbeStatus = hvac_ns::packStatusGen(
+        readings.floorTemperatureValid || readings.floorHumidityValid,
+        readings.floorProbeValid(), moistureOut.alarm);
+    computed.airQualitySensorStatus =
+        hvac_ns::packStatusGen(anySensorData, readings.co2Valid || readings.iaqValid);
+    // The roll-up alarm covers only what stops the device doing its job: the
+    // room sensor the control loops depend on. An absent floor probe is
+    // reported through its own StatusGen, not as a device fault.
+    computed.deviceFault = !readings.roomAirValid();
 
     {
         LockGuard lock(g_state.mutex);
-        if (out.heatingRequest != g_state.thermostatRequest) {
-            g_state.thermostatRequest = out.heatingRequest;
-            g_state.pendingThermostatRequestPublish = true;
-        }
-        if (out.coolingRequest != g_state.coolingRequest) {
-            g_state.coolingRequest = out.coolingRequest;
-            g_state.pendingCoolingRequestPublish = true;
-        }
-        if (out.heatingControlPercent != g_state.heatingControlPercent) {
-            g_state.heatingControlPercent = out.heatingControlPercent;
-            g_state.pendingHeatingControlPublish = true;
-        }
-        if (out.coolingControlPercent != g_state.coolingControlPercent) {
-            g_state.coolingControlPercent = out.coolingControlPercent;
-            g_state.pendingCoolingControlPublish = true;
-        }
-        if (out.floorLimitActive != g_state.floorLimitActive) {
-            g_state.floorLimitActive = out.floorLimitActive;
-            g_state.pendingFloorLimitPublish = true;
-        }
-        if (out.heatCoolState != g_state.heatCoolState) {
-            g_state.heatCoolState = out.heatCoolState;
-            g_state.pendingHeatCoolStatePublish = true;
-        }
-        if (std::fabs(out.activeSetpointC - g_state.activeSetpointC) >= settings.temperatureChangeThresholdC) {
-            g_state.activeSetpointC = out.activeSetpointC;
-            g_state.pendingActiveSetpointPublish = true;
-        }
-        if (std::fabs(out.setpointShiftFeedbackK - g_state.setpointShiftFeedbackK) >= 0.01f) {
-            g_state.setpointShiftFeedbackK = out.setpointShiftFeedbackK;
-            g_state.pendingSetpointShiftFeedbackPublish = true;
-        }
-        if (out.controllerFault != g_state.controllerFault) {
-            g_state.controllerFault = out.controllerFault;
-            g_state.pendingControllerFaultPublish = true;
-        }
-        if (out.heatingBlocked != g_state.heatingBlocked) {
-            g_state.heatingBlocked = out.heatingBlocked;
-            g_state.pendingHeatingBlockedPublish = true;
-        }
-        if (out.coolingBlocked != g_state.coolingBlocked) {
-            g_state.coolingBlocked = out.coolingBlocked;
-            g_state.pendingCoolingBlockedPublish = true;
-        }
-        if (faultBits != g_state.sensorFaultStatus) {
-            g_state.sensorFaultStatus = faultBits;
-            g_state.pendingSensorFaultStatusPublish = true;
-        }
-        if (ventOut.demandPercent != g_state.ventilationDemandPercent) {
-            g_state.ventilationDemandPercent = ventOut.demandPercent;
-            g_state.pendingVentilationDemandPublish = true;
-        }
-        if (ventOut.level != g_state.ventilationLevel) {
-            g_state.ventilationLevel = ventOut.level;
-            g_state.pendingVentilationLevelPublish = true;
-        }
-        if (ventOut.active != g_state.ventilationActive) {
-            g_state.ventilationActive = ventOut.active;
-            g_state.pendingVentilationActivePublish = true;
-        }
-        if (iaqBits != g_state.iaqStatus) {
-            g_state.iaqStatus = iaqBits;
-            g_state.pendingIaqStatusPublish = true;
-        }
-        if (statusRhcc != g_state.hvacControllerStatus) {
-            g_state.hvacControllerStatus = statusRhcc;
-            g_state.pendingHvacControllerStatusPublish = true;
-        }
-        if (ventOut.active != g_state.ventilationBoostRequest) {
-            g_state.ventilationBoostRequest = ventOut.active;
-            g_state.pendingVentilationBoostPublish = true;
-        }
+        g_state.out = computed;
     }
 }
 
@@ -756,211 +913,155 @@ PublishSnapshot takePublishSnapshot()
     LockGuard lock(g_state.mutex);
     snapshot.sensorData = g_state.latestSensorData;
     snapshot.availableMask = g_state.availableMask;
-    snapshot.pendingSensorMask = g_state.pendingSensorMask;
-    snapshot.publishAll = g_state.initialPublishPending;
-    snapshot.publishThermostatSetpoint = g_state.pendingThermostatSetpointPublish;
-    snapshot.publishVentilationSetpoint = g_state.pendingVentilationSetpointPublish;
-    snapshot.publishThermostatRequest = g_state.pendingThermostatRequestPublish;
-    snapshot.publishVentilationBoost = g_state.pendingVentilationBoostPublish;
-    snapshot.publishCoolingRequest = g_state.pendingCoolingRequestPublish;
-    snapshot.publishHeatingControl = g_state.pendingHeatingControlPublish;
-    snapshot.publishCoolingControl = g_state.pendingCoolingControlPublish;
-    snapshot.publishFloorLimit = g_state.pendingFloorLimitPublish;
-    snapshot.thermostatSetpointC = g_state.hvac.comfortHeatingSetpointC;
-    snapshot.ventilationSetpointPpm = g_state.hvac.ventilationSetpointPpm;
-    snapshot.thermostatRequest = g_state.thermostatRequest;
-    snapshot.coolingRequest = g_state.coolingRequest;
-    snapshot.ventilationBoostRequest = g_state.ventilationBoostRequest;
-    snapshot.floorLimitActive = g_state.floorLimitActive;
-    snapshot.heatingControlPercent = g_state.heatingControlPercent;
-    snapshot.coolingControlPercent = g_state.coolingControlPercent;
-    snapshot.toggleProgrammingMode = g_state.toggleProgrammingModeRequested;
-
-    // --- Append-only greenfield thermostat-model additions ---
-    snapshot.publishControllerEnable = g_state.pendingControllerEnablePublish;
-    snapshot.publishHvacOperatingMode = g_state.pendingHvacOperatingModePublish;
-    snapshot.publishControllerMode = g_state.pendingControllerModePublish;
-    snapshot.publishHeatCoolState = g_state.pendingHeatCoolStatePublish;
-    snapshot.publishActiveSetpoint = g_state.pendingActiveSetpointPublish;
-    snapshot.publishSetpointShiftFeedback = g_state.pendingSetpointShiftFeedbackPublish;
-    snapshot.publishControllerFault = g_state.pendingControllerFaultPublish;
-    snapshot.publishSensorFaultStatus = g_state.pendingSensorFaultStatusPublish;
-    snapshot.publishHeatingBlocked = g_state.pendingHeatingBlockedPublish;
-    snapshot.publishCoolingBlocked = g_state.pendingCoolingBlockedPublish;
-    snapshot.publishVentilationDemand = g_state.pendingVentilationDemandPublish;
-    snapshot.publishVentilationLevel = g_state.pendingVentilationLevelPublish;
-    snapshot.publishVentilationMode = g_state.pendingVentilationModePublish;
-    snapshot.publishVentilationActive = g_state.pendingVentilationActivePublish;
-    snapshot.publishIaqStatus = g_state.pendingIaqStatusPublish;
-    snapshot.publishHvacControllerStatus = g_state.pendingHvacControllerStatusPublish;
-    snapshot.controllerEnable = g_state.controllerEnable;
+    snapshot.settings = g_state.hvac;
+    snapshot.out = g_state.out;
     snapshot.hvacOperatingMode = g_state.hvacOperatingMode;
     snapshot.controllerMode = g_state.controllerMode;
-    snapshot.heatCoolState = g_state.heatCoolState;
-    snapshot.activeSetpointC = g_state.activeSetpointC;
-    snapshot.setpointShiftFeedbackK = g_state.setpointShiftFeedbackK;
-    snapshot.controllerFault = g_state.controllerFault;
-    snapshot.sensorFaultStatus = g_state.sensorFaultStatus;
-    snapshot.heatingBlocked = g_state.heatingBlocked;
-    snapshot.coolingBlocked = g_state.coolingBlocked;
-    snapshot.ventilationDemandPercent = g_state.ventilationDemandPercent;
-    snapshot.ventilationLevel = g_state.ventilationLevel;
     snapshot.ventilationMode = g_state.ventilationMode;
-    snapshot.ventilationActive = g_state.ventilationActive;
-    snapshot.iaqStatus = g_state.iaqStatus;
-    snapshot.hvacControllerStatus = g_state.hvacControllerStatus;
-
-    g_state.pendingSensorMask = 0;
-    g_state.initialPublishPending = false;
-    g_state.pendingThermostatSetpointPublish = false;
-    g_state.pendingVentilationSetpointPublish = false;
-    g_state.pendingThermostatRequestPublish = false;
-    g_state.pendingVentilationBoostPublish = false;
-    g_state.pendingCoolingRequestPublish = false;
-    g_state.pendingHeatingControlPublish = false;
-    g_state.pendingCoolingControlPublish = false;
-    g_state.pendingFloorLimitPublish = false;
+    snapshot.controllerOnOff = g_state.controllerOnOff;
+    snapshot.toggleProgrammingMode = g_state.toggleProgrammingModeRequested;
     g_state.toggleProgrammingModeRequested = false;
-    g_state.pendingControllerEnablePublish = false;
-    g_state.pendingHvacOperatingModePublish = false;
-    g_state.pendingControllerModePublish = false;
-    g_state.pendingHeatCoolStatePublish = false;
-    g_state.pendingActiveSetpointPublish = false;
-    g_state.pendingSetpointShiftFeedbackPublish = false;
-    g_state.pendingControllerFaultPublish = false;
-    g_state.pendingSensorFaultStatusPublish = false;
-    g_state.pendingHeatingBlockedPublish = false;
-    g_state.pendingCoolingBlockedPublish = false;
-    g_state.pendingVentilationDemandPublish = false;
-    g_state.pendingVentilationLevelPublish = false;
-    g_state.pendingVentilationModePublish = false;
-    g_state.pendingVentilationActivePublish = false;
-    g_state.pendingIaqStatusPublish = false;
-    g_state.pendingHvacControllerStatusPublish = false;
-
     return snapshot;
 }
 
+// Publish every transmitting port. The transmit policy decides what actually
+// reaches the bus (see applyTransmitPolicies), so an unchanged value costs a
+// compare and nothing else; a port the ETS project left unlinked is a no-op.
 template <typename AppT>
-void publishPendingState(AppT &app, const PublishSnapshot &snapshot)
+void publishAllState(AppT &app, const PublishSnapshot &snapshot)
 {
-    const uint32_t publishMask = snapshot.publishAll ? snapshot.availableMask : snapshot.pendingSensorMask;
+    const auto &out = snapshot.out;
+    const CorrectedReadings readings =
+        correctReadings(snapshot.sensorData, snapshot.availableMask, snapshot.settings);
 
-    if ((publishMask & SENSOR_TEMPERATURE) != 0u) {
-        publishPort(app, SensorBoardPort::AirTemperature, snapshot.sensorData.temperature, "air temperature");
+    // --- Room air measurements (FB RTS / RRHS / RAQS) ---
+    if (readings.roomTemperatureValid) {
+        publishPort(app, SensorBoardPort::RoomTemperature, readings.roomTemperatureC,
+                    "room temperature");
     }
-    if ((publishMask & SENSOR_HUMIDITY) != 0u) {
-        publishPort(app, SensorBoardPort::AirHumidity, snapshot.sensorData.humidity, "air humidity");
+    if (readings.roomHumidityValid) {
+        publishPort(app, SensorBoardPort::RoomHumidity, readings.roomHumidityPct, "room humidity");
     }
-    if ((publishMask & SENSOR_PRESSURE) != 0u) {
-        publishPort(app, SensorBoardPort::AirPressure, snapshot.sensorData.pressure, "air pressure");
+    if (readings.co2Valid) {
+        publishPort(app, SensorBoardPort::RoomCo2, readings.co2Ppm, "room co2");
     }
-    if ((publishMask & SENSOR_IAQ) != 0u) {
-        publishPort(app, SensorBoardPort::AirQualityIndex,
-                   static_cast<uint16_t>(snapshot.sensorData.iaq + 0.5f), "air quality index");
+    if (readings.pressureValid) {
+        publishPort(app, SensorBoardPort::RoomAirPressure, readings.pressurePa, "air pressure");
+        publishPort(app, SensorBoardPort::RoomAirPressureSeaLevel, out.seaLevelPressurePa,
+                    "sea-level pressure");
+    }
+    if (readings.iaqValid) {
+        publishPort(app, SensorBoardPort::RoomAirQualityIndex,
+                    static_cast<uint16_t>(readings.iaqIndex + 0.5f), "air quality index");
         publishPort(app, SensorBoardPort::AirQualityAccuracy,
-                   snapshot.sensorData.air_quality_accuracy, "air quality accuracy");
+                    snapshot.sensorData.air_quality_accuracy, "air quality accuracy");
     }
-    if ((publishMask & SENSOR_CO2_EQUIVALENT) != 0u) {
-        publishPort(app, SensorBoardPort::Co2Equivalent, snapshot.sensorData.co2_equivalent, "co2 equivalent");
+    if ((snapshot.availableMask & SENSOR_CO2_EQUIVALENT) != 0u) {
+        publishPort(app, SensorBoardPort::RoomCo2Equivalent, snapshot.sensorData.co2_equivalent,
+                    "co2 equivalent");
     }
-    if ((publishMask & SENSOR_VOC_EQUIVALENT) != 0u) {
-        publishPort(app, SensorBoardPort::VocEquivalent, snapshot.sensorData.voc_equivalent, "voc equivalent");
-    }
-    if ((publishMask & SENSOR_CO2) != 0u) {
-        publishPort(app, SensorBoardPort::Co2, static_cast<float>(snapshot.sensorData.co2), "co2");
-    }
-    if ((publishMask & SENSOR_EXT_PROBE_TEMPERATURE) != 0u) {
-        publishPort(app, SensorBoardPort::ProbeTemperature, snapshot.sensorData.ext_probe_temperature, "probe temperature");
-    }
-    if ((publishMask & SENSOR_EXT_PROBE_HUMIDITY) != 0u) {
-        publishPort(app, SensorBoardPort::ProbeHumidity, snapshot.sensorData.ext_probe_humidity, "probe humidity");
+    if ((snapshot.availableMask & SENSOR_VOC_EQUIVALENT) != 0u) {
+        publishPort(app, SensorBoardPort::RoomVocEquivalent, snapshot.sensorData.voc_equivalent,
+                    "voc equivalent");
     }
 
-    if (snapshot.publishAll || snapshot.publishThermostatSetpoint) {
-        publishPort(app, SensorBoardPort::ThermostatSetpoint, snapshot.thermostatSetpointC, "thermostat setpoint");
-    }
-    if (snapshot.publishAll || snapshot.publishVentilationSetpoint) {
-        publishPort(app, SensorBoardPort::VentilationSetpoint, snapshot.ventilationSetpointPpm, "ventilation setpoint");
-    }
-    if (snapshot.publishAll || snapshot.publishThermostatRequest) {
-        publishPort(app, SensorBoardPort::ThermostatRequest, snapshot.thermostatRequest, "thermostat request");
-    }
-    if (snapshot.publishAll || snapshot.publishVentilationBoost) {
-        publishPort(app, SensorBoardPort::VentilationBoostRequest, snapshot.ventilationBoostRequest, "ventilation boost request");
-    }
-    if (snapshot.publishAll || snapshot.publishCoolingRequest) {
-        publishPort(app, SensorBoardPort::CoolingRequest, snapshot.coolingRequest, "cooling request");
-    }
-    if (snapshot.publishAll || snapshot.publishHeatingControl) {
-        publishPort(app, SensorBoardPort::HeatingControlValue, snapshot.heatingControlPercent, "heating control value");
-    }
-    if (snapshot.publishAll || snapshot.publishCoolingControl) {
-        publishPort(app, SensorBoardPort::CoolingControlValue, snapshot.coolingControlPercent, "cooling control value");
-    }
-    if (snapshot.publishAll || snapshot.publishFloorLimit) {
-        publishPort(app, SensorBoardPort::FloorLimitActive, snapshot.floorLimitActive, "floor limit active");
+    // --- Derived room air values ---
+    if (readings.roomAirValid()) {
+        publishPort(app, SensorBoardPort::RoomDewPoint, out.roomDewPointC, "room dew point");
+        publishPort(app, SensorBoardPort::RoomAbsoluteHumidity, out.roomAbsoluteHumidityGm3,
+                    "room absolute humidity");
     }
 
-    // --- Append-only greenfield thermostat-model additions ---
-    if (snapshot.publishAll || snapshot.publishControllerEnable) {
-        publishPort(app, SensorBoardPort::ControllerEnable, snapshot.controllerEnable, "controller enable");
+    // --- Floor probe (FB FTS + slab moisture) ---
+    if (readings.floorTemperatureValid) {
+        publishPort(app, SensorBoardPort::FloorTemperature, readings.floorTemperatureC,
+                    "floor temperature");
     }
-    if (snapshot.publishAll || snapshot.publishHvacOperatingMode) {
-        const auto result = app.publish(SensorBoardPort::HvacOperatingMode,
-                                        static_cast<Dpt20Mode>(snapshot.hvacOperatingMode));
+    if (readings.floorHumidityValid) {
+        publishPort(app, SensorBoardPort::FloorHumidity, readings.floorHumidityPct,
+                    "floor humidity");
+    }
+    if (readings.floorProbeValid()) {
+        publishPort(app, SensorBoardPort::FloorAbsoluteHumidity, out.floorAbsoluteHumidityGm3,
+                    "floor absolute humidity");
+    }
+    publishPort(app, SensorBoardPort::FloorMoistureAlarm, out.floorMoistureAlarm,
+                "floor moisture alarm");
+    publishPort(app, SensorBoardPort::FloorLimitActive, out.floorLimitActive, "floor limit active");
+    publishPort(app, SensorBoardPort::FloorComfortActive, out.floorComfortActive,
+                "floor comfort active");
+
+    // --- Condensation protection (FB DPS) ---
+    publishPort(app, SensorBoardPort::DewPointAlarm, out.dewPointAlarm, "dew point alarm");
+    publishPort(app, SensorBoardPort::DewPointMargin, out.dewPointMarginK, "dew point margin");
+    publishPort(app, SensorBoardPort::FreeCoolingAvailable, out.freeCoolingAvailable,
+                "free cooling available");
+    publishPort(app, SensorBoardPort::FreeDryingAvailable, out.freeDryingAvailable,
+                "free drying available");
+
+    // --- Mode and setpoints (FB RTSM) ---
+    publishPort(app, SensorBoardPort::ControllerOnOff, snapshot.controllerOnOff,
+                "controller on/off");
+    {
+        // HvacModeStatus reports the mode the controller resolved to, which
+        // window/presence handling can move away from the requested one.
+        const auto result = app.publish(SensorBoardPort::HvacModeStatus,
+                                        static_cast<Dpt20Mode>(out.activePreset));
         if (result.isError()) {
-            KNX_LOGW(TAG, "hvac operating mode publish failed: %d", static_cast<int>(result.error()));
+            KNX_LOGW(TAG, "hvac mode status publish failed: %s",
+                     util::errorCodeToString(result.error()));
         }
     }
-    if (snapshot.publishAll || snapshot.publishControllerMode) {
-        publishPort(app, SensorBoardPort::ControllerMode,
-                   sensor_board::hvac::controllerModeToContrMode(snapshot.controllerMode),
-                   "controller mode");
-    }
-    if (snapshot.publishAll || snapshot.publishHeatCoolState) {
-        publishPort(app, SensorBoardPort::HeatCoolState,
-                   static_cast<uint8_t>(snapshot.heatCoolState), "heat/cool state");
-    }
-    if (snapshot.publishAll || snapshot.publishActiveSetpoint) {
-        publishPort(app, SensorBoardPort::ActiveSetpointFeedback, snapshot.activeSetpointC, "active setpoint feedback");
-    }
-    if (snapshot.publishAll || snapshot.publishSetpointShiftFeedback) {
-        publishPort(app, SensorBoardPort::SetpointShiftFeedback, snapshot.setpointShiftFeedbackK, "setpoint shift feedback");
-    }
-    if (snapshot.publishAll || snapshot.publishControllerFault) {
-        publishPort(app, SensorBoardPort::ControllerFault, snapshot.controllerFault, "controller fault");
-    }
-    if (snapshot.publishAll || snapshot.publishSensorFaultStatus) {
-        publishPort(app, SensorBoardPort::SensorFaultStatus, snapshot.sensorFaultStatus, "sensor fault status");
-    }
-    if (snapshot.publishAll || snapshot.publishHeatingBlocked) {
-        publishPort(app, SensorBoardPort::HeatingBlocked, snapshot.heatingBlocked, "heating blocked");
-    }
-    if (snapshot.publishAll || snapshot.publishCoolingBlocked) {
-        publishPort(app, SensorBoardPort::CoolingBlocked, snapshot.coolingBlocked, "cooling blocked");
-    }
-    if (snapshot.publishAll || snapshot.publishVentilationDemand) {
-        publishPort(app, SensorBoardPort::VentilationDemandPercent, snapshot.ventilationDemandPercent, "ventilation demand");
-    }
-    if (snapshot.publishAll || snapshot.publishVentilationLevel) {
-        publishPort(app, SensorBoardPort::VentilationLevel,
-                   static_cast<uint8_t>(snapshot.ventilationLevel), "ventilation level");
-    }
-    if (snapshot.publishAll || snapshot.publishVentilationMode) {
-        publishPort(app, SensorBoardPort::VentilationMode,
-                   static_cast<uint8_t>(snapshot.ventilationMode), "ventilation mode");
-    }
-    if (snapshot.publishAll || snapshot.publishVentilationActive) {
-        publishPort(app, SensorBoardPort::VentilationActive, snapshot.ventilationActive, "ventilation active");
-    }
-    if (snapshot.publishAll || snapshot.publishIaqStatus) {
-        publishPort(app, SensorBoardPort::IaqStatus, snapshot.iaqStatus, "iaq status");
-    }
-    if (snapshot.publishAll || snapshot.publishHvacControllerStatus) {
-        publishPort(app, SensorBoardPort::HvacControllerStatus, snapshot.hvacControllerStatus,
-                   "hvac controller status");
-    }
+    publishPort(app, SensorBoardPort::ContrModeStatus,
+                hvac_ns::controllerModeToContrMode(out.activeControllerMode), "contr mode status");
+    publishPort(app, SensorBoardPort::ContrModeSecondary,
+                hvac_ns::controllerModeToContrMode(out.activeControllerMode),
+                "contr mode secondary");
+    publishPort(app, SensorBoardPort::SetpointBase, snapshot.settings.comfortHeatingSetpointC,
+                "base setpoint");
+    publishPort(app, SensorBoardPort::SetpointShiftStatus, out.setpointShiftFeedbackK,
+                "setpoint shift status");
+    publishPort(app, SensorBoardPort::SetpointStatus, out.activeSetpointC, "active setpoint");
+    publishPort(app, SensorBoardPort::SetpointHeatingStatus, out.heatingSetpointC,
+                "heating setpoint");
+    publishPort(app, SensorBoardPort::SetpointCoolingStatus, out.coolingSetpointC,
+                "cooling setpoint");
+
+    // --- Controller outputs (FB RTC) ---
+    publishPort(app, SensorBoardPort::HeatingControlValue, out.heatingControlPercent,
+                "heating control value");
+    publishPort(app, SensorBoardPort::CoolingControlValue, out.coolingControlPercent,
+                "cooling control value");
+    publishPort(app, SensorBoardPort::HeatingRequest, out.heatingRequest, "heating request");
+    publishPort(app, SensorBoardPort::CoolingRequest, out.coolingRequest, "cooling request");
+    publishPort(app, SensorBoardPort::HeatCoolModeStatus, out.heatCoolModeHeating,
+                "heat/cool mode status");
+    publishPort(app, SensorBoardPort::EnableHeatStatus, out.enableHeat, "enable heat status");
+    publishPort(app, SensorBoardPort::EnableCoolStatus, out.enableCool, "enable cool status");
+    publishPort(app, SensorBoardPort::ControllerStatus, out.controllerStatus, "controller status");
+
+    // --- Ventilation / air quality ---
+    publishPort(app, SensorBoardPort::Co2Setpoint, snapshot.settings.ventilationSetpointPpm,
+                "co2 setpoint");
+    publishPort(app, SensorBoardPort::VentilationDemand, out.ventilationDemandPercent,
+                "ventilation demand");
+    publishPort(app, SensorBoardPort::VentilationStage, static_cast<uint8_t>(out.ventilationLevel),
+                "ventilation stage");
+    publishPort(app, SensorBoardPort::VentilationMode,
+                static_cast<uint8_t>(snapshot.ventilationMode), "ventilation mode");
+    publishPort(app, SensorBoardPort::VentilationBoostRequest, out.ventilationBoostRequest,
+                "ventilation boost request");
+    publishPort(app, SensorBoardPort::DehumidifyRequest, out.dehumidifyRequest,
+                "dehumidify request");
+    publishPort(app, SensorBoardPort::AirQualityStatus, out.airQualityStatus,
+                "air quality status");
+
+    // --- Device diagnostics ---
+    publishPort(app, SensorBoardPort::DeviceFault, out.deviceFault, "device fault");
+    publishPort(app, SensorBoardPort::RoomSensorStatus, out.roomSensorStatus, "room sensor status");
+    publishPort(app, SensorBoardPort::FloorProbeStatus, out.floorProbeStatus, "floor probe status");
+    publishPort(app, SensorBoardPort::AirQualitySensorStatus, out.airQualitySensorStatus,
+                "air quality sensor status");
 }
 
 void knxServiceTask(void *arg)
@@ -1004,63 +1105,40 @@ void knxServiceTask(void *arg)
                               kDefaultBindingCapacity> appPtr;
     {
     auto bindings = makeCommissionedBindings(kSensorBoardProduct)
-        // Room setpoint write from an HMI / HA target_temperature: update the
-        // live comfort heating setpoint (the base the controller resolves from),
-        // clamped to the configured [min,max] band. The effective per-mode
-        // setpoint is reported on ActiveSetpointFeedback.
-        .onStateWrite<SensorBoardPort::ThermostatSetpoint>([](float value) {
+        // ---- Measurements: read requests are answered from the same
+        // corrected readings the control loops use, so a bus read and a
+        // spontaneous send can never disagree.
+        .provideState<SensorBoardPort::RoomTemperature>([]() {
             LockGuard lock(g_state.mutex);
-            const float clamped =
-                sensor_board::hvac::clampf(value, g_state.hvac.minSetpointC, g_state.hvac.maxSetpointC);
-            if (std::fabs(g_state.hvac.comfortHeatingSetpointC - clamped) < 0.01f) {
-                return;
-            }
-            g_state.hvac.comfortHeatingSetpointC = clamped;
-            g_state.pendingThermostatSetpointPublish = true;
-            ESP_LOGI(TAG, "Room comfort setpoint updated to %.2f C", clamped);
+            return g_state.latestSensorData.temperature + g_state.hvac.roomTemperatureOffsetK;
         })
-        .provideState<SensorBoardPort::ThermostatSetpoint>([]() {
+        .provideState<SensorBoardPort::RoomHumidity>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.hvac.comfortHeatingSetpointC;
+            return hvac_ns::clampf(
+                g_state.latestSensorData.humidity + g_state.hvac.roomHumidityOffsetPct, 0.0f,
+                100.0f);
         })
-        .onStateWrite<SensorBoardPort::VentilationSetpoint>([](float value) {
-            LockGuard lock(g_state.mutex);
-            if (std::fabs(g_state.hvac.ventilationSetpointPpm - value) < 0.5f) {
-                return;
-            }
-            g_state.hvac.ventilationSetpointPpm = value;
-            g_state.pendingVentilationSetpointPublish = true;
-            ESP_LOGI(TAG, "Ventilation setpoint updated to %.0f ppm", value);
-        })
-        .provideState<SensorBoardPort::VentilationSetpoint>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.hvac.ventilationSetpointPpm;
-        })
-        .provideState<SensorBoardPort::AirTemperature>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.latestSensorData.temperature;
-        })
-        .provideState<SensorBoardPort::AirHumidity>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.latestSensorData.humidity;
-        })
-        .provideState<SensorBoardPort::AirPressure>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.latestSensorData.pressure;
-        })
-        .provideState<SensorBoardPort::Co2>([]() {
+        .provideState<SensorBoardPort::RoomCo2>([]() {
             LockGuard lock(g_state.mutex);
             return static_cast<float>(g_state.latestSensorData.co2);
         })
-        .provideState<SensorBoardPort::AirQualityIndex>([]() {
+        .provideState<SensorBoardPort::RoomAirPressure>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.latestSensorData.pressure;
+        })
+        .provideState<SensorBoardPort::RoomAirPressureSeaLevel>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.seaLevelPressurePa;
+        })
+        .provideState<SensorBoardPort::RoomAirQualityIndex>([]() {
             LockGuard lock(g_state.mutex);
             return static_cast<uint16_t>(g_state.latestSensorData.iaq + 0.5f);
         })
-        .provideState<SensorBoardPort::Co2Equivalent>([]() {
+        .provideState<SensorBoardPort::RoomCo2Equivalent>([]() {
             LockGuard lock(g_state.mutex);
             return g_state.latestSensorData.co2_equivalent;
         })
-        .provideState<SensorBoardPort::VocEquivalent>([]() {
+        .provideState<SensorBoardPort::RoomVocEquivalent>([]() {
             LockGuard lock(g_state.mutex);
             return g_state.latestSensorData.voc_equivalent;
         })
@@ -1068,340 +1146,557 @@ void knxServiceTask(void *arg)
             LockGuard lock(g_state.mutex);
             return g_state.latestSensorData.air_quality_accuracy;
         })
-        .provideState<SensorBoardPort::ProbeTemperature>([]() {
+        .provideState<SensorBoardPort::RoomDewPoint>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.latestSensorData.ext_probe_temperature;
+            return g_state.out.roomDewPointC;
         })
-        .provideState<SensorBoardPort::ProbeHumidity>([]() {
+        .provideState<SensorBoardPort::RoomAbsoluteHumidity>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.roomAbsoluteHumidityGm3;
+        })
+        .provideState<SensorBoardPort::FloorTemperature>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.latestSensorData.ext_probe_temperature
+                   + g_state.hvac.floorTemperatureOffsetK;
+        })
+        .provideState<SensorBoardPort::FloorHumidity>([]() {
             LockGuard lock(g_state.mutex);
             return g_state.latestSensorData.ext_probe_humidity;
         })
-        .provideState<SensorBoardPort::ThermostatRequest>([]() {
+        .provideState<SensorBoardPort::FloorAbsoluteHumidity>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.thermostatRequest;
+            return g_state.out.floorAbsoluteHumidityGm3;
         })
-        .provideState<SensorBoardPort::VentilationBoostRequest>([]() {
+        .provideState<SensorBoardPort::FloorMoistureAlarm>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.ventilationBoostRequest;
-        })
-        .provideState<SensorBoardPort::CoolingRequest>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.coolingRequest;
-        })
-        .provideState<SensorBoardPort::HeatingControlValue>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.heatingControlPercent;
-        })
-        .provideState<SensorBoardPort::CoolingControlValue>([]() {
-            LockGuard lock(g_state.mutex);
-            return g_state.coolingControlPercent;
+            return g_state.out.floorMoistureAlarm;
         })
         .provideState<SensorBoardPort::FloorLimitActive>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.floorLimitActive;
+            return g_state.out.floorLimitActive;
         })
-        // --- Append-only greenfield thermostat-model additions ---
-        .onStateWrite<SensorBoardPort::ControllerEnable>([](bool value) {
+        .provideState<SensorBoardPort::FloorComfortActive>([]() {
             LockGuard lock(g_state.mutex);
-            if (g_state.controllerEnable == value) return;
-            g_state.controllerEnable = value;
-            g_state.pendingControllerEnablePublish = true;
+            return g_state.out.floorComfortActive;
         })
-        .provideState<SensorBoardPort::ControllerEnable>([]() {
+
+        // ---- Condensation protection (FB DPS) ----
+        .provideState<SensorBoardPort::DewPointAlarm>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.controllerEnable;
+            return g_state.out.dewPointAlarm;
         })
-        .onStateWrite<SensorBoardPort::HvacOperatingMode>([](Dpt20Mode value) {
-            const auto mode = static_cast<sensor_board::hvac::OperatingPreset>(value);
+        .provideState<SensorBoardPort::DewPointMargin>([]() {
             LockGuard lock(g_state.mutex);
-            if (g_state.hvacOperatingMode == mode) return;
-            g_state.hvacOperatingMode = mode;
-            g_state.pendingHvacOperatingModePublish = true;
+            return g_state.out.dewPointMarginK;
         })
-        .provideState<SensorBoardPort::HvacOperatingMode>([]() {
+        .onStateWrite<SensorBoardPort::DewPointStatusInput>([](bool value) {
             LockGuard lock(g_state.mutex);
-            return static_cast<Dpt20Mode>(g_state.hvacOperatingMode);
+            g_state.externalDewPointAlarm = value;
         })
-        // ControllerMode on the bus is DPT 20.105 (HVACContrMode); map to/from
-        // the compact internal enum at the binding boundary.
-        .onStateWrite<SensorBoardPort::ControllerMode>([](uint8_t value) {
-            const auto mode = sensor_board::hvac::controllerModeFromContrMode(value);
+
+        // ---- Neighbour-device inputs ----
+        .onStateWrite<SensorBoardPort::OutsideTemperature>([](float value) {
             LockGuard lock(g_state.mutex);
-            if (g_state.controllerMode == mode) return;
-            g_state.controllerMode = mode;
-            g_state.pendingControllerModePublish = true;
+            g_state.outsideTemperatureC = value;
+            g_state.outsideTemperatureValid = true;
         })
-        .provideState<SensorBoardPort::ControllerMode>([]() {
+        .onStateWrite<SensorBoardPort::OutsideHumidity>([](float value) {
             LockGuard lock(g_state.mutex);
-            return sensor_board::hvac::controllerModeToContrMode(g_state.controllerMode);
+            g_state.outsideHumidityPct = hvac_ns::clampf(value, 0.0f, 100.0f);
+            g_state.outsideHumidityValid = true;
         })
-        .onStateWrite<SensorBoardPort::HeatCoolChangeover>([](bool value) {
+        .onStateWrite<SensorBoardPort::FlowTemperature>([](float value) {
             LockGuard lock(g_state.mutex);
-            g_state.heatCoolChangeover = value;
+            g_state.flowTemperatureC = value;
+            g_state.flowTemperatureValid = true;
         })
-        .provideState<SensorBoardPort::HeatCoolState>([]() {
+        .provideState<SensorBoardPort::FreeCoolingAvailable>([]() {
             LockGuard lock(g_state.mutex);
-            return static_cast<uint8_t>(g_state.heatCoolState);
+            return g_state.out.freeCoolingAvailable;
         })
-        .provideState<SensorBoardPort::ActiveSetpointFeedback>([]() {
+        .provideState<SensorBoardPort::FreeDryingAvailable>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.activeSetpointC;
+            return g_state.out.freeDryingAvailable;
+        })
+
+        // ---- Mode and setpoints (FB RTSM) ----
+        .onStateWrite<SensorBoardPort::ControllerOnOff>([](bool value) {
+            LockGuard lock(g_state.mutex);
+            g_state.controllerOnOff = value;
+        })
+        .provideState<SensorBoardPort::ControllerOnOff>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.controllerOnOff;
+        })
+        .onStateWrite<SensorBoardPort::HvacMode>([](Dpt20Mode value) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(value);
+        })
+        .provideState<SensorBoardPort::HvacModeStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return static_cast<Dpt20Mode>(g_state.out.activePreset);
+        })
+        // The bus objects carry DPT 20.105 (HVACContrMode) code points; the
+        // internal enum is compact. Map at the binding boundary only.
+        .onStateWrite<SensorBoardPort::ContrMode>([](uint8_t value) {
+            LockGuard lock(g_state.mutex);
+            g_state.controllerMode = hvac_ns::controllerModeFromContrMode(value);
+        })
+        .provideState<SensorBoardPort::ContrModeStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return hvac_ns::controllerModeToContrMode(g_state.out.activeControllerMode);
+        })
+        .provideState<SensorBoardPort::ContrModeSecondary>([]() {
+            LockGuard lock(g_state.mutex);
+            return hvac_ns::controllerModeToContrMode(g_state.out.activeControllerMode);
+        })
+        // Base setpoint write from an HMI or Home Assistant's
+        // target_temperature: this is the comfort heating anchor of the KNX
+        // setpoint ladder, so writing it moves standby/economy/cooling with it.
+        .onStateWrite<SensorBoardPort::SetpointBase>([](float value) {
+            LockGuard lock(g_state.mutex);
+            const float clamped =
+                hvac_ns::clampf(value, g_state.hvac.minSetpointC, g_state.hvac.maxSetpointC);
+            if (std::fabs(g_state.hvac.comfortHeatingSetpointC - clamped) < 0.01f) {
+                return;
+            }
+            g_state.hvac.comfortHeatingSetpointC = clamped;
+            ESP_LOGI(TAG, "Base (comfort heating) setpoint updated to %.2f C", clamped);
+        })
+        .provideState<SensorBoardPort::SetpointBase>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.hvac.comfortHeatingSetpointC;
         })
         .onStateWrite<SensorBoardPort::SetpointShift>([](float value) {
             LockGuard lock(g_state.mutex);
             g_state.setpointShiftK = value;
         })
-        .provideState<SensorBoardPort::SetpointShiftFeedback>([]() {
+        .provideState<SensorBoardPort::SetpointShiftStatus>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.setpointShiftFeedbackK;
+            return g_state.out.setpointShiftFeedbackK;
         })
-        .onStateWrite<SensorBoardPort::WindowOpen>([](bool value) {
+        .provideState<SensorBoardPort::SetpointStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.activeSetpointC;
+        })
+        .provideState<SensorBoardPort::SetpointHeatingStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.heatingSetpointC;
+        })
+        .provideState<SensorBoardPort::SetpointCoolingStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.coolingSetpointC;
+        })
+
+        // ---- Room inputs (FB WOS / PRD / WCOS) ----
+        .onStateWrite<SensorBoardPort::WindowStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
             g_state.windowOpen = value;
         })
-        .onStateWrite<SensorBoardPort::Presence>([](bool value) {
+        .onStateWrite<SensorBoardPort::PresenceStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
             g_state.presence = value;
             g_state.presenceKnown = true;
         })
-        .provideState<SensorBoardPort::ControllerFault>([]() {
+        .onStateWrite<SensorBoardPort::SwitchHeat>([](bool value) {
             LockGuard lock(g_state.mutex);
-            return g_state.controllerFault;
+            g_state.switchHeat = value;
         })
-        .provideState<SensorBoardPort::SensorFaultStatus>([]() {
+        .onStateWrite<SensorBoardPort::SwitchCool>([](bool value) {
             LockGuard lock(g_state.mutex);
-            return g_state.sensorFaultStatus;
+            g_state.switchCool = value;
         })
-        .provideState<SensorBoardPort::HeatingBlocked>([]() {
+        .onStateWrite<SensorBoardPort::ChangeOverStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
-            return g_state.heatingBlocked;
+            g_state.changeOverStatus = value;
         })
-        .provideState<SensorBoardPort::CoolingBlocked>([]() {
+
+        // ---- Controller outputs (FB RTC) ----
+        .provideState<SensorBoardPort::HeatingControlValue>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.coolingBlocked;
+            return g_state.out.heatingControlPercent;
         })
-        .provideState<SensorBoardPort::VentilationDemandPercent>([]() {
+        .provideState<SensorBoardPort::CoolingControlValue>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.ventilationDemandPercent;
+            return g_state.out.coolingControlPercent;
         })
-        .provideState<SensorBoardPort::VentilationLevel>([]() {
+        .provideState<SensorBoardPort::HeatingRequest>([]() {
             LockGuard lock(g_state.mutex);
-            return static_cast<uint8_t>(g_state.ventilationLevel);
+            return g_state.out.heatingRequest;
+        })
+        .provideState<SensorBoardPort::CoolingRequest>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.coolingRequest;
+        })
+        .provideState<SensorBoardPort::HeatCoolModeStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.heatCoolModeHeating;
+        })
+        .provideState<SensorBoardPort::EnableHeatStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.enableHeat;
+        })
+        .provideState<SensorBoardPort::EnableCoolStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.enableCool;
+        })
+        .provideState<SensorBoardPort::ControllerStatus>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.controllerStatus;
+        })
+
+        // ---- Ventilation / air quality ----
+        .onStateWrite<SensorBoardPort::Co2Setpoint>([](float value) {
+            LockGuard lock(g_state.mutex);
+            if (std::fabs(g_state.hvac.ventilationSetpointPpm - value) < 0.5f) {
+                return;
+            }
+            g_state.hvac.ventilationSetpointPpm = value;
+            ESP_LOGI(TAG, "CO2 setpoint updated to %.0f ppm", value);
+        })
+        .provideState<SensorBoardPort::Co2Setpoint>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.hvac.ventilationSetpointPpm;
+        })
+        .provideState<SensorBoardPort::VentilationDemand>([]() {
+            LockGuard lock(g_state.mutex);
+            return g_state.out.ventilationDemandPercent;
+        })
+        .provideState<SensorBoardPort::VentilationStage>([]() {
+            LockGuard lock(g_state.mutex);
+            return static_cast<uint8_t>(g_state.out.ventilationLevel);
         })
         .onStateWrite<SensorBoardPort::VentilationMode>([](uint8_t value) {
-            const auto mode = static_cast<sensor_board::hvac::VentilationMode>(value);
             LockGuard lock(g_state.mutex);
-            if (g_state.ventilationMode == mode) return;
-            g_state.ventilationMode = mode;
-            g_state.pendingVentilationModePublish = true;
+            g_state.ventilationMode = static_cast<hvac_ns::VentilationMode>(value);
         })
         .provideState<SensorBoardPort::VentilationMode>([]() {
             LockGuard lock(g_state.mutex);
             return static_cast<uint8_t>(g_state.ventilationMode);
         })
-        .provideState<SensorBoardPort::VentilationActive>([]() {
+        .provideState<SensorBoardPort::VentilationBoostRequest>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.ventilationActive;
+            return g_state.out.ventilationBoostRequest;
         })
-        .provideState<SensorBoardPort::IaqStatus>([]() {
+        .provideState<SensorBoardPort::DehumidifyRequest>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.iaqStatus;
+            return g_state.out.dehumidifyRequest;
         })
-        .provideState<SensorBoardPort::HvacControllerStatus>([]() {
+        .provideState<SensorBoardPort::AirQualityStatus>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.hvacControllerStatus;
+            return g_state.out.airQualityStatus;
         })
-        // Fractional ETS parameters arrive as Dpt9Float (KNX 2-byte half-float,
-        // implicitly convertible to float); ppm/second parameters as uint16_t.
-        .onParameterChanged<SensorBoardParameter::DefaultVentilationSetpoint>([](uint16_t value) {
-            const float setpointPpm = static_cast<float>(value);
+
+        // ---- Device diagnostics ----
+        .provideState<SensorBoardPort::DeviceFault>([]() {
             LockGuard lock(g_state.mutex);
-            if (std::fabs(g_state.hvac.ventilationSetpointPpm - setpointPpm) < 0.5f) {
-                return;
-            }
-            g_state.hvac.ventilationSetpointPpm = setpointPpm;
-            g_state.pendingVentilationSetpointPublish = true;
+            return g_state.out.deviceFault;
         })
-        .onParameterChanged<SensorBoardParameter::ThermostatHysteresis>([](Dpt9Float value) {
+        .provideState<SensorBoardPort::RoomSensorStatus>([]() {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.thermostatHysteresisC = value;
+            return g_state.out.roomSensorStatus;
         })
-        .onParameterChanged<SensorBoardParameter::VentilationHysteresis>([](uint16_t value) {
+        .provideState<SensorBoardPort::FloorProbeStatus>([]() {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.ventilationHysteresisPpm = static_cast<float>(value);
+            return g_state.out.floorProbeStatus;
         })
-        .onParameterChanged<SensorBoardParameter::HeatingKp>([](Dpt9Float value) {
+        .provideState<SensorBoardPort::AirQualitySensorStatus>([]() {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingKp = value;
+            return g_state.out.airQualitySensorStatus;
         })
-        .onParameterChanged<SensorBoardParameter::HeatingTiSeconds>([](uint16_t value) {
+
+        // ---- ETS parameters ----
+        // Fractional parameters arrive as Dpt9Float (KNX 2-byte half-float,
+        // implicitly convertible to float); counts and seconds as uint16_t;
+        // enumerations and percentages as uint8_t.
+        .onParameterChanged<SensorBoardParameter::MeasurementHeartbeatSeconds>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingTiSeconds = static_cast<float>(value);
+            g_state.hvac.heartbeatSeconds = v;
         })
-        .onParameterChanged<SensorBoardParameter::HeatingTdSeconds>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::MeasurementMinRepTimeSeconds>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingTdSeconds = static_cast<float>(value);
+            g_state.hvac.minRepTimeSeconds = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingKp>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::RoomTemperatureOffset>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingKp = value;
+            g_state.hvac.roomTemperatureOffsetK = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingTiSeconds>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::RoomTemperatureCov>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingTiSeconds = static_cast<float>(value);
+            g_state.hvac.roomTemperatureCovK = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingTdSeconds>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::RoomHumidityOffset>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingTdSeconds = static_cast<float>(value);
+            g_state.hvac.roomHumidityOffsetPct = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingDeadband>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::RoomHumidityCov>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingDeadbandK = value;
+            g_state.hvac.roomHumidityCovPct = v;
         })
-        .onParameterChanged<SensorBoardParameter::MaxFloorTemperature>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::Co2Cov>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.maxFloorTemperatureC = value;
+            g_state.hvac.co2CovPpm = static_cast<float>(v);
         })
-        .onParameterChanged<SensorBoardParameter::FloorHysteresis>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::PressureCov>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.floorHysteresisK = value;
+            g_state.hvac.pressureCovPa = static_cast<float>(v);
         })
-        .onParameterChanged<SensorBoardParameter::HumidityBoostThreshold>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::AirQualityCov>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.humidityBoostPct = value;
+            g_state.hvac.airQualityCovIndex = static_cast<float>(v);
         })
-        .onParameterChanged<SensorBoardParameter::HumidityBoostHysteresis>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::FloorTemperatureOffset>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.humidityBoostHysteresisPct = value;
+            g_state.hvac.floorTemperatureOffsetK = v;
         })
-        // --- Append-only greenfield thermostat-model additions ---
-        .onParameterChanged<SensorBoardParameter::ControllerDefaultEnable>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::FloorTemperatureCov>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.controllerDefaultEnable = (value != 0);
+            g_state.hvac.floorTemperatureCovK = v;
         })
-        .onParameterChanged<SensorBoardParameter::DefaultHvacOperatingMode>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::FloorHumidityCov>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.defaultHvacOperatingMode = static_cast<sensor_board::hvac::OperatingPreset>(value);
+            g_state.hvac.floorHumidityCovPct = v;
         })
-        .onParameterChanged<SensorBoardParameter::DefaultControllerMode>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::DerivedValueCov>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.defaultControllerMode = static_cast<sensor_board::hvac::ControllerMode>(value);
+            g_state.hvac.derivedCov = v;
         })
-        .onParameterChanged<SensorBoardParameter::ComfortHeatingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::AltitudeM>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.comfortHeatingSetpointC = value;
+            g_state.hvac.altitudeM = static_cast<float>(v);
         })
-        .onParameterChanged<SensorBoardParameter::StandbyHeatingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::ControllerDefaultEnable>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.standbyHeatingSetpointC = value;
+            g_state.hvac.controllerDefaultEnable = (v != 0);
         })
-        .onParameterChanged<SensorBoardParameter::EconomyHeatingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::DefaultHvacOperatingMode>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.economyHeatingSetpointC = value;
+            g_state.hvac.defaultHvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(v);
         })
-        .onParameterChanged<SensorBoardParameter::ProtectionHeatingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::DefaultControllerMode>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.protectionHeatingSetpointC = value;
+            g_state.hvac.defaultControllerMode = static_cast<hvac_ns::ControllerMode>(v);
         })
-        .onParameterChanged<SensorBoardParameter::ComfortCoolingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::HeatingEnabled>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.comfortCoolingSetpointC = value;
+            g_state.hvac.heatingEnabled = (v != 0);
         })
-        .onParameterChanged<SensorBoardParameter::StandbyCoolingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::CoolingEnabled>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.standbyCoolingSetpointC = value;
+            g_state.hvac.coolingEnabled = (v != 0);
         })
-        .onParameterChanged<SensorBoardParameter::EconomyCoolingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::HeatCoolChangeoverMode>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.economyCoolingSetpointC = value;
+            g_state.hvac.heatCoolChangeoverMode = static_cast<hvac_ns::HeatCoolChangeoverMode>(v);
         })
-        .onParameterChanged<SensorBoardParameter::ProtectionCoolingSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::HeatCoolChangeoverPolarity>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.protectionCoolingSetpointC = value;
+            g_state.hvac.heatCoolChangeoverPolarityInverted = (v != 0);
         })
-        .onParameterChanged<SensorBoardParameter::MinSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::MinimumHeatCoolChangeoverSeconds>(
+            [](uint16_t v) {
+                LockGuard lock(g_state.mutex);
+                g_state.hvac.minimumHeatCoolChangeoverSeconds = static_cast<float>(v);
+            })
+        .onParameterChanged<SensorBoardParameter::WindowOpenBehavior>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.minSetpointC = value;
+            g_state.hvac.windowOpenBehavior = static_cast<hvac_ns::WindowOpenBehavior>(v);
         })
-        .onParameterChanged<SensorBoardParameter::MaxSetpoint>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::PresenceBehavior>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.maxSetpointC = value;
+            g_state.hvac.presenceBehavior = static_cast<hvac_ns::PresenceBehavior>(v);
         })
-        .onParameterChanged<SensorBoardParameter::MaxSetpointShift>([](Dpt9Float value) {
+        .onParameterChanged<SensorBoardParameter::SensorFaultBehavior>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.maxSetpointShiftK = value;
+            g_state.hvac.sensorFaultBehavior = static_cast<hvac_ns::SensorFaultBehavior>(v);
         })
-        .onParameterChanged<SensorBoardParameter::HeatingEnabled>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::ComfortHeatingSetpoint>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingEnabled = (value != 0);
+            g_state.hvac.comfortHeatingSetpointC = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingEnabled>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::StandbyHeatingReduction>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingEnabled = (value != 0);
+            g_state.hvac.standbyHeatingReductionK = v;
         })
-        .onParameterChanged<SensorBoardParameter::HeatCoolChangeoverMode>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::EconomyHeatingReduction>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatCoolChangeoverMode = static_cast<sensor_board::hvac::HeatCoolChangeoverMode>(value);
+            g_state.hvac.economyHeatingReductionK = v;
         })
-        .onParameterChanged<SensorBoardParameter::HeatCoolChangeoverPolarity>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::ProtectionHeatingSetpoint>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatCoolChangeoverPolarityInverted = (value != 0);
+            g_state.hvac.protectionHeatingSetpointC = v;
         })
-        .onParameterChanged<SensorBoardParameter::HeatingControlAlgorithm>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::CoolingDeadband>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingControlAlgorithm = static_cast<sensor_board::hvac::ControlAlgorithm>(value);
+            g_state.hvac.coolingDeadbandK = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingControlAlgorithm>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::StandbyCoolingIncrease>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingControlAlgorithm = static_cast<sensor_board::hvac::ControlAlgorithm>(value);
+            g_state.hvac.standbyCoolingIncreaseK = v;
         })
-        .onParameterChanged<SensorBoardParameter::HeatingMinimumOutputPercent>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::EconomyCoolingIncrease>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingMinOutputPercent = static_cast<uint8_t>(value);
+            g_state.hvac.economyCoolingIncreaseK = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingMinimumOutputPercent>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::ProtectionCoolingSetpoint>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingMinOutputPercent = static_cast<uint8_t>(value);
+            g_state.hvac.protectionCoolingSetpointC = v;
         })
-        .onParameterChanged<SensorBoardParameter::HeatingMaximumOutputPercent>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::MinSetpoint>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingMaxOutputPercent = static_cast<uint8_t>(value);
+            g_state.hvac.minSetpointC = v;
         })
-        .onParameterChanged<SensorBoardParameter::CoolingMaximumOutputPercent>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::MaxSetpoint>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingMaxOutputPercent = static_cast<uint8_t>(value);
+            g_state.hvac.maxSetpointC = v;
         })
-        .onParameterChanged<SensorBoardParameter::BinaryDemandStrategy>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::MaxSetpointShift>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.binaryDemandStrategy = static_cast<sensor_board::hvac::BinaryDemandStrategy>(value);
+            g_state.hvac.maxSetpointShiftK = v;
         })
-        .onParameterChanged<SensorBoardParameter::BinaryDemandThresholdPercent>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::HeatingControlAlgorithm>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.binaryDemandThresholdPercent = static_cast<uint8_t>(value);
+            g_state.hvac.heatingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(v);
         })
-        .onParameterChanged<SensorBoardParameter::MinimumHeatCoolChangeoverSeconds>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::HeatingKp>([](Dpt9Float v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.minimumHeatCoolChangeoverSeconds = static_cast<float>(value);
+            g_state.hvac.heatingKp = v;
         })
-        .onParameterChanged<SensorBoardParameter::WindowOpenBehavior>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::HeatingTiSeconds>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.windowOpenBehavior = static_cast<sensor_board::hvac::WindowOpenBehavior>(value);
+            g_state.hvac.heatingTiSeconds = static_cast<float>(v);
         })
-        .onParameterChanged<SensorBoardParameter::PresenceBehavior>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::HeatingTdSeconds>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.presenceBehavior = static_cast<sensor_board::hvac::PresenceBehavior>(value);
+            g_state.hvac.heatingTdSeconds = static_cast<float>(v);
         })
-        .onParameterChanged<SensorBoardParameter::SensorFaultBehavior>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::HeatingMinimumOutputPercent>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.sensorFaultBehavior = static_cast<sensor_board::hvac::SensorFaultBehavior>(value);
+            g_state.hvac.heatingMinOutputPercent = v;
         })
-        .onParameterChanged<SensorBoardParameter::TemperatureChangeThresholdCenti>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::HeatingMaximumOutputPercent>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.temperatureChangeThresholdC = static_cast<float>(value) / 100.0f;
+            g_state.hvac.heatingMaxOutputPercent = v;
         })
-        .onParameterChanged<SensorBoardParameter::CyclicStatusIntervalSeconds>([](uint16_t value) {
+        .onParameterChanged<SensorBoardParameter::CoolingControlAlgorithm>([](uint8_t v) {
             LockGuard lock(g_state.mutex);
-            g_state.hvac.cyclicStatusIntervalSeconds = value;
+            g_state.hvac.coolingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::CoolingKp>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.coolingKp = v;
+        })
+        .onParameterChanged<SensorBoardParameter::CoolingTiSeconds>([](uint16_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.coolingTiSeconds = static_cast<float>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::CoolingTdSeconds>([](uint16_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.coolingTdSeconds = static_cast<float>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::CoolingMinimumOutputPercent>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.coolingMinOutputPercent = v;
+        })
+        .onParameterChanged<SensorBoardParameter::CoolingMaximumOutputPercent>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.coolingMaxOutputPercent = v;
+        })
+        .onParameterChanged<SensorBoardParameter::ThermostatHysteresis>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.thermostatHysteresisC = v;
+        })
+        .onParameterChanged<SensorBoardParameter::BinaryDemandStrategy>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.binaryDemandStrategy = static_cast<hvac_ns::BinaryDemandStrategy>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::BinaryDemandThresholdPercent>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.binaryDemandThresholdPercent = v;
+        })
+        .onParameterChanged<SensorBoardParameter::FrostAlarmTemperature>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.frostAlarmTemperatureC = v;
+        })
+        .onParameterChanged<SensorBoardParameter::OverheatAlarmTemperature>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.overheatAlarmTemperatureC = v;
+        })
+        .onParameterChanged<SensorBoardParameter::MaxFloorTemperature>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.maxFloorTemperatureC = v;
+        })
+        .onParameterChanged<SensorBoardParameter::MinFloorTemperature>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.minFloorTemperatureC = v;
+        })
+        .onParameterChanged<SensorBoardParameter::FloorHysteresis>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.floorHysteresisK = v;
+        })
+        .onParameterChanged<SensorBoardParameter::FloorComfortOutputPercent>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.floorComfortOutputPercent = v;
+        })
+        .onParameterChanged<SensorBoardParameter::DewPointSurfaceSource>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.dewPointSurfaceSource = static_cast<hvac_ns::DewPointSurfaceSource>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::DewPointMargin>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.dewPointMarginK = v;
+        })
+        .onParameterChanged<SensorBoardParameter::DewPointHysteresis>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.dewPointHysteresisK = v;
+        })
+        .onParameterChanged<SensorBoardParameter::BlockCoolingOnDewPointAlarm>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.blockCoolingOnDewPointAlarm = (v != 0);
+        })
+        .onParameterChanged<SensorBoardParameter::FloorMoistureThreshold>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.floorMoistureThresholdPct = v;
+        })
+        .onParameterChanged<SensorBoardParameter::FloorMoistureHysteresis>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.floorMoistureHysteresisPct = v;
+        })
+        .onParameterChanged<SensorBoardParameter::FloorMoistureExcess>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.floorMoistureExcessGm3 = v;
+        })
+        .onParameterChanged<SensorBoardParameter::VentilationSetpoint>([](uint16_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.ventilationSetpointPpm = static_cast<float>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::VentilationBand>([](uint16_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.ventilationBandPpm = static_cast<float>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::HumidityBoostThreshold>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.humidityBoostPct = v;
+        })
+        .onParameterChanged<SensorBoardParameter::HumidityBoostBand>([](Dpt9Float v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.humidityBandPct = v;
+        })
+        .onParameterChanged<SensorBoardParameter::VocBoostThreshold>([](uint16_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.vocThresholdIndex = static_cast<float>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::VocBoostBand>([](uint16_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.vocBandIndex = static_cast<float>(v);
+        })
+        .onParameterChanged<SensorBoardParameter::VentilationBaseDemandPercent>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.ventilationBaseDemandPercent = v;
+        })
+        .onParameterChanged<SensorBoardParameter::VentilationManualDemandPercent>([](uint8_t v) {
+            LockGuard lock(g_state.mutex);
+            g_state.hvac.ventilationManualDemandPercent = v;
         })
         .onProgrammingModeChanged([](bool enabled) {
             KNX_LOGI(TAG, "Programming mode: %s", enabled ? "ON" : "OFF");
@@ -1568,78 +1863,116 @@ void knxServiceTask(void *arg)
     {
         LockGuard lock(g_state.mutex);
         g_state.taskHandle = xTaskGetCurrentTaskHandle();
-        // Seed engineering values from the ETS parameters: Dpt9Float ones
-        // convert implicitly to float; ppm/second ones are plain uint16.
+        // Seed engineering values from the ETS parameters. Every parameter has
+        // an onParameterChanged binding above for live re-parameterisation;
+        // this is the one-time load at startup, so the two lists must stay in
+        // step.
         auto params = app.parameters();
-        g_state.hvac.ventilationSetpointPpm = static_cast<float>(params.get<SensorBoardParameter::DefaultVentilationSetpoint>());
-        g_state.hvac.thermostatHysteresisC = params.get<SensorBoardParameter::ThermostatHysteresis>();
-        g_state.hvac.ventilationHysteresisPpm = static_cast<float>(params.get<SensorBoardParameter::VentilationHysteresis>());
-        g_state.hvac.heatingKp = params.get<SensorBoardParameter::HeatingKp>();
-        g_state.hvac.heatingTiSeconds = static_cast<float>(params.get<SensorBoardParameter::HeatingTiSeconds>());
-        g_state.hvac.heatingTdSeconds = static_cast<float>(params.get<SensorBoardParameter::HeatingTdSeconds>());
-        g_state.hvac.coolingKp = params.get<SensorBoardParameter::CoolingKp>();
-        g_state.hvac.coolingTiSeconds = static_cast<float>(params.get<SensorBoardParameter::CoolingTiSeconds>());
-        g_state.hvac.coolingTdSeconds = static_cast<float>(params.get<SensorBoardParameter::CoolingTdSeconds>());
-        g_state.hvac.coolingDeadbandK = params.get<SensorBoardParameter::CoolingDeadband>();
-        g_state.hvac.maxFloorTemperatureC = params.get<SensorBoardParameter::MaxFloorTemperature>();
-        g_state.hvac.floorHysteresisK = params.get<SensorBoardParameter::FloorHysteresis>();
-        g_state.hvac.humidityBoostPct = params.get<SensorBoardParameter::HumidityBoostThreshold>();
-        g_state.hvac.humidityBoostHysteresisPct = params.get<SensorBoardParameter::HumidityBoostHysteresis>();
-        // --- Append-only greenfield thermostat-model additions ---
-        g_state.hvac.controllerDefaultEnable = params.get<SensorBoardParameter::ControllerDefaultEnable>() != 0;
-        g_state.hvac.defaultHvacOperatingMode =
-            static_cast<sensor_board::hvac::OperatingPreset>(params.get<SensorBoardParameter::DefaultHvacOperatingMode>());
-        g_state.hvac.defaultControllerMode =
-            static_cast<sensor_board::hvac::ControllerMode>(params.get<SensorBoardParameter::DefaultControllerMode>());
-        g_state.hvac.comfortHeatingSetpointC = params.get<SensorBoardParameter::ComfortHeatingSetpoint>();
-        g_state.hvac.standbyHeatingSetpointC = params.get<SensorBoardParameter::StandbyHeatingSetpoint>();
-        g_state.hvac.economyHeatingSetpointC = params.get<SensorBoardParameter::EconomyHeatingSetpoint>();
-        g_state.hvac.protectionHeatingSetpointC = params.get<SensorBoardParameter::ProtectionHeatingSetpoint>();
-        g_state.hvac.comfortCoolingSetpointC = params.get<SensorBoardParameter::ComfortCoolingSetpoint>();
-        g_state.hvac.standbyCoolingSetpointC = params.get<SensorBoardParameter::StandbyCoolingSetpoint>();
-        g_state.hvac.economyCoolingSetpointC = params.get<SensorBoardParameter::EconomyCoolingSetpoint>();
-        g_state.hvac.protectionCoolingSetpointC = params.get<SensorBoardParameter::ProtectionCoolingSetpoint>();
-        g_state.hvac.minSetpointC = params.get<SensorBoardParameter::MinSetpoint>();
-        g_state.hvac.maxSetpointC = params.get<SensorBoardParameter::MaxSetpoint>();
-        g_state.hvac.maxSetpointShiftK = params.get<SensorBoardParameter::MaxSetpointShift>();
-        g_state.hvac.heatingEnabled = params.get<SensorBoardParameter::HeatingEnabled>() != 0;
-        g_state.hvac.coolingEnabled = params.get<SensorBoardParameter::CoolingEnabled>() != 0;
-        g_state.hvac.heatCoolChangeoverMode =
-            static_cast<sensor_board::hvac::HeatCoolChangeoverMode>(params.get<SensorBoardParameter::HeatCoolChangeoverMode>());
-        g_state.hvac.heatCoolChangeoverPolarityInverted =
+        auto &s = g_state.hvac;
+
+        s.heartbeatSeconds = params.get<SensorBoardParameter::MeasurementHeartbeatSeconds>();
+        s.minRepTimeSeconds = params.get<SensorBoardParameter::MeasurementMinRepTimeSeconds>();
+        s.roomTemperatureOffsetK = params.get<SensorBoardParameter::RoomTemperatureOffset>();
+        s.roomTemperatureCovK = params.get<SensorBoardParameter::RoomTemperatureCov>();
+        s.roomHumidityOffsetPct = params.get<SensorBoardParameter::RoomHumidityOffset>();
+        s.roomHumidityCovPct = params.get<SensorBoardParameter::RoomHumidityCov>();
+        s.co2CovPpm = static_cast<float>(params.get<SensorBoardParameter::Co2Cov>());
+        s.pressureCovPa = static_cast<float>(params.get<SensorBoardParameter::PressureCov>());
+        s.airQualityCovIndex = static_cast<float>(params.get<SensorBoardParameter::AirQualityCov>());
+        s.floorTemperatureOffsetK = params.get<SensorBoardParameter::FloorTemperatureOffset>();
+        s.floorTemperatureCovK = params.get<SensorBoardParameter::FloorTemperatureCov>();
+        s.floorHumidityCovPct = params.get<SensorBoardParameter::FloorHumidityCov>();
+        s.derivedCov = params.get<SensorBoardParameter::DerivedValueCov>();
+        s.altitudeM = static_cast<float>(params.get<SensorBoardParameter::AltitudeM>());
+
+        s.controllerDefaultEnable = params.get<SensorBoardParameter::ControllerDefaultEnable>() != 0;
+        s.defaultHvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(
+            params.get<SensorBoardParameter::DefaultHvacOperatingMode>());
+        s.defaultControllerMode = static_cast<hvac_ns::ControllerMode>(
+            params.get<SensorBoardParameter::DefaultControllerMode>());
+        s.heatingEnabled = params.get<SensorBoardParameter::HeatingEnabled>() != 0;
+        s.coolingEnabled = params.get<SensorBoardParameter::CoolingEnabled>() != 0;
+        s.heatCoolChangeoverMode = static_cast<hvac_ns::HeatCoolChangeoverMode>(
+            params.get<SensorBoardParameter::HeatCoolChangeoverMode>());
+        s.heatCoolChangeoverPolarityInverted =
             params.get<SensorBoardParameter::HeatCoolChangeoverPolarity>() != 0;
-        g_state.hvac.heatingControlAlgorithm =
-            static_cast<sensor_board::hvac::ControlAlgorithm>(params.get<SensorBoardParameter::HeatingControlAlgorithm>());
-        g_state.hvac.coolingControlAlgorithm =
-            static_cast<sensor_board::hvac::ControlAlgorithm>(params.get<SensorBoardParameter::CoolingControlAlgorithm>());
-        g_state.hvac.heatingMinOutputPercent =
-            static_cast<uint8_t>(params.get<SensorBoardParameter::HeatingMinimumOutputPercent>());
-        g_state.hvac.coolingMinOutputPercent =
-            static_cast<uint8_t>(params.get<SensorBoardParameter::CoolingMinimumOutputPercent>());
-        g_state.hvac.heatingMaxOutputPercent =
-            static_cast<uint8_t>(params.get<SensorBoardParameter::HeatingMaximumOutputPercent>());
-        g_state.hvac.coolingMaxOutputPercent =
-            static_cast<uint8_t>(params.get<SensorBoardParameter::CoolingMaximumOutputPercent>());
-        g_state.hvac.binaryDemandStrategy =
-            static_cast<sensor_board::hvac::BinaryDemandStrategy>(params.get<SensorBoardParameter::BinaryDemandStrategy>());
-        g_state.hvac.binaryDemandThresholdPercent =
-            static_cast<uint8_t>(params.get<SensorBoardParameter::BinaryDemandThresholdPercent>());
-        g_state.hvac.minimumHeatCoolChangeoverSeconds =
-            static_cast<float>(params.get<SensorBoardParameter::MinimumHeatCoolChangeoverSeconds>());
-        g_state.hvac.windowOpenBehavior =
-            static_cast<sensor_board::hvac::WindowOpenBehavior>(params.get<SensorBoardParameter::WindowOpenBehavior>());
-        g_state.hvac.presenceBehavior =
-            static_cast<sensor_board::hvac::PresenceBehavior>(params.get<SensorBoardParameter::PresenceBehavior>());
-        g_state.hvac.sensorFaultBehavior =
-            static_cast<sensor_board::hvac::SensorFaultBehavior>(params.get<SensorBoardParameter::SensorFaultBehavior>());
-        g_state.hvac.temperatureChangeThresholdC =
-            static_cast<float>(params.get<SensorBoardParameter::TemperatureChangeThresholdCenti>()) / 100.0f;
-        g_state.hvac.cyclicStatusIntervalSeconds = params.get<SensorBoardParameter::CyclicStatusIntervalSeconds>();
+        s.minimumHeatCoolChangeoverSeconds = static_cast<float>(
+            params.get<SensorBoardParameter::MinimumHeatCoolChangeoverSeconds>());
+        s.windowOpenBehavior = static_cast<hvac_ns::WindowOpenBehavior>(
+            params.get<SensorBoardParameter::WindowOpenBehavior>());
+        s.presenceBehavior = static_cast<hvac_ns::PresenceBehavior>(
+            params.get<SensorBoardParameter::PresenceBehavior>());
+        s.sensorFaultBehavior = static_cast<hvac_ns::SensorFaultBehavior>(
+            params.get<SensorBoardParameter::SensorFaultBehavior>());
+
+        s.comfortHeatingSetpointC = params.get<SensorBoardParameter::ComfortHeatingSetpoint>();
+        s.standbyHeatingReductionK = params.get<SensorBoardParameter::StandbyHeatingReduction>();
+        s.economyHeatingReductionK = params.get<SensorBoardParameter::EconomyHeatingReduction>();
+        s.protectionHeatingSetpointC = params.get<SensorBoardParameter::ProtectionHeatingSetpoint>();
+        s.coolingDeadbandK = params.get<SensorBoardParameter::CoolingDeadband>();
+        s.standbyCoolingIncreaseK = params.get<SensorBoardParameter::StandbyCoolingIncrease>();
+        s.economyCoolingIncreaseK = params.get<SensorBoardParameter::EconomyCoolingIncrease>();
+        s.protectionCoolingSetpointC = params.get<SensorBoardParameter::ProtectionCoolingSetpoint>();
+        s.minSetpointC = params.get<SensorBoardParameter::MinSetpoint>();
+        s.maxSetpointC = params.get<SensorBoardParameter::MaxSetpoint>();
+        s.maxSetpointShiftK = params.get<SensorBoardParameter::MaxSetpointShift>();
+
+        s.heatingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(
+            params.get<SensorBoardParameter::HeatingControlAlgorithm>());
+        s.heatingKp = params.get<SensorBoardParameter::HeatingKp>();
+        s.heatingTiSeconds = static_cast<float>(params.get<SensorBoardParameter::HeatingTiSeconds>());
+        s.heatingTdSeconds = static_cast<float>(params.get<SensorBoardParameter::HeatingTdSeconds>());
+        s.heatingMinOutputPercent = params.get<SensorBoardParameter::HeatingMinimumOutputPercent>();
+        s.heatingMaxOutputPercent = params.get<SensorBoardParameter::HeatingMaximumOutputPercent>();
+        s.coolingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(
+            params.get<SensorBoardParameter::CoolingControlAlgorithm>());
+        s.coolingKp = params.get<SensorBoardParameter::CoolingKp>();
+        s.coolingTiSeconds = static_cast<float>(params.get<SensorBoardParameter::CoolingTiSeconds>());
+        s.coolingTdSeconds = static_cast<float>(params.get<SensorBoardParameter::CoolingTdSeconds>());
+        s.coolingMinOutputPercent = params.get<SensorBoardParameter::CoolingMinimumOutputPercent>();
+        s.coolingMaxOutputPercent = params.get<SensorBoardParameter::CoolingMaximumOutputPercent>();
+        s.thermostatHysteresisC = params.get<SensorBoardParameter::ThermostatHysteresis>();
+        s.binaryDemandStrategy = static_cast<hvac_ns::BinaryDemandStrategy>(
+            params.get<SensorBoardParameter::BinaryDemandStrategy>());
+        s.binaryDemandThresholdPercent =
+            params.get<SensorBoardParameter::BinaryDemandThresholdPercent>();
+        s.frostAlarmTemperatureC = params.get<SensorBoardParameter::FrostAlarmTemperature>();
+        s.overheatAlarmTemperatureC = params.get<SensorBoardParameter::OverheatAlarmTemperature>();
+
+        s.maxFloorTemperatureC = params.get<SensorBoardParameter::MaxFloorTemperature>();
+        s.minFloorTemperatureC = params.get<SensorBoardParameter::MinFloorTemperature>();
+        s.floorHysteresisK = params.get<SensorBoardParameter::FloorHysteresis>();
+        s.floorComfortOutputPercent = params.get<SensorBoardParameter::FloorComfortOutputPercent>();
+
+        s.dewPointSurfaceSource = static_cast<hvac_ns::DewPointSurfaceSource>(
+            params.get<SensorBoardParameter::DewPointSurfaceSource>());
+        s.dewPointMarginK = params.get<SensorBoardParameter::DewPointMargin>();
+        s.dewPointHysteresisK = params.get<SensorBoardParameter::DewPointHysteresis>();
+        s.blockCoolingOnDewPointAlarm =
+            params.get<SensorBoardParameter::BlockCoolingOnDewPointAlarm>() != 0;
+
+        s.floorMoistureThresholdPct = params.get<SensorBoardParameter::FloorMoistureThreshold>();
+        s.floorMoistureHysteresisPct = params.get<SensorBoardParameter::FloorMoistureHysteresis>();
+        s.floorMoistureExcessGm3 = params.get<SensorBoardParameter::FloorMoistureExcess>();
+
+        s.ventilationSetpointPpm =
+            static_cast<float>(params.get<SensorBoardParameter::VentilationSetpoint>());
+        s.ventilationBandPpm =
+            static_cast<float>(params.get<SensorBoardParameter::VentilationBand>());
+        s.humidityBoostPct = params.get<SensorBoardParameter::HumidityBoostThreshold>();
+        s.humidityBandPct = params.get<SensorBoardParameter::HumidityBoostBand>();
+        s.vocThresholdIndex =
+            static_cast<float>(params.get<SensorBoardParameter::VocBoostThreshold>());
+        s.vocBandIndex = static_cast<float>(params.get<SensorBoardParameter::VocBoostBand>());
+        s.ventilationBaseDemandPercent =
+            params.get<SensorBoardParameter::VentilationBaseDemandPercent>();
+        s.ventilationManualDemandPercent =
+            params.get<SensorBoardParameter::VentilationManualDemandPercent>();
 
         // Seed the runtime mode/state inputs from their ETS defaults.
-        g_state.controllerEnable = g_state.hvac.controllerDefaultEnable;
-        g_state.hvacOperatingMode = g_state.hvac.defaultHvacOperatingMode;
-        g_state.controllerMode = g_state.hvac.defaultControllerMode;
+        g_state.controllerOnOff = s.controllerDefaultEnable;
+        g_state.hvacOperatingMode = s.defaultHvacOperatingMode;
+        g_state.controllerMode = s.defaultControllerMode;
     }
 
     KNX_LOGI(TAG, "ETS-commissionable TP1 sensor bridge started");
@@ -1649,8 +1982,15 @@ void knxServiceTask(void *arg)
     // Room-control loops (task-owned; configured each tick from ETS parameters).
     sensor_board::hvac::ThermostatController thermostat;
     sensor_board::hvac::VentilationController ventilation;
+    sensor_board::hvac::DewPointMonitor dewPoint;
+    sensor_board::hvac::FloorMoistureMonitor floorMoisture;
     constexpr TickType_t kControlIntervalTicks = pdMS_TO_TICKS(1000);
     TickType_t lastControlTick = xTaskGetTickCount();
+    // Publishing is offered once per control tick, not once per loop iteration:
+    // the loop also spins at a few milliseconds while the stack has in-flight
+    // work, and re-offering every object that often would burn CPU on
+    // suppression decisions that cannot have changed.
+    bool controlTickDue = true;
 
     // Event-driven wake: the KNX stack signals when new work appears (an inbound
     // frame decoded by the RX worker task, a queued group auto-response, a
@@ -1699,13 +2039,13 @@ void knxServiceTask(void *arg)
             const float dtSeconds =
                 static_cast<float>(nowTick - lastControlTick) * portTICK_PERIOD_MS / 1000.0f;
             lastControlTick = nowTick;
-            runHvacControlTick(app, thermostat, ventilation, dtSeconds);
+            runHvacControlTick(app, thermostat, ventilation, dewPoint, floorMoisture, dtSeconds);
+            controlTickDue = true;
         }
 
-        // Startup-delay gate: while closed we must NOT publish or consume the
-        // pending-publish flags (that would clear initialPublishPending before
-        // the burst is allowed out). Sensor updates keep accumulating in
-        // g_state and go out together once the gate opens.
+        // Startup-delay gate: while closed nothing is published, so the first
+        // full offer happens after the jitter delay. Sensor updates keep
+        // accumulating in g_state meanwhile and go out together once it opens.
         const bool startupGateOpen =
             static_cast<int32_t>(xTaskGetTickCount() - startupPublishReleaseTick) >= 0;
 
@@ -1718,10 +2058,6 @@ void knxServiceTask(void *arg)
         }
 
         if (app.lifecycleState() == DeviceLifecycleState::Operational && !startupGateOpen) {
-            if (previousLifecycle != DeviceLifecycleState::Operational) {
-                LockGuard lock(g_state.mutex);
-                g_state.initialPublishPending = true;
-            }
             if (!startupDelayLogged) {
                 KNX_LOGI(TAG, "Holding initial KNX publish for %u ms (boot-storm mitigation)",
                          static_cast<unsigned>(startupJitterMs));
@@ -1738,45 +2074,15 @@ void knxServiceTask(void *arg)
                 app.toggleProgrammingMode();
             }
         } else if (app.lifecycleState() == DeviceLifecycleState::Operational) {
-            if (previousLifecycle != DeviceLifecycleState::Operational) {
-                LockGuard lock(g_state.mutex);
-                g_state.initialPublishPending = true;
-            }
-
             const PublishSnapshot snapshot = takePublishSnapshot();
             if (snapshot.toggleProgrammingMode) {
                 app.toggleProgrammingMode();
             }
-
-            const bool hasPendingPublish = snapshot.publishAll
-                || snapshot.pendingSensorMask != 0u
-                || snapshot.publishThermostatSetpoint
-                || snapshot.publishVentilationSetpoint
-                || snapshot.publishThermostatRequest
-                || snapshot.publishVentilationBoost
-                || snapshot.publishCoolingRequest
-                || snapshot.publishHeatingControl
-                || snapshot.publishCoolingControl
-                || snapshot.publishFloorLimit
-                || snapshot.publishControllerEnable
-                || snapshot.publishHvacOperatingMode
-                || snapshot.publishControllerMode
-                || snapshot.publishHeatCoolState
-                || snapshot.publishActiveSetpoint
-                || snapshot.publishSetpointShiftFeedback
-                || snapshot.publishControllerFault
-                || snapshot.publishSensorFaultStatus
-                || snapshot.publishHeatingBlocked
-                || snapshot.publishCoolingBlocked
-                || snapshot.publishVentilationDemand
-                || snapshot.publishVentilationLevel
-                || snapshot.publishVentilationMode
-                || snapshot.publishVentilationActive
-                || snapshot.publishIaqStatus
-                || snapshot.publishHvacControllerStatus;
-
-            if (hasPendingPublish) {
-                publishPendingState(app, snapshot);
+            // Offered unconditionally once per control tick; the per-object
+            // transmit policy decides what is actually worth a telegram.
+            if (controlTickDue) {
+                publishAllState(app, snapshot);
+                controlTickDue = false;
             }
         } else {
             const PublishSnapshot snapshot = takePublishSnapshot();
@@ -1845,7 +2151,6 @@ extern "C" void knx_service_update_sensor_data(const sensor_data_t *data)
     LockGuard lock(g_state.mutex);
     g_state.latestSensorData = *data;
     g_state.availableMask |= data->updated_mask;
-    g_state.pendingSensorMask |= data->updated_mask;
     g_state.hasSensorData = true;
     // Control outputs (requests, PID values) react on the next 1 s control
     // tick in the KNX task — no recalculation in the sensor task's context.

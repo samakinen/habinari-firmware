@@ -38,3 +38,13 @@ target_link_libraries(test_device_secret PRIVATE unity ${MBEDCRYPTO_LIBRARY})
 target_compile_options(test_device_secret PRIVATE -Wall -Wextra)
 
 add_test(NAME test_device_secret COMMAND test_device_secret)
+
+# Room-control logic: psychrometrics, dew point / slab moisture monitors,
+# setpoint ladder, ventilation and thermostat behaviour. Header-only and
+# platform-free, so no extra sources are needed.
+add_executable(test_hvac_control test_hvac_control.cpp)
+target_include_directories(test_hvac_control PRIVATE "${MAIN_DIR}/include")
+target_link_libraries(test_hvac_control PRIVATE unity)
+target_compile_options(test_hvac_control PRIVATE -Wall -Wextra)
+
+add_test(NAME test_hvac_control COMMAND test_hvac_control)

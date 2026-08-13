@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 
 namespace sensor_board {
@@ -27,6 +28,93 @@ inline float clampf(float value, float lo, float hi)
 {
     return value < lo ? lo : (value > hi ? hi : value);
 }
+
+// ---------------------------------------------------------------------------
+// Psychrometrics: the quantities the board can derive from the raw
+// temperature / relative-humidity / pressure readings.
+//
+// Relative humidity on its own is a poor control and diagnostic signal — it
+// changes with temperature at constant moisture content, so two rooms at
+// "60 %RH" can hold very different amounts of water. The derived quantities
+// below are the ones the rest of the installation can actually act on:
+//
+//   dew point         condensation protection for cooled surfaces (KNX FB
+//                     "Dew Point Status Sensor", Vol 7/19/20 clause 3.4)
+//   absolute humidity moisture *content* (g of water per m³ of air), so two air
+//                     masses at different temperatures can be compared at all —
+//                     which relative humidity cannot do (KNX DPT 9.029). Note
+//                     it is a per-volume density, so it is not exactly
+//                     conserved when a parcel is cooled; the vapour pressure
+//                     is. The drift is a few percent over a 10 K change, far
+//                     below the thresholds anything here compares against.
+//   sea-level pressure the only barometric value that is comparable between
+//                     sites, and what a weather visualisation expects
+//
+// Magnus/Sonntag coefficients over water; the stated fit error is < 0.1 % of
+// e_s across -45..+60 °C, far below the sensor accuracy of any part on this
+// board. All functions are pure and total: callers are responsible for only
+// feeding them readings they have already marked valid.
+// ---------------------------------------------------------------------------
+
+namespace psychro {
+
+inline constexpr float kMagnusA = 17.62f;      // dimensionless
+inline constexpr float kMagnusB = 243.12f;     // °C
+inline constexpr float kMagnusEs0Hpa = 6.112f; // saturation pressure at 0 °C
+
+/// Saturation vapour pressure over water, in hPa.
+inline float saturationVapourPressureHpa(float temperatureC)
+{
+    return kMagnusEs0Hpa
+           * std::exp((kMagnusA * temperatureC) / (kMagnusB + temperatureC));
+}
+
+/// Partial water-vapour pressure of moist air, in hPa.
+inline float vapourPressureHpa(float temperatureC, float relativeHumidityPct)
+{
+    const float rh = clampf(relativeHumidityPct, 0.0f, 100.0f);
+    return (rh / 100.0f) * saturationVapourPressureHpa(temperatureC);
+}
+
+/// Dew-point temperature in °C: the temperature a surface must fall to before
+/// water condenses out of this air.
+inline float dewPointC(float temperatureC, float relativeHumidityPct)
+{
+    // Clamp the low end away from zero: ln(0) is -inf, and a 0 %RH reading is
+    // a broken sensor rather than genuinely dry air.
+    const float rh = clampf(relativeHumidityPct, 0.5f, 100.0f);
+    const float gamma = std::log(rh / 100.0f)
+                        + (kMagnusA * temperatureC) / (kMagnusB + temperatureC);
+    return (kMagnusB * gamma) / (kMagnusA - gamma);
+}
+
+/// Absolute humidity in g/m³ (KNX DPT 9.029), from the ideal gas law applied
+/// to the vapour partial pressure: rho_v = e * M_w / (R * T).
+/// 216.7 = 100 (hPa→Pa) * 18.015 (g/mol) / 8.31446 (J/(mol·K)).
+inline float absoluteHumidityGm3(float temperatureC, float relativeHumidityPct)
+{
+    const float e = vapourPressureHpa(temperatureC, relativeHumidityPct);
+    return 216.7f * e / (temperatureC + 273.15f);
+}
+
+/// Station pressure reduced to mean sea level, in Pa (KNX DPT 9.006), using
+/// the international barometric formula with the measured air temperature.
+/// Returns the input unchanged at zero altitude, so the default configuration
+/// costs nothing.
+inline float seaLevelPressurePa(float stationPressurePa, float altitudeM, float temperatureC)
+{
+    if (altitudeM == 0.0f) {
+        return stationPressurePa;
+    }
+    const float lapse = 0.0065f * altitudeM;  // K over the reduced column
+    const float ratio = 1.0f - lapse / (temperatureC + lapse + 273.15f);
+    if (ratio <= 0.0f) {
+        return stationPressurePa;  // non-physical altitude/temperature pair
+    }
+    return stationPressurePa * std::pow(ratio, -5.257f);
+}
+
+} // namespace psychro
 
 // ---------------------------------------------------------------------------
 // Enums shared with the KNX binding layer (see knx_product.hpp comments).
@@ -132,6 +220,16 @@ enum class VentilationLevel : uint8_t {
     Boost = 4,
 };
 
+// Which surface temperature the dew-point monitor guards. Underfloor cooling
+// condenses on the slab (floor probe); a chilled ceiling or fan coil condenses
+// on the coldest wetted surface, which only the flow-temperature input knows.
+enum class DewPointSurfaceSource : uint8_t {
+    Off = 0,
+    FloorProbe = 1,
+    FlowTemperature = 2,
+    Coldest = 3,  // whichever of the two is available and lower
+};
+
 // ---------------------------------------------------------------------------
 // PID controller producing a 0..100 % control value (KNX DPT 5.001 semantics).
 // ---------------------------------------------------------------------------
@@ -210,21 +308,54 @@ private:
 // PI or two-point algorithms, floor-temperature limit.
 // ---------------------------------------------------------------------------
 
-struct SetpointTable {
-    float comfortC{22.0f};
-    float standbyC{20.0f};
-    float economyC{18.0f};
-    float protectionC{7.0f};
+// KNX setpoint ladder (KNX Vol 7/19/20 clause 5, FB Room Temperature Setpoint
+// Manager). The four operating modes are NOT eight independent absolute
+// temperatures: the standard models Standby/Economy as *shifts* away from the
+// comfort setpoint (DPT_TempRoomSetpSetShiftF16, 275.101), and only Comfort and
+// Building Protection are absolute. Following that here means a single write to
+// the base setpoint — from an HMI, a scheduler, or Home Assistant's
+// target_temperature — moves the whole ladder coherently, instead of silently
+// leaving Standby above the new Comfort value.
+struct SetpointLadder {
+    // Absolute anchor: the comfort heating setpoint. Bus-writable.
+    float comfortHeatingC{21.0f};
+    // Heating reductions below the comfort setpoint (positive = cooler).
+    float standbyHeatingReductionK{2.0f};
+    float economyHeatingReductionK{4.0f};
+    // Absolute: frost protection has no meaningful relation to comfort.
+    float protectionHeatingC{7.0f};
 
-    float forPreset(OperatingPreset preset) const
+    // Cooling comfort sits a dead band above heating comfort, so heating and
+    // cooling can never demand at the same temperature.
+    float coolingDeadbandK{2.0f};
+    // Cooling increases above the cooling comfort setpoint (positive = warmer).
+    float standbyCoolingIncreaseK{2.0f};
+    float economyCoolingIncreaseK{4.0f};
+    float protectionCoolingC{35.0f};
+
+    float comfortCoolingC() const { return comfortHeatingC + coolingDeadbandK; }
+
+    float heatingForPreset(OperatingPreset preset) const
     {
         switch (preset) {
-            case OperatingPreset::Standby: return standbyC;
-            case OperatingPreset::Economy: return economyC;
-            case OperatingPreset::BuildingProtection: return protectionC;
+            case OperatingPreset::Standby: return comfortHeatingC - standbyHeatingReductionK;
+            case OperatingPreset::Economy: return comfortHeatingC - economyHeatingReductionK;
+            case OperatingPreset::BuildingProtection: return protectionHeatingC;
             case OperatingPreset::Comfort:
             case OperatingPreset::Auto:
-            default: return comfortC;
+            default: return comfortHeatingC;
+        }
+    }
+
+    float coolingForPreset(OperatingPreset preset) const
+    {
+        switch (preset) {
+            case OperatingPreset::Standby: return comfortCoolingC() + standbyCoolingIncreaseK;
+            case OperatingPreset::Economy: return comfortCoolingC() + economyCoolingIncreaseK;
+            case OperatingPreset::BuildingProtection: return protectionCoolingC;
+            case OperatingPreset::Comfort:
+            case OperatingPreset::Auto:
+            default: return comfortCoolingC();
         }
     }
 };
@@ -233,19 +364,10 @@ struct ThermostatConfig {
     PidConfig heatingPid{};                       // direct-acting
     PidConfig coolingPid{.reverseActing = true};  // reverse-acting
 
-    SetpointTable heatingSetpoints{};
-    SetpointTable coolingSetpoints{.comfortC = 24.0f,
-                                   .standbyC = 26.0f,
-                                   .economyC = 28.0f,
-                                   .protectionC = 35.0f};
+    SetpointLadder setpoints{};
     float minSetpointC{7.0f};
     float maxSetpointC{35.0f};
     float maxSetpointShiftK{3.0f};
-
-    // Kept for backward compatibility / minimum-gap sanity in Auto changeover
-    // mode (the heating and cooling setpoint tables are otherwise independent
-    // now — see todo_feature_set.md section 3.1).
-    float coolingDeadbandK{2.0f};
 
     // Two-point request hysteresis: heating request switches ON at
     // setpoint − h and OFF at setpoint + h (mirrored for cooling). Also used
@@ -258,6 +380,22 @@ struct ThermostatConfig {
     // 0 disables the limit (e.g. no floor probe connected).
     float maxFloorTemperatureC{28.0f};
     float floorHysteresisK{1.0f};
+
+    // Floor comfort temperering: hold a minimum slab temperature regardless of
+    // room demand (a bathroom floor that is merely "not cold" still feels cold
+    // underfoot). 0 disables. Heating is forced to at least
+    // floorComfortOutputPercent while the slab is below the limit.
+    float minFloorTemperatureC{0.0f};
+    uint8_t floorComfortOutputPercent{30};
+
+    // Room-temperature alarm thresholds reported in DPT 22.101 bits 13/14.
+    // 0 disables the corresponding alarm.
+    float frostAlarmTemperatureC{5.0f};
+    float overheatAlarmTemperatureC{35.0f};
+
+    // Suspend cooling while a condensation risk is signalled (either derived
+    // locally or received on the DewPointStatus input).
+    bool blockCoolingOnDewPointAlarm{true};
 
     bool heatingEnabled{true};
     bool coolingEnabled{false};
@@ -298,6 +436,21 @@ struct ThermostatInputs {
     bool presence{false};
     bool presenceValid{false};  // false until a presence telegram has been received
     float setpointShiftK{0.0f};
+
+    // RTC control inputs (KNX Vol 7/19/20 clause 6.3.4). SwitchHeat/SwitchCool
+    // are the standard "switch this sequence off entirely" signals; they
+    // default to enabled so an unlinked object never disables the controller.
+    bool switchHeat{true};
+    bool switchCool{true};
+
+    // Condensation risk: either derived on-board (see DewPointMonitor) or
+    // received from a system-wide dew point sensor on the DewPointStatus input.
+    bool dewPointAlarm{false};
+
+    // Cooling flow / coldest-surface temperature, when the installation
+    // publishes one. Feeds the dew-point monitor and the flow-limit status bit.
+    float flowTemperatureC{0.0f};
+    bool flowTemperatureValid{false};
 };
 
 struct ThermostatOutputs {
@@ -307,13 +460,24 @@ struct ThermostatOutputs {
     bool coolingRequest{false};
     bool floorLimitActive{false};
 
+    bool floorComfortActive{false};
+
     OperatingPreset activePreset{OperatingPreset::Comfort};
     HeatCoolState heatCoolState{HeatCoolState::Neutral};
-    float activeSetpointC{22.0f};        // feedback for HA/ETS (current direction's setpoint)
+    // RTC.TempRoomSetpAct: the setpoint the controller is working to right now.
+    float activeSetpointC{22.0f};
+    // RTSM.TempRoomSetpHeatEff / TempRoomSetpCoolEff: both effective setpoints,
+    // published unconditionally so a visualisation can draw the dead band even
+    // while the controller sits in the middle of it.
+    float heatingSetpointC{22.0f};
+    float coolingSetpointC{24.0f};
     float setpointShiftFeedbackK{0.0f};  // clamped shift actually applied
     bool controllerFault{false};         // room-temperature sensor invalid
     bool heatingBlocked{false};
     bool coolingBlocked{false};
+    bool frostAlarm{false};
+    bool overheatAlarm{false};
+    bool dewPointAlarm{false};  // mirrored into the status word (bit 12)
 };
 
 // KNX DPT 22.101 (DPT_StatusRHCC) — the standardised room heating/cooling
@@ -333,6 +497,7 @@ enum class StatusRHCCBit : uint16_t {
     StatusEcoCool   = 1u << 9,
     PreCool         = 1u << 10,
     CoolingDisabled = 1u << 11,
+    DewPointStatus  = 1u << 12,
     FrostAlarm      = 1u << 13,
     OverheatAlarm   = 1u << 14,
 };
@@ -341,16 +506,46 @@ constexpr uint16_t packStatusRHCC(const ThermostatOutputs& out)
 {
     uint16_t status = 0;
     if (out.controllerFault) status |= static_cast<uint16_t>(StatusRHCCBit::Fault);
-    // Floor-temperature limit maps onto the flow-temperature-limitation bit
-    // (its spec meaning is "max flow temperature limitation for floor heating").
+    // Floor-temperature limit maps onto the flow-temperature-limitation bit:
+    // its spec wording is literally "max. flow temperature limitation for floor
+    // heating protection", which is exactly what the floor probe enforces here.
     if (out.floorLimitActive) status |= static_cast<uint16_t>(StatusRHCCBit::FlowTempLimit);
     if (out.heatingBlocked)   status |= static_cast<uint16_t>(StatusRHCCBit::HeatingDisabled);
     if (out.coolingBlocked)   status |= static_cast<uint16_t>(StatusRHCCBit::CoolingDisabled);
+    if (out.dewPointAlarm)    status |= static_cast<uint16_t>(StatusRHCCBit::DewPointStatus);
+    if (out.frostAlarm)       status |= static_cast<uint16_t>(StatusRHCCBit::FrostAlarm);
+    if (out.overheatAlarm)    status |= static_cast<uint16_t>(StatusRHCCBit::OverheatAlarm);
     // HeatCoolMode: 1 = heating (spec default), 0 = cooling. Report cooling only
     // while actively cooling; neutral and heating both read as heating.
     if (out.heatCoolState != HeatCoolState::Cooling) {
         status |= static_cast<uint16_t>(StatusRHCCBit::HeatCoolMode);
     }
+    return status;
+}
+
+// KNX DPT 21.001 (DPT_StatusGen) — the per-Datapoint status octet every KNX
+// sensor Functional Block pairs with its measurement Output.
+enum class StatusGenBit : uint8_t {
+    OutOfService = 1u << 0,
+    Fault        = 1u << 1,
+    Overridden   = 1u << 2,
+    InAlarm      = 1u << 3,
+    AlarmUnAck   = 1u << 4,
+};
+
+/// Build a StatusGen octet for one physical sensor. `present` is false when the
+/// sensor is not fitted at all (an unconnected floor probe is out of service,
+/// not faulty); `healthy` is false when a fitted sensor stopped delivering
+/// readings; `inAlarm` carries a measurand-specific alarm (e.g. slab moisture).
+constexpr uint8_t packStatusGen(bool present, bool healthy, bool inAlarm = false)
+{
+    uint8_t status = 0;
+    if (!present) {
+        status |= static_cast<uint8_t>(StatusGenBit::OutOfService);
+    } else if (!healthy) {
+        status |= static_cast<uint8_t>(StatusGenBit::Fault);
+    }
+    if (inAlarm) status |= static_cast<uint8_t>(StatusGenBit::InAlarm);
     return status;
 }
 
@@ -409,6 +604,11 @@ public:
                     outputs_.heatCoolState = HeatCoolState::Neutral;
                     outputs_.heatingBlocked = true;
                     outputs_.coolingBlocked = true;
+                    // No trustworthy room temperature means no trustworthy
+                    // temperature alarms either; reporting stale ones would
+                    // send an installer chasing the wrong fault.
+                    outputs_.frostAlarm = false;
+                    outputs_.overheatAlarm = false;
                     advanceChangeoverTimers(dtSeconds);
                     return outputs_;
             }
@@ -424,26 +624,42 @@ public:
         const OperatingPreset preset = resolveActivePreset(in);
         outputs_.activePreset = preset;
 
-        // ---- Setpoint model: table lookup + clamped shift ------------------
+        // ---- Setpoint model: ladder lookup + clamped shift -----------------
         const float shift = clampf(in.setpointShiftK, -config_.maxSetpointShiftK, config_.maxSetpointShiftK);
         outputs_.setpointShiftFeedbackK = shift;
 
-        float heatSetpoint = clampf(config_.heatingSetpoints.forPreset(preset) + shift,
+        float heatSetpoint = clampf(config_.setpoints.heatingForPreset(preset) + shift,
                                     config_.minSetpointC, config_.maxSetpointC);
-        float coolSetpoint = clampf(config_.coolingSetpoints.forPreset(preset) + shift,
+        float coolSetpoint = clampf(config_.setpoints.coolingForPreset(preset) + shift,
                                     config_.minSetpointC, config_.maxSetpointC);
-        // Guarantee a minimum gap between heat/cool setpoints so a shared
-        // deadband-style Auto changeover cannot make both loops demand at once.
-        if (coolSetpoint < heatSetpoint + config_.coolingDeadbandK) {
-            coolSetpoint = heatSetpoint + config_.coolingDeadbandK;
+        // The ladder already places cooling a dead band above heating, but the
+        // [min, max] clamp above can squeeze the two together. Re-open the gap
+        // so a deadband-style Auto changeover can never demand both at once.
+        if (coolSetpoint < heatSetpoint + config_.setpoints.coolingDeadbandK) {
+            coolSetpoint = heatSetpoint + config_.setpoints.coolingDeadbandK;
         }
+        outputs_.heatingSetpointC = heatSetpoint;
+        outputs_.coolingSetpointC = coolSetpoint;
+
+        // ---- Room-temperature alarms (status word bits 13/14) --------------
+        outputs_.frostAlarm = config_.frostAlarmTemperatureC > 0.0f
+                              && roomTemperatureC < config_.frostAlarmTemperatureC;
+        outputs_.overheatAlarm = config_.overheatAlarmTemperatureC > 0.0f
+                                 && roomTemperatureC > config_.overheatAlarmTemperatureC;
 
         // ---- Direction gating: controller mode + changeover ---------------
         bool allowHeat = false;
         bool allowCool = false;
         resolveDirection(in, allowHeat, allowCool);
-        allowHeat = allowHeat && config_.heatingEnabled;
-        allowCool = allowCool && config_.coolingEnabled;
+        allowHeat = allowHeat && config_.heatingEnabled && in.switchHeat;
+        allowCool = allowCool && config_.coolingEnabled && in.switchCool;
+
+        // Condensation protection outranks comfort: cooling a surface below the
+        // room dew point puts water on the floor or the ceiling.
+        outputs_.dewPointAlarm = in.dewPointAlarm;
+        if (in.dewPointAlarm && config_.blockCoolingOnDewPointAlarm) {
+            allowCool = false;
+        }
 
         // Window-open block (BlockOutputs behavior forces both off outright).
         const bool windowBlocksOutputs =
@@ -518,6 +734,19 @@ public:
             cooling = 0.0f;
         }
 
+        // ---- Floor comfort temperering ----------------------------------------
+        // A slab that is merely "not cold" still feels cold underfoot, so an
+        // optional minimum floor temperature can call for heat that the room
+        // temperature alone would not. Deliberately evaluated before the floor
+        // *limit* below, which always wins: the limit protects the floor
+        // covering, the minimum only protects comfort.
+        if (outputs_.floorComfortActive && allowHeat) {
+            heating = (heating > static_cast<float>(config_.floorComfortOutputPercent))
+                          ? heating
+                          : static_cast<float>(config_.floorComfortOutputPercent);
+            outputs_.heatingRequest = true;
+        }
+
         // ---- Floor limit inhibits heating only --------------------------------
         if (outputs_.floorLimitActive) {
             heating = 0.0f;
@@ -562,6 +791,17 @@ private:
 
     void updateFloorLimit(const ThermostatInputs& in)
     {
+        // Minimum-floor-temperature comfort band (independent of the maximum).
+        if (config_.minFloorTemperatureC > 0.0f && in.floorTemperatureValid) {
+            if (in.floorTemperatureC <= config_.minFloorTemperatureC - config_.floorHysteresisK) {
+                outputs_.floorComfortActive = true;
+            } else if (in.floorTemperatureC >= config_.minFloorTemperatureC) {
+                outputs_.floorComfortActive = false;
+            }
+        } else {
+            outputs_.floorComfortActive = false;
+        }
+
         if (config_.maxFloorTemperatureC <= 0.0f) {
             outputs_.floorLimitActive = false;
             return;
@@ -695,17 +935,225 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Ventilation / IAQ control: CO2 + humidity demand, mode override, level
-// bucketing, IAQ status bitset.
+// Dew-point monitor: KNX FB "Dew Point Status Sensor" (Vol 7/19/20 clause 3.4).
+//
+// The room's dew point is a property of the *air*; condensation is a property
+// of the coldest wetted *surface*. This board can see both — room air from the
+// HDC3020, slab temperature from the floor probe, and the system flow
+// temperature if the installation publishes one — which is exactly the pairing
+// a chilled-ceiling or floor-cooling controller needs and rarely has.
+// ---------------------------------------------------------------------------
+
+struct DewPointConfig {
+    DewPointSurfaceSource surfaceSource{DewPointSurfaceSource::Coldest};
+    // Alarm while surface temperature <= dew point + margin; clears again at
+    // dew point + margin + hysteresis.
+    float marginK{2.0f};
+    float hysteresisK{1.0f};
+};
+
+struct DewPointInputs {
+    float roomTemperatureC{0.0f};
+    float roomHumidityPct{0.0f};
+    bool roomAirValid{false};
+    float floorTemperatureC{0.0f};
+    bool floorTemperatureValid{false};
+    float flowTemperatureC{0.0f};
+    bool flowTemperatureValid{false};
+};
+
+struct DewPointOutputs {
+    float dewPointC{0.0f};
+    bool dewPointValid{false};
+    /// Surface temperature minus dew point. Positive is safe; publishing it
+    /// lets a visualisation show how much headroom is left rather than only
+    /// that the alarm has already tripped.
+    float marginK{0.0f};
+    bool marginValid{false};
+    bool alarm{false};
+};
+
+class DewPointMonitor {
+public:
+    void configure(const DewPointConfig& config) { config_ = config; }
+    const DewPointConfig& config() const { return config_; }
+    const DewPointOutputs& outputs() const { return outputs_; }
+
+    void reset()
+    {
+        outputs_ = DewPointOutputs{};
+    }
+
+    const DewPointOutputs& update(const DewPointInputs& in)
+    {
+        outputs_.dewPointValid = in.roomAirValid;
+        if (in.roomAirValid) {
+            outputs_.dewPointC = psychro::dewPointC(in.roomTemperatureC, in.roomHumidityPct);
+        }
+
+        float surfaceC = 0.0f;
+        bool surfaceValid = false;
+        const bool useFloor = config_.surfaceSource == DewPointSurfaceSource::FloorProbe
+                              || config_.surfaceSource == DewPointSurfaceSource::Coldest;
+        const bool useFlow = config_.surfaceSource == DewPointSurfaceSource::FlowTemperature
+                             || config_.surfaceSource == DewPointSurfaceSource::Coldest;
+
+        if (useFloor && in.floorTemperatureValid) {
+            surfaceC = in.floorTemperatureC;
+            surfaceValid = true;
+        }
+        if (useFlow && in.flowTemperatureValid) {
+            surfaceC = surfaceValid ? (in.flowTemperatureC < surfaceC ? in.flowTemperatureC : surfaceC)
+                                    : in.flowTemperatureC;
+            surfaceValid = true;
+        }
+
+        outputs_.marginValid = outputs_.dewPointValid && surfaceValid;
+        if (!outputs_.marginValid) {
+            // Nothing to compare. Hold the alarm rather than clearing it: a
+            // probe that drops out mid-alarm has not made the water go away.
+            outputs_.marginK = 0.0f;
+            return outputs_;
+        }
+
+        outputs_.marginK = surfaceC - outputs_.dewPointC;
+        if (outputs_.marginK <= config_.marginK) {
+            outputs_.alarm = true;
+        } else if (outputs_.marginK >= config_.marginK + config_.hysteresisK) {
+            outputs_.alarm = false;
+        }
+        return outputs_;
+    }
+
+private:
+    DewPointConfig config_{};
+    DewPointOutputs outputs_{};
+};
+
+// ---------------------------------------------------------------------------
+// Floor slab moisture monitor.
+//
+// The floor probe sits in a conduit inside the concrete slab, so its humidity
+// channel — free with the SHT4x — sees the moisture state of the structure
+// rather than the room. Two independent detectors, because each catches a
+// different failure:
+//
+//   absolute threshold   slow, cumulative damp (a slab that never dried, or a
+//                        leak that has already saturated the conduit)
+//   excess over the room a leak in progress: liquid water evaporating into the
+//                        conduit drives its absolute humidity above the room's
+//                        long before the relative reading looks alarming,
+//                        because the slab is also colder than the room
+// ---------------------------------------------------------------------------
+
+struct FloorMoistureConfig {
+    /// Relative-humidity alarm threshold inside the slab. 0 disables.
+    float thresholdPct{85.0f};
+    float hysteresisPct{5.0f};
+    /// Alarm when slab absolute humidity exceeds room absolute humidity by more
+    /// than this, in g/m³. 0 disables.
+    float absoluteExcessGm3{2.0f};
+    float absoluteExcessHysteresisGm3{0.5f};
+};
+
+struct FloorMoistureInputs {
+    float floorTemperatureC{0.0f};
+    float floorHumidityPct{0.0f};
+    bool floorProbeValid{false};
+    float roomTemperatureC{0.0f};
+    float roomHumidityPct{0.0f};
+    bool roomAirValid{false};
+};
+
+struct FloorMoistureOutputs {
+    float floorAbsoluteHumidityGm3{0.0f};
+    float roomAbsoluteHumidityGm3{0.0f};
+    float excessGm3{0.0f};
+    bool excessValid{false};
+    bool alarm{false};
+    bool relativeAlarm{false};
+    bool excessAlarm{false};
+};
+
+class FloorMoistureMonitor {
+public:
+    void configure(const FloorMoistureConfig& config) { config_ = config; }
+    const FloorMoistureConfig& config() const { return config_; }
+    const FloorMoistureOutputs& outputs() const { return outputs_; }
+
+    void reset() { outputs_ = FloorMoistureOutputs{}; }
+
+    const FloorMoistureOutputs& update(const FloorMoistureInputs& in)
+    {
+        if (in.floorProbeValid) {
+            outputs_.floorAbsoluteHumidityGm3 =
+                psychro::absoluteHumidityGm3(in.floorTemperatureC, in.floorHumidityPct);
+        }
+        if (in.roomAirValid) {
+            outputs_.roomAbsoluteHumidityGm3 =
+                psychro::absoluteHumidityGm3(in.roomTemperatureC, in.roomHumidityPct);
+        }
+
+        if (in.floorProbeValid && config_.thresholdPct > 0.0f) {
+            if (in.floorHumidityPct >= config_.thresholdPct) {
+                outputs_.relativeAlarm = true;
+            } else if (in.floorHumidityPct <= config_.thresholdPct - config_.hysteresisPct) {
+                outputs_.relativeAlarm = false;
+            }
+        } else if (!in.floorProbeValid) {
+            outputs_.relativeAlarm = false;
+        }
+
+        outputs_.excessValid = in.floorProbeValid && in.roomAirValid;
+        if (outputs_.excessValid && config_.absoluteExcessGm3 > 0.0f) {
+            outputs_.excessGm3 =
+                outputs_.floorAbsoluteHumidityGm3 - outputs_.roomAbsoluteHumidityGm3;
+            if (outputs_.excessGm3 >= config_.absoluteExcessGm3) {
+                outputs_.excessAlarm = true;
+            } else if (outputs_.excessGm3
+                       <= config_.absoluteExcessGm3 - config_.absoluteExcessHysteresisGm3) {
+                outputs_.excessAlarm = false;
+            }
+        } else {
+            if (!outputs_.excessValid) {
+                outputs_.excessGm3 = 0.0f;
+            }
+            outputs_.excessAlarm = false;
+        }
+
+        outputs_.alarm = outputs_.relativeAlarm || outputs_.excessAlarm;
+        return outputs_;
+    }
+
+private:
+    FloorMoistureConfig config_{};
+    FloorMoistureOutputs outputs_{};
+};
+
+// ---------------------------------------------------------------------------
+// Ventilation / IAQ control: proportional CO2 + humidity + VOC demand, mode
+// override, stage bucketing, IAQ status bitset.
 // ---------------------------------------------------------------------------
 
 struct VentilationConfig {
-    // Boost switches ON at setpoint + hysteresis and OFF at
-    // setpoint − hysteresis (per channel).
+    // Proportional CO2 band: demand ramps 0 → 100 % across
+    // [setpoint, setpoint + band]. A modern AHU or damper actuator takes a
+    // continuous percentage, and a proportional ramp avoids the airflow (and
+    // noise) steps a pure on/off boost produces.
     float co2SetpointPpm{900.0f};
-    float co2HysteresisPpm{75.0f};
-    float humidityThresholdPct{70.0f};
-    float humidityHysteresisPct{5.0f};
+    float co2BandPpm{400.0f};
+    // Humidity band, same shape. Drives both the ventilation demand and the
+    // separate dehumidification request.
+    float humidityThresholdPct{65.0f};
+    float humidityBandPct{15.0f};
+    // BSEC IAQ index band (0..500, lower is cleaner). 0 disables the channel,
+    // which is the right default on boards built without BSEC.
+    float vocThresholdIndex{150.0f};
+    float vocBandIndex{150.0f};
+    // Floor of the automatic demand while the room is treated as occupied.
+    uint8_t baseDemandPercent{0};
+    // Fixed demand used in Manual mode.
+    uint8_t manualDemandPercent{50};
 };
 
 struct VentilationInputs {
@@ -713,6 +1161,9 @@ struct VentilationInputs {
     bool co2Valid{false};
     float humidityPct{0.0f};
     bool humidityValid{false};
+    float vocIndex{0.0f};
+    bool vocValid{false};
+    bool occupied{false};
     VentilationMode mode{VentilationMode::Auto};
 };
 
@@ -720,16 +1171,21 @@ struct VentilationOutputs {
     uint8_t demandPercent{0};
     VentilationLevel level{VentilationLevel::Off};
     bool active{false};
+    bool boostRequest{false};
+    bool dehumidifyRequest{false};
     bool humidityHigh{false};
     bool co2High{false};
+    bool vocHigh{false};
     bool sensorFault{false};
 };
 
-// IaqStatus bitset bits (SensorBoardPort::IaqStatus).
+// IaqStatus bitset bits (SensorBoardPort::AirQualityStatus).
 enum class IaqStatusBit : uint16_t {
     HumidityBoost = 1u << 0,
     Co2Boost = 1u << 1,
     SensorFault = 1u << 2,
+    VocBoost = 1u << 3,
+    DehumidifyRequest = 1u << 4,
 };
 
 class VentilationController {
@@ -740,66 +1196,64 @@ public:
 
     const VentilationOutputs& update(const VentilationInputs& in)
     {
-        if (in.co2Valid) {
-            if (in.co2Ppm >= config_.co2SetpointPpm + config_.co2HysteresisPpm) {
-                co2High_ = true;
-            } else if (in.co2Ppm <= config_.co2SetpointPpm - config_.co2HysteresisPpm) {
-                co2High_ = false;
-            }
-        } else {
-            co2High_ = false;
+        const float co2Demand = in.co2Valid
+                                    ? ramp(in.co2Ppm, config_.co2SetpointPpm, config_.co2BandPpm)
+                                    : 0.0f;
+        const float humidityDemand =
+            in.humidityValid
+                ? ramp(in.humidityPct, config_.humidityThresholdPct, config_.humidityBandPct)
+                : 0.0f;
+        const float vocDemand =
+            (in.vocValid && config_.vocThresholdIndex > 0.0f)
+                ? ramp(in.vocIndex, config_.vocThresholdIndex, config_.vocBandIndex)
+                : 0.0f;
+
+        // Worst channel wins: the point of measuring three pollutants is that
+        // any one of them alone justifies air change.
+        float autoDemand = co2Demand;
+        if (humidityDemand > autoDemand) autoDemand = humidityDemand;
+        if (vocDemand > autoDemand) autoDemand = vocDemand;
+        if (in.occupied && autoDemand < static_cast<float>(config_.baseDemandPercent)) {
+            autoDemand = static_cast<float>(config_.baseDemandPercent);
         }
 
-        if (in.humidityValid) {
-            if (in.humidityPct >= config_.humidityThresholdPct + config_.humidityHysteresisPct) {
-                humidityHigh_ = true;
-            } else if (in.humidityPct <= config_.humidityThresholdPct - config_.humidityHysteresisPct) {
-                humidityHigh_ = false;
-            }
-        } else {
-            humidityHigh_ = false;
-        }
-
-        // Demand = max(humidity demand, CO2 demand), each represented as a
-        // binary boost right now (no proportional CO2/humidity model yet);
-        // this still satisfies the ABI (0/100 % demand maps cleanly onto the
-        // level buckets below).
-        uint8_t autoDemand = 0;
-        if (humidityHigh_ || co2High_) {
-            autoDemand = 100;
-        }
-
-        uint8_t demand = 0;
+        float demand = 0.0f;
         switch (in.mode) {
             case VentilationMode::Off:
-                demand = 0;
+                demand = 0.0f;
                 break;
             case VentilationMode::Boost:
-                demand = 100;
+                demand = 100.0f;
                 break;
             case VentilationMode::Manual:
-                // No dedicated manual-percent input exists on the current ABI;
-                // fall back to the automatic calculation (see
-                // todo_feature_set.md section 8 / knx_product.hpp comments).
+                demand = static_cast<float>(config_.manualDemandPercent);
+                break;
             case VentilationMode::Auto:
             default:
                 demand = autoDemand;
                 break;
         }
 
-        outputs_.demandPercent = demand;
-        outputs_.active = demand > 0;
-        outputs_.humidityHigh = humidityHigh_;
-        outputs_.co2High = co2High_;
+        outputs_.demandPercent = static_cast<uint8_t>(clampf(demand, 0.0f, 100.0f) + 0.5f);
+        outputs_.active = outputs_.demandPercent > 0;
+        outputs_.co2High = co2Demand > 0.0f;
+        outputs_.humidityHigh = humidityDemand > 0.0f;
+        outputs_.vocHigh = vocDemand > 0.0f;
+        outputs_.boostRequest = outputs_.demandPercent >= 100;
+        // Dehumidification is a distinct service from air change: it is what a
+        // reversible heat pump or a dehumidifier acts on, and it must not be
+        // asserted just because CO2 is high.
+        outputs_.dehumidifyRequest = humidityDemand > 0.0f;
         outputs_.sensorFault = !in.co2Valid && !in.humidityValid;
 
-        if (demand == 0) {
+        const uint8_t d = outputs_.demandPercent;
+        if (d == 0) {
             outputs_.level = VentilationLevel::Off;
-        } else if (demand < 34) {
+        } else if (d < 34) {
             outputs_.level = VentilationLevel::Low;
-        } else if (demand < 67) {
+        } else if (d < 67) {
             outputs_.level = VentilationLevel::Medium;
-        } else if (demand < 100) {
+        } else if (d < 100) {
             outputs_.level = VentilationLevel::High;
         } else {
             outputs_.level = VentilationLevel::Boost;
@@ -809,10 +1263,21 @@ public:
     }
 
 private:
+    /// 0 % at or below `threshold`, 100 % at `threshold + band`, linear between.
+    /// A zero or negative band degrades to the original on/off behaviour.
+    static float ramp(float value, float threshold, float band)
+    {
+        if (value <= threshold) {
+            return 0.0f;
+        }
+        if (band <= 0.0f) {
+            return 100.0f;
+        }
+        return clampf(100.0f * (value - threshold) / band, 0.0f, 100.0f);
+    }
+
     VentilationConfig config_{};
     VentilationOutputs outputs_{};
-    bool co2High_{false};
-    bool humidityHigh_{false};
 };
 
 } // namespace hvac
