@@ -41,13 +41,19 @@ namespace {
 
 static constexpr const char *TAG = "knx_service";
 // Startup, not the service loop, sets this task's stack peak. The commissioned
-// runtime is ~34 KB for this product and is built directly on the heap by
+// runtime is ~53 KB for this product and is built directly on the heap by
 // startCommissionedProduct(), so it never crosses this stack; what remains here
-// is the bindings builder (~5.7 KB, plus the by-value copy handed to the start
-// call) and the BAU init call tree with NVS/crypto/logging under it. Measured
-// frames after the heap-handle change: knxServiceTask 12,352 B +
-// startCommissionedProduct 96 B, against 85,712 B when the runtime was still
-// returned by value — which overflowed even a 64 KB stack.
+// is the bindings builder (~8.9 KB) and the BAU init call tree with
+// NVS/crypto/logging under it.
+//
+// Everything on that path that is sized by the port and parameter counts —
+// the builder, the endpoint bindings, the parameter callbacks — is now handed
+// down by rvalue reference rather than by value, so it exists once instead of
+// once per frame it passes through. Measured frames before that change, at 61
+// ports / 73 parameters: knxServiceTask 19,040 B + startCommissionedProduct
+// 96 B + make_unique 9,008 B + the runtime constructor 5,920 B = 34,064 B,
+// which overflowed a 32 KB stack during boot (the C6 hardware stack guard
+// trapped it inside the constructor prologue).
 //
 // The high-water mark is logged once below; retune this from that number rather
 // than from guesswork if the product grows.
@@ -1072,10 +1078,10 @@ void knxServiceTask(void *arg)
     // connection events) — the development default while the stack is being
     // brought up. Switch to Info for production builds: INFO carries only
     // state changes (address, lifecycle, load state) and WARN/ERROR faults.
-    knx::log::setLevel(knx::log::Level::Debug);
+    knx::log::setLevel(knx::log::Level::Info);
     // knx::log routes through esp_log, whose runtime default level (Info)
     // would otherwise silently drop the Debug output enabled above.
-    esp_log_level_set("*", ESP_LOG_DEBUG);
+    esp_log_level_set("*", ESP_LOG_INFO);
     // Suppress ModBus driver/infrastructure noise to focus on KNX application.
     // esp_log matches these tags exactly (no prefix matching), so every
     // component-specific tag needs its own entry.
@@ -1104,7 +1110,13 @@ void knxServiceTask(void *arg)
     CommissionedProductHandle<std::remove_cvref_t<decltype(kSensorBoardProduct)>,
                               kDefaultBindingCapacity> appPtr;
     {
-    auto bindings = makeCommissionedBindings(kSensorBoardProduct)
+    // Declared first, then chained onto as an lvalue. Writing this as
+    // `auto bindings = makeCommissionedBindings(...).provideState(...)...`
+    // would put two builders in this frame — the chain's temporary and the
+    // named object initialised from it — and the builder is ~9 KB for a
+    // product this size.
+    auto bindings = makeCommissionedBindings(kSensorBoardProduct);
+    bindings
         // ---- Measurements: read requests are answered from the same
         // corrected readings the control loops use, so a bus read and a
         // spontaneous send can never disagree.

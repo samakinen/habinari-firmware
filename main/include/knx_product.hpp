@@ -1071,13 +1071,20 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupSetpoints},
 
             // ---- Heating control -------------------------------------------------
+            // The whole section is gated on the heating sequence being in use, so
+            // an integrator who switched heating off does not get a section of
+            // settings that the controller ignores. Cooling below is deliberately
+            // identical in shape: the two sequences differ only in which enable
+            // and which algorithm parameter they follow.
             ParameterDescriptor<SensorBoardParameter::HeatingControlAlgorithm, uint8_t>{
                 .key = "heating_control_algorithm",
                 .displayName = "Heating control algorithm",
                 .defaultValue = kDefaultHeatingControlAlgorithm,
                 .options = parameterOptions(ParameterOption{0, "Two-point (on/off)"},
                                             ParameterOption{1, "Continuous PI"}),
-                .group = kGroupHeating},
+                .group = kGroupHeating,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::HeatingKp, Dpt9Float>{
                 .key = "heating_pid_kp",
                 .displayName = "Heating proportional gain",
@@ -1087,7 +1094,9 @@ inline constexpr auto kSensorBoardProduct =
                 .unit = "%/K",
                 .group = kGroupHeating,
                 .visibleWhenParameterId = paramId(SensorBoardParameter::HeatingControlAlgorithm),
-                .visibleWhenValue = 1},
+                .visibleWhenValue = 1,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::HeatingTiSeconds, uint16_t>{
                 .key = "heating_pid_ti_seconds",
                 .displayName = "Heating reset time (0 = P only)",
@@ -1097,7 +1106,9 @@ inline constexpr auto kSensorBoardProduct =
                 .unit = "s",
                 .group = kGroupHeating,
                 .visibleWhenParameterId = paramId(SensorBoardParameter::HeatingControlAlgorithm),
-                .visibleWhenValue = 1},
+                .visibleWhenValue = 1,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::HeatingTdSeconds, uint16_t>{
                 .key = "heating_pid_td_seconds",
                 .displayName = "Heating derivative time (0 = off)",
@@ -1107,7 +1118,9 @@ inline constexpr auto kSensorBoardProduct =
                 .unit = "s",
                 .group = kGroupHeating,
                 .visibleWhenParameterId = paramId(SensorBoardParameter::HeatingControlAlgorithm),
-                .visibleWhenValue = 1},
+                .visibleWhenValue = 1,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::HeatingMinimumOutputPercent, uint8_t>{
                 .key = "heating_minimum_output_percent",
                 .displayName = "Heating minimum control value",
@@ -1115,7 +1128,9 @@ inline constexpr auto kSensorBoardProduct =
                 .minValue = 0,
                 .maxValue = 100,
                 .unit = "%",
-                .group = kGroupHeating},
+                .group = kGroupHeating,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::HeatingMaximumOutputPercent, uint8_t>{
                 .key = "heating_maximum_output_percent",
                 .displayName = "Heating maximum control value",
@@ -1123,9 +1138,15 @@ inline constexpr auto kSensorBoardProduct =
                 .minValue = 0,
                 .maxValue = 100,
                 .unit = "%",
-                .group = kGroupHeating},
+                .group = kGroupHeating,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenValue = 1},
 
             // ---- Cooling control -------------------------------------------------
+            // Mirror image of the heating section above, gated on the cooling
+            // sequence. The PI terms follow the cooling algorithm rather than the
+            // cooling enable: gating them on the enable made them appear under a
+            // two-point configuration, where they do nothing.
             ParameterDescriptor<SensorBoardParameter::CoolingControlAlgorithm, uint8_t>{
                 .key = "cooling_control_algorithm",
                 .displayName = "Cooling control algorithm",
@@ -1133,8 +1154,8 @@ inline constexpr auto kSensorBoardProduct =
                 .options = parameterOptions(ParameterOption{0, "Two-point (on/off)"},
                                             ParameterOption{1, "Continuous PI"}),
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::CoolingKp, Dpt9Float>{
                 .key = "cooling_pid_kp",
                 .displayName = "Cooling proportional gain",
@@ -1143,8 +1164,10 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 200,
                 .unit = "%/K",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
+                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingControlAlgorithm),
+                .visibleWhenValue = 1,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::CoolingTiSeconds, uint16_t>{
                 .key = "cooling_pid_ti_seconds",
                 .displayName = "Cooling reset time (0 = P only)",
@@ -1153,8 +1176,10 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
+                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingControlAlgorithm),
+                .visibleWhenValue = 1,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::CoolingTdSeconds, uint16_t>{
                 .key = "cooling_pid_td_seconds",
                 .displayName = "Cooling derivative time (0 = off)",
@@ -1163,8 +1188,10 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
+                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingControlAlgorithm),
+                .visibleWhenValue = 1,
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::CoolingMinimumOutputPercent, uint8_t>{
                 .key = "cooling_minimum_output_percent",
                 .displayName = "Cooling minimum control value",
@@ -1173,8 +1200,8 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenValue = 1},
             ParameterDescriptor<SensorBoardParameter::CoolingMaximumOutputPercent, uint8_t>{
                 .key = "cooling_maximum_output_percent",
                 .displayName = "Cooling maximum control value",
@@ -1183,8 +1210,8 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
+                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenValue = 1},
 
             // ---- Control loop behaviour ------------------------------------------
             ParameterDescriptor<SensorBoardParameter::ThermostatHysteresis, Dpt9Float>{
