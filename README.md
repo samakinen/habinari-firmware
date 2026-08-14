@@ -17,6 +17,13 @@ This repository contains the firmware for the room air quality sensor based on t
 - STKNX (KNX)
 - SP3485EN (RS-485, MODBUS RTU)
 
+## Documentation
+
+[docs/hvac-controller-manual.md](docs/hvac-controller-manual.md) is the
+commissioning and integration manual: what the device does, every KNX parameter
+and group object explained for the integrator, worked control examples, and
+troubleshooting.
+
 ## ETS product export
 
 `main/include/knx_product.hpp` is the single source of truth for both the KNX
