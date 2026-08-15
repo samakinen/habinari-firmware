@@ -7,11 +7,16 @@
 #
 # Or via tools/run_main_host_tests.sh.
 cmake_minimum_required(VERSION 3.16)
-project(sensor_board_main_host_tests CXX)
+# C as well as C++: the protocol adapters and their wire formats are C, and
+# compiling them as C++ would mangle the symbols the tests link against.
+project(sensor_board_main_host_tests C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
 enable_testing()
 
@@ -67,3 +72,48 @@ target_link_libraries(test_modbus_registers PRIVATE unity)
 target_compile_options(test_modbus_registers PRIVATE -Wall -Wextra)
 
 add_test(NAME test_modbus_registers COMMAND test_modbus_registers)
+
+# The room controller itself, driven at simulated time. This is the test that
+# the multiprotocol refactor exists to make possible: before it, the control
+# model lived inside knx_service.cpp behind a FreeRTOS task and a KNX stack, and
+# none of it could be reached from a host build.
+add_executable(test_control_core test_control_core.cpp)
+target_include_directories(test_control_core PRIVATE "${MAIN_DIR}/include")
+target_link_libraries(test_control_core PRIVATE unity)
+target_compile_options(test_control_core PRIVATE -Wall -Wextra)
+
+add_test(NAME test_control_core COMMAND test_control_core)
+
+# MQTT wire format: the state document and the command mapping. host_stubs
+# supplies esp_err.h, which is all that control_state.h needs from ESP-IDF —
+# anything more would mean the code under test has a platform dependency it
+# should not have.
+add_executable(test_mqtt_payload
+    test_mqtt_payload.cpp
+    "${MAIN_DIR}/src/mqtt_payload.c"
+)
+target_include_directories(test_mqtt_payload PRIVATE
+    "${MAIN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs"
+)
+target_link_libraries(test_mqtt_payload PRIVATE unity)
+target_compile_options(test_mqtt_payload PRIVATE -Wall -Wextra)
+
+add_test(NAME test_mqtt_payload COMMAND test_mqtt_payload)
+
+# The out-of-band settings registry: range enforcement, the text encoding both
+# ends of a service channel agree on, and secret redaction. Portable C by
+# design — no NVS, no FreeRTOS, no radio — which is exactly why the properties
+# every channel depends on can be pinned here rather than on a bench.
+add_executable(test_device_config
+    test_device_config.cpp
+    "${MAIN_DIR}/src/device_config.c"
+)
+target_include_directories(test_device_config PRIVATE
+    "${MAIN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs"
+)
+target_link_libraries(test_device_config PRIVATE unity)
+target_compile_options(test_device_config PRIVATE -Wall -Wextra)
+
+add_test(NAME test_device_config COMMAND test_device_config)

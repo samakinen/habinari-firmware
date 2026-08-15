@@ -102,7 +102,11 @@ void control_state_get(control_state_t *out);
 typedef enum {
     CONTROL_CMD_CONTROLLER_ON_OFF = 0,  ///< 0 = off, non-zero = on
     CONTROL_CMD_HVAC_MODE,              ///< OperatingPreset code point
-    CONTROL_CMD_CONTROLLER_MODE,        ///< ControllerMode code point
+    /// ControllerMode code point (0=Auto, 1=Heat, 2=Cool, 3=Off) — the same
+    /// encoding control_state_t::controller_mode reports, so read-modify-write
+    /// round-trips. Protocol-specific encodings such as KNX DPT 20.105 are
+    /// translated by the adapter that speaks them, never here.
+    CONTROL_CMD_CONTROLLER_MODE,
     CONTROL_CMD_SETPOINT_BASE,          ///< comfort heating setpoint, °C
     CONTROL_CMD_SETPOINT_SHIFT,         ///< user offset, K
     CONTROL_CMD_WINDOW_STATUS,          ///< 0 = closed, non-zero = open

@@ -5,7 +5,10 @@
 
 #include "board.h"
 #include "control_state.h"
+#include "device_config.h"
+#include "protocol_adapter.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_timer.h"
 #include "mbcontroller.h"
 #include "nvs.h"
@@ -21,7 +24,7 @@ static const char *TAG = "modbus_rtu_slave";
 #define MB_NVS_KEY_ADDRESS "address"
 #define MB_NVS_KEY_BAUD "baud"
 
-#define MB_DEFAULT_SLAVE_ADDRESS 1
+#define MB_DEFAULT_SLAVE_ADDRESS MB_SLAVE_ADDR_UNASSIGNED
 #define MB_DEFAULT_BAUD_CODE MB_BAUD_19200
 
 // How often the register images are refreshed from control_state and master
@@ -42,14 +45,13 @@ static void mb_load_line_settings(mb_rtu_slave_t *slave)
 
     nvs_handle_t handle = 0;
     if (nvs_open(MB_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        ESP_LOGI(TAG, "No stored Modbus settings; using address %u at %" PRIu32 " baud",
-                 slave->slave_address, mb_baud_from_code(slave->baud_code));
+        ESP_LOGI(TAG, "No stored Modbus settings; this device has no address yet");
         return;
     }
 
     uint8_t address = 0;
-    if (nvs_get_u8(handle, MB_NVS_KEY_ADDRESS, &address) == ESP_OK && address >= 1
-        && address <= 247) {
+    if (nvs_get_u8(handle, MB_NVS_KEY_ADDRESS, &address) == ESP_OK
+        && mb_address_assignable(address)) {
         slave->slave_address = address;
     }
     uint16_t baud = 0;
@@ -57,8 +59,14 @@ static void mb_load_line_settings(mb_rtu_slave_t *slave)
         slave->baud_code = baud;
     }
     nvs_close(handle);
-    ESP_LOGI(TAG, "Modbus settings: address %u at %" PRIu32 " baud", slave->slave_address,
-             mb_baud_from_code(slave->baud_code));
+    if (mb_address_assignable(slave->slave_address)) {
+        ESP_LOGI(TAG, "Modbus settings: address %u at %" PRIu32 " baud", slave->slave_address,
+                 mb_baud_from_code(slave->baud_code));
+    } else {
+        ESP_LOGW(TAG,
+                 "Modbus address not assigned: this device stays silent until the programming "
+                 "button selects it, or a master writes its serial to the select registers");
+    }
 }
 
 static esp_err_t mb_store_line_settings(const mb_rtu_slave_t *slave)
@@ -77,6 +85,141 @@ static esp_err_t mb_store_line_settings(const mb_rtu_slave_t *slave)
     }
     nvs_close(handle);
     return err;
+}
+
+// --- Out-of-band configuration ---------------------------------------------
+//
+// The circular one. Address and baud rate are writable over Modbus, which works
+// exactly until it does not: two boards out of the box are both address 1 on
+// the same pair, and a master cannot address either of them to move one. The
+// service channel (oob_service.h) breaks that loop; this is the Modbus side's
+// half of the contract, and it does not know or care what renders it.
+//
+// Both take effect at the next boot rather than immediately. Re-opening a UART
+// underneath a live master mid-transaction is a way to lose the frame that told
+// you to do it, and the installer is standing at the device anyway.
+
+static uint8_t mb_stored_address(void)
+{
+    nvs_handle_t handle = 0;
+    if (nvs_open(MB_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return MB_DEFAULT_SLAVE_ADDRESS;
+    }
+    uint8_t address = MB_DEFAULT_SLAVE_ADDRESS;
+    if (nvs_get_u8(handle, MB_NVS_KEY_ADDRESS, &address) != ESP_OK) {
+        address = MB_DEFAULT_SLAVE_ADDRESS;
+    }
+    nvs_close(handle);
+    return address;
+}
+
+static uint16_t mb_stored_baud_code(void)
+{
+    nvs_handle_t handle = 0;
+    if (nvs_open(MB_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return MB_DEFAULT_BAUD_CODE;
+    }
+    uint16_t code = MB_DEFAULT_BAUD_CODE;
+    if (nvs_get_u16(handle, MB_NVS_KEY_BAUD, &code) != ESP_OK || code >= MB_BAUD_CODE_COUNT) {
+        code = MB_DEFAULT_BAUD_CODE;
+    }
+    nvs_close(handle);
+    return code;
+}
+
+static esp_err_t mb_cfg_get_address(const device_config_item_t *item, device_config_value_t *out)
+{
+    (void)item;
+    out->num.u = mb_stored_address();
+    return ESP_OK;
+}
+
+static esp_err_t mb_cfg_set_address(const device_config_item_t *item,
+                                    const device_config_value_t *value)
+{
+    (void)item;
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(MB_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u8(handle, MB_NVS_KEY_ADDRESS, (uint8_t)value->num.u);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+static esp_err_t mb_cfg_get_baud(const device_config_item_t *item, device_config_value_t *out)
+{
+    (void)item;
+    out->num.u = mb_stored_baud_code();
+    return ESP_OK;
+}
+
+static esp_err_t mb_cfg_set_baud(const device_config_item_t *item,
+                                 const device_config_value_t *value)
+{
+    (void)item;
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(MB_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u16(handle, MB_NVS_KEY_BAUD, (uint16_t)value->num.u);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+// Indexed by mb_baud_code_t, so the registry's enum bound and the UART's are
+// the same list. Adding a rate means adding it in both places or neither.
+static const char *const mb_baud_labels[] = {"9600", "19200", "38400", "57600", "115200"};
+_Static_assert(sizeof(mb_baud_labels) / sizeof(mb_baud_labels[0]) == MB_BAUD_CODE_COUNT,
+               "baud labels must match mb_baud_code_t");
+
+static const device_config_item_t mb_config_items[] = {
+    {
+        .key = "mb.addr",
+        // 0 is offered deliberately: it is how a board being pulled out of one
+        // installation and into another is put back into the silent, unaddressed
+        // state it left the factory in.
+        .label = "Modbus slave address (0 = unassigned, silent)",
+        .type = DEVICE_CONFIG_TYPE_UINT,
+        .flags = DEVICE_CONFIG_FLAG_REBOOT,
+        .min = 0.0f,
+        .max = (float)MB_SLAVE_ADDR_MAX,
+        .get = mb_cfg_get_address,
+        .set = mb_cfg_set_address,
+    },
+    {
+        .key = "mb.baud",
+        .label = "Modbus baud rate",
+        .unit = "bit/s",
+        .type = DEVICE_CONFIG_TYPE_ENUM,
+        .flags = DEVICE_CONFIG_FLAG_REBOOT,
+        .enum_labels = mb_baud_labels,
+        .enum_count = MB_BAUD_CODE_COUNT,
+        .get = mb_cfg_get_baud,
+        .set = mb_cfg_set_baud,
+    },
+};
+
+/// True while a serial-number selection is armed and unexpired.
+static bool mb_serial_selection_active(mb_rtu_slave_t *slave)
+{
+    if (slave->serial_select_expiry_us == 0) {
+        return false;
+    }
+    if (esp_timer_get_time() >= slave->serial_select_expiry_us) {
+        slave->serial_select_expiry_us = 0;
+        ESP_LOGI(TAG, "Serial selection expired");
+        return false;
+    }
+    return true;
 }
 
 // --- Stack lifecycle -------------------------------------------------------
@@ -109,7 +252,7 @@ static esp_err_t mb_stack_start(mb_rtu_slave_t *slave)
         .ser_opts.mode = MB_RTU,
         .ser_opts.baudrate = mb_baud_from_code(slave->baud_code),
         .ser_opts.parity = MB_PARITY_NONE,
-        .ser_opts.uid = slave->slave_address,
+        .ser_opts.uid = slave->listen_address,
         .ser_opts.data_bits = UART_DATA_8_BITS,
         .ser_opts.stop_bits = UART_STOP_BITS_1,
     };
@@ -159,14 +302,29 @@ static esp_err_t mb_stack_start(mb_rtu_slave_t *slave)
     }
 
     const esp_err_t id_err =
-        mbc_set_slave_id(slave->mbc_slave_handle, slave->slave_address, true,
+        mbc_set_slave_id(slave->mbc_slave_handle, slave->listen_address, true,
                          (uint8_t *)MB_DEVICE_NAME, strlen(MB_DEVICE_NAME));
     if (id_err != ESP_OK) {
         ESP_LOGW(TAG, "Report Slave ID unavailable: %s", esp_err_to_name(id_err));
     }
 
-    ESP_LOGI(TAG, "Modbus RTU slave listening as address %u at %" PRIu32 " baud",
-             slave->slave_address, mb_baud_from_code(slave->baud_code));
+    if (slave->listen_address == MB_SLAVE_ADDR_UNASSIGNED) {
+        // Not an error and not idle: the stack is running and receiving. It just
+        // cannot answer, because the only address it matches is the broadcast
+        // address and the spec forbids replying to that. This is how a shelf of
+        // unaddressed boards shares one pair in silence and still hears the
+        // broadcast that names one of them.
+        ESP_LOGI(TAG,
+                 "Modbus RTU slave listening for broadcasts only at %" PRIu32
+                 " baud (no address assigned)",
+                 mb_baud_from_code(slave->baud_code));
+    } else {
+        ESP_LOGI(TAG, "Modbus RTU slave listening as address %u at %" PRIu32 " baud%s",
+                 slave->listen_address, mb_baud_from_code(slave->baud_code),
+                 slave->listen_address == MB_SLAVE_ADDR_COMMISSIONING
+                     ? " (commissioning address)"
+                     : "");
+    }
     return ESP_OK;
 }
 
@@ -190,6 +348,12 @@ static void mb_fill_identity(mb_rtu_slave_t *slave)
     slave->input_regs.firmware_version = (1 << 8) | 0;
     slave->input_regs.uptime_hours = (uint16_t)(uptime_s / 3600);
     slave->input_regs.uptime_seconds = (uint16_t)(uptime_s % 3600);
+
+    uint16_t serial[3];
+    mb_serial_encode(slave->serial, serial);
+    slave->input_regs.serial_0 = serial[0];
+    slave->input_regs.serial_1 = serial[1];
+    slave->input_regs.serial_2 = serial[2];
 }
 
 static void mb_fill_measurements(mb_rtu_slave_t *slave, const sensor_data_t *d)
@@ -362,7 +526,7 @@ static void mb_refresh_writables(mb_rtu_slave_t *slave, const control_state_t *s
 // True when the master has changed this register since we last wrote it.
 #define MB_CHANGED(field) (current.field != slave->applied_holding.field)
 
-static bool mb_apply_writes(mb_rtu_slave_t *slave)
+static bool mb_apply_writes(mb_rtu_slave_t *slave, bool programming_mode)
 {
     mb_holding_registers_t current;
     uint8_t coils[MB_COIL_BYTES];
@@ -421,26 +585,80 @@ static bool mb_apply_writes(mb_rtu_slave_t *slave)
         }
     }
 
+    // A serial-number write selects this device, and only this device. It is
+    // checked before the commit below so that one broadcast frame carrying both
+    // — select and commit — is honoured in the order the master wrote it.
+    const uint16_t selection[3] = {
+        current.serial_select_0,
+        current.serial_select_1,
+        current.serial_select_2,
+    };
+    //
+    // Detected as a change rather than as a write, because a memory-mapped
+    // register area has no write callback and rewriting the same value looks
+    // like nothing happening. The consequence is worth knowing: to re-arm an
+    // expired selection, write zeros and then the serial again.
+    if (memcmp(selection, &slave->applied_holding.serial_select_0, sizeof(selection)) != 0) {
+        if (mb_serial_selected(selection, slave->serial)) {
+            slave->serial_select_expiry_us =
+                esp_timer_get_time() + (int64_t)MB_SERIAL_SELECT_TIMEOUT_S * 1000000;
+            ESP_LOGW(TAG, "Selected by serial number for %d s", MB_SERIAL_SELECT_TIMEOUT_S);
+        } else if (slave->serial_select_expiry_us != 0) {
+            // Somebody else's serial, or an explicit clear. Either way this
+            // device is no longer the one being addressed.
+            slave->serial_select_expiry_us = 0;
+            ESP_LOGI(TAG, "Serial selection released");
+        }
+    }
+
+    const mb_commissioning_inputs_t commissioning = {
+        .assigned_address = slave->slave_address,
+        .programming_mode = programming_mode,
+        .serial_selected = mb_serial_selection_active(slave),
+    };
+    const mb_commissioning_state_t allowed = mb_commissioning_resolve(commissioning);
+
     // Line settings only change on an explicit commit: rewriting the address of
     // the device you are mid-conversation with would drop the response to the
     // very write that requested it.
     bool reconfigure = false;
     if (current.config_commit != 0) {
-        const bool address_ok = current.slave_address >= 1 && current.slave_address <= 247;
-        const bool baud_ok = current.baud_rate_code < MB_BAUD_CODE_COUNT;
-        if (address_ok && baud_ok) {
-            slave->slave_address = (uint8_t)current.slave_address;
-            slave->baud_code = current.baud_rate_code;
-            const esp_err_t err = mb_store_line_settings(slave);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to persist Modbus settings: %s", esp_err_to_name(err));
-            }
-            reconfigure = true;
-            ESP_LOGW(TAG, "Modbus line settings committed: address %u at %" PRIu32 " baud",
-                     slave->slave_address, mb_baud_from_code(slave->baud_code));
+        if (!allowed.accept_line_settings) {
+            // Reachable is not the same as selected. Without this a stray or
+            // mistargeted master write could re-address a device in a running
+            // building, and the first anyone would know is a BMS point going
+            // dark.
+            ESP_LOGW(TAG,
+                     "Refused a line-settings commit: this device is not selected. Press the "
+                     "programming button, or write its serial to registers 12..14 first.");
         } else {
-            ESP_LOGW(TAG, "Rejected invalid Modbus settings: address %u, baud code %u",
-                     current.slave_address, current.baud_rate_code);
+            const bool address_ok = mb_address_assignable(current.slave_address)
+                                    || current.slave_address == MB_SLAVE_ADDR_UNASSIGNED;
+            const bool baud_ok = current.baud_rate_code < MB_BAUD_CODE_COUNT;
+            if (address_ok && baud_ok) {
+                slave->slave_address = (uint8_t)current.slave_address;
+                slave->baud_code = current.baud_rate_code;
+                const esp_err_t err = mb_store_line_settings(slave);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to persist Modbus settings: %s", esp_err_to_name(err));
+                }
+                reconfigure = true;
+                // The selection is spent: a commissioning script that crashes
+                // after this must not leave the device writable.
+                slave->serial_select_expiry_us = 0;
+                if (slave->slave_address == MB_SLAVE_ADDR_UNASSIGNED) {
+                    ESP_LOGW(TAG, "Modbus address cleared; this device is silent again");
+                } else {
+                    ESP_LOGW(TAG, "Modbus line settings committed: address %u at %" PRIu32 " baud",
+                             slave->slave_address, mb_baud_from_code(slave->baud_code));
+                }
+            } else {
+                ESP_LOGW(TAG,
+                         "Rejected invalid Modbus settings: address %u (allowed %u..%u, or %u to "
+                         "unassign), baud code %u",
+                         current.slave_address, MB_SLAVE_ADDR_MIN, MB_SLAVE_ADDR_MAX,
+                         MB_SLAVE_ADDR_UNASSIGNED, current.baud_rate_code);
+            }
         }
     }
     return reconfigure;
@@ -456,9 +674,10 @@ static void mb_service_task(void *param)
     control_state_t state;
 
     while (!slave->stop_requested) {
-        const bool reconfigure = mb_apply_writes(slave);
-
         control_state_get(&state);
+
+        const bool reconfigure = mb_apply_writes(slave, state.programming_mode);
+
         if (mbc_slave_lock(slave->mbc_slave_handle) == ESP_OK) {
             mb_fill_identity(slave);
             mb_fill_control(slave, &state);
@@ -466,11 +685,22 @@ static void mb_service_task(void *param)
             mbc_slave_unlock(slave->mbc_slave_handle);
         }
 
-        if (reconfigure) {
+        // What this device should be answering to right now. It changes when a
+        // commit lands, and also when programming mode does — an unaddressed
+        // board comes up on the commissioning address while somebody is standing
+        // at it and goes mute again when they leave.
+        const mb_commissioning_state_t want = mb_commissioning_resolve((mb_commissioning_inputs_t){
+            .assigned_address = slave->slave_address,
+            .programming_mode = state.programming_mode,
+            .serial_selected = mb_serial_selection_active(slave),
+        });
+
+        if (reconfigure || want.listen_address != slave->listen_address) {
             // Give the stack time to finish the response to the commit before
             // the line settings change underneath it.
             vTaskDelay(pdMS_TO_TICKS(100));
             mb_stack_stop(slave);
+            slave->listen_address = want.listen_address;
             if (mb_stack_start(slave) != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to restart with the new settings; slave is offline");
                 break;
@@ -498,6 +728,26 @@ esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave)
 
     memset(slave, 0, sizeof(*slave));
     mb_load_line_settings(slave);
+
+    // The identity a master selects this device by, and the same six bytes the
+    // KNX device object and the BLE advertisement use. Without it the device can
+    // still be commissioned from the button, just not remotely.
+    if (esp_read_mac(slave->serial, ESP_MAC_BASE) != ESP_OK) {
+        ESP_LOGW(TAG, "esp_read_mac failed; serial-number selection will not work");
+    }
+
+    // Start where the commissioning state says, not where the stored address
+    // says. A fresh device comes up mute; the task moves it when programming
+    // mode changes.
+    control_state_t initial;
+    control_state_get(&initial);
+    slave->listen_address =
+        mb_commissioning_resolve((mb_commissioning_inputs_t){
+                                     .assigned_address = slave->slave_address,
+                                     .programming_mode = initial.programming_mode,
+                                     .serial_selected = false,
+                                 })
+            .listen_address;
 
     // Until the first sampling cycle every measurement is genuinely unknown,
     // and the map has a way to say that. Zero would have claimed 0.0 °C.
@@ -557,3 +807,52 @@ bool mb_rtu_slave_led_requested(const mb_rtu_slave_t *slave)
     }
     return mb_bit_get(slave->coil_bits, MB_COIL_IDENTIFY_LED);
 }
+
+// ---------------------------------------------------------------------------
+// Protocol adapter descriptor.
+//
+// The instance-based API above is kept — it is the testable shape, and it is
+// what docs/modbus-register-map.md describes — and this is the thin binding
+// that lets the registry start it alongside whatever else is compiled in.
+// ---------------------------------------------------------------------------
+
+static mb_rtu_slave_t s_slave;
+
+static esp_err_t mb_adapter_start(void)
+{
+    // Registered even if the stack below fails to come up. A board whose RS-485
+    // driver did not start is exactly the board somebody needs to reconfigure.
+    const esp_err_t cfg =
+        device_config_register(mb_config_items, sizeof(mb_config_items) / sizeof(*mb_config_items));
+    if (cfg != ESP_OK) {
+        ESP_LOGW(TAG, "Modbus line settings not exposed out of band: %s", esp_err_to_name(cfg));
+    }
+    return mb_rtu_slave_start(&s_slave);
+}
+
+static void mb_adapter_on_sensor_data(const sensor_data_t *data)
+{
+    // Measurements go straight into the input-register image so a master
+    // polling faster than the control tick still sees fresh readings. The rest
+    // of the map is refreshed by the slave's own task from control_state.
+    (void)mb_rtu_slave_publish(&s_slave, data);
+}
+
+static bool mb_adapter_identify_active(void)
+{
+    return mb_rtu_slave_led_requested(&s_slave);
+}
+
+const protocol_adapter_t modbus_protocol_adapter = {
+    .name = "modbus-rtu",
+    .start = mb_adapter_start,
+    // No tick hook: the slave's own task refreshes the register image on its
+    // own cadence, and a master reads whenever it likes. There is nothing to
+    // push.
+    .on_control_tick = NULL,
+    .on_sensor_data = mb_adapter_on_sensor_data,
+    .identify_active = mb_adapter_identify_active,
+    // Optional: a board with nothing wired to the RS-485 terminal is a
+    // correctly installed board, not a broken one.
+    .required = false,
+};

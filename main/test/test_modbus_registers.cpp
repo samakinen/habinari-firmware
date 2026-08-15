@@ -135,6 +135,7 @@ void test_input_register_addresses_match_the_documented_map(void)
     TEST_ASSERT_EQUAL_UINT16(34, inputAddress(offsetof(mb_input_registers_t, heating_percent)));
     TEST_ASSERT_EQUAL_UINT16(45,
                              inputAddress(offsetof(mb_input_registers_t, temperature_source)));
+    TEST_ASSERT_EQUAL_UINT16(48, inputAddress(offsetof(mb_input_registers_t, serial_0)));
 }
 
 void test_holding_register_addresses_match_the_documented_map(void)
@@ -144,14 +145,115 @@ void test_holding_register_addresses_match_the_documented_map(void)
     TEST_ASSERT_EQUAL_UINT16(2, inputAddress(offsetof(mb_holding_registers_t, config_commit)));
     TEST_ASSERT_EQUAL_UINT16(4, inputAddress(offsetof(mb_holding_registers_t, comfort_setpoint)));
     TEST_ASSERT_EQUAL_UINT16(9, inputAddress(offsetof(mb_holding_registers_t, co2_setpoint)));
+    TEST_ASSERT_EQUAL_UINT16(12, inputAddress(offsetof(mb_holding_registers_t, serial_select_0)));
 }
 
 void test_register_blocks_have_no_padding(void)
 {
     // A hole would shift every address after it, so the map would silently stop
     // matching the documentation on a compiler with different packing rules.
-    TEST_ASSERT_EQUAL_UINT32(48 * 2, sizeof(mb_input_registers_t));
-    TEST_ASSERT_EQUAL_UINT32(12 * 2, sizeof(mb_holding_registers_t));
+    TEST_ASSERT_EQUAL_UINT32(52 * 2, sizeof(mb_input_registers_t));
+    TEST_ASSERT_EQUAL_UINT32(16 * 2, sizeof(mb_holding_registers_t));
+}
+
+// --- Commissioning ---------------------------------------------------------
+//
+// Modbus standardises no addressing mechanism, so this convention is the
+// product's own and every part of it has to be pinned. What is being defended
+// is one property above all: two devices must never answer the same request.
+
+const uint8_t kSerialA[6] = {0x84, 0xF7, 0x03, 0xA1, 0xB2, 0xC3};
+const uint8_t kSerialB[6] = {0x84, 0xF7, 0x03, 0x11, 0x22, 0x33};
+
+mb_commissioning_state_t resolve(uint8_t assigned, bool programming, bool selected)
+{
+    mb_commissioning_inputs_t in;
+    in.assigned_address = assigned;
+    in.programming_mode = programming;
+    in.serial_selected = selected;
+    return mb_commissioning_resolve(in);
+}
+
+void test_a_fresh_device_is_silent(void)
+{
+    const mb_commissioning_state_t out = resolve(MB_SLAVE_ADDR_UNASSIGNED, false, false);
+
+    // The whole point: a shelf of factory-fresh boards on one pair. None of them
+    // transmits, so none of them can collide, and the bus stays usable.
+    TEST_ASSERT_FALSE(out.answers_requests);
+    TEST_ASSERT_EQUAL_UINT8(MB_SLAVE_ADDR_UNASSIGNED, out.listen_address);
+    // Silent is not deaf: address 0 is the broadcast address, which is how the
+    // serial-select frame still reaches it.
+    TEST_ASSERT_FALSE(out.accept_line_settings);
+}
+
+void test_the_button_brings_an_unassigned_device_up_on_the_commissioning_address(void)
+{
+    const mb_commissioning_state_t out = resolve(MB_SLAVE_ADDR_UNASSIGNED, true, false);
+
+    TEST_ASSERT_TRUE(out.answers_requests);
+    TEST_ASSERT_EQUAL_UINT8(MB_SLAVE_ADDR_COMMISSIONING, out.listen_address);
+    TEST_ASSERT_TRUE(out.accept_line_settings);
+}
+
+void test_an_addressed_device_keeps_its_address_while_selected(void)
+{
+    // Moving it to the commissioning address would drop it off a live bus for as
+    // long as somebody leant on the button.
+    const mb_commissioning_state_t out = resolve(17, true, false);
+
+    TEST_ASSERT_TRUE(out.answers_requests);
+    TEST_ASSERT_EQUAL_UINT8(17, out.listen_address);
+    TEST_ASSERT_TRUE(out.accept_line_settings);
+}
+
+void test_line_settings_are_refused_unless_selected(void)
+{
+    // Reachable is not the same as selected: a stray master write must not be
+    // able to re-address a device in a running building.
+    TEST_ASSERT_FALSE(resolve(17, false, false).accept_line_settings);
+
+    // Either selector is enough. The serial is the one that works with nobody
+    // at the device.
+    TEST_ASSERT_TRUE(resolve(17, false, true).accept_line_settings);
+    TEST_ASSERT_TRUE(resolve(17, true, false).accept_line_settings);
+}
+
+void test_serial_selection_names_exactly_one_device(void)
+{
+    uint16_t selection[3];
+    mb_serial_encode(kSerialA, selection);
+
+    TEST_ASSERT_TRUE(mb_serial_selected(selection, kSerialA));
+    TEST_ASSERT_FALSE(mb_serial_selected(selection, kSerialB));
+
+    // Big-endian pairs, the same encoding the input registers publish, so a
+    // master can read a serial off one device and select another with it.
+    TEST_ASSERT_EQUAL_UINT16(0x84F7, selection[0]);
+    TEST_ASSERT_EQUAL_UINT16(0x03A1, selection[1]);
+    TEST_ASSERT_EQUAL_UINT16(0xB2C3, selection[2]);
+}
+
+void test_clearing_the_selection_releases_rather_than_matches(void)
+{
+    // All-zero has to mean "nobody", not "the device with serial 00:00:...".
+    // Treating it as a match would leave every device selected after a clear.
+    const uint16_t cleared[3] = {0, 0, 0};
+    const uint8_t zeroSerial[6] = {0, 0, 0, 0, 0, 0};
+
+    TEST_ASSERT_FALSE(mb_serial_selected(cleared, kSerialA));
+    TEST_ASSERT_FALSE(mb_serial_selected(cleared, zeroSerial));
+}
+
+void test_the_commissioning_address_is_never_assignable(void)
+{
+    // Otherwise a legitimately addressed device at 247 would answer alongside
+    // any unassigned board somebody had just put into programming mode.
+    TEST_ASSERT_FALSE(mb_address_assignable(MB_SLAVE_ADDR_COMMISSIONING));
+    TEST_ASSERT_FALSE(mb_address_assignable(MB_SLAVE_ADDR_UNASSIGNED));
+    TEST_ASSERT_TRUE(mb_address_assignable(MB_SLAVE_ADDR_MIN));
+    TEST_ASSERT_TRUE(mb_address_assignable(MB_SLAVE_ADDR_MAX));
+    TEST_ASSERT_FALSE(mb_address_assignable(MB_SLAVE_ADDR_MAX + 1));
 }
 
 extern "C" void setUp() {}
@@ -174,6 +276,14 @@ int main(void)
     RUN_TEST(test_input_register_addresses_match_the_documented_map);
     RUN_TEST(test_holding_register_addresses_match_the_documented_map);
     RUN_TEST(test_register_blocks_have_no_padding);
+
+    RUN_TEST(test_a_fresh_device_is_silent);
+    RUN_TEST(test_the_button_brings_an_unassigned_device_up_on_the_commissioning_address);
+    RUN_TEST(test_an_addressed_device_keeps_its_address_while_selected);
+    RUN_TEST(test_line_settings_are_refused_unless_selected);
+    RUN_TEST(test_serial_selection_names_exactly_one_device);
+    RUN_TEST(test_clearing_the_selection_releases_rather_than_matches);
+    RUN_TEST(test_the_commissioning_address_is_never_assignable);
 
     return UNITY_END();
 }

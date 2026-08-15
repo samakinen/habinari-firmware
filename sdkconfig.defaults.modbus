@@ -1,0 +1,14 @@
+# Modbus-RTU-only personality: no KNX, no radio.
+#
+# Proves the structural point — the device controls the room with no KNX stack
+# in the image at all — and is the right build for an RS-485-only installation
+# on the auxiliary supply.
+#
+#   tools/build_variants.sh modbus
+# CONFIG_SENSOR_BOARD_PROTOCOL_KNX is not set
+CONFIG_SENSOR_BOARD_PROTOCOL_MODBUS=y
+# CONFIG_SENSOR_BOARD_PROTOCOL_MQTT is not set
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

@@ -3,6 +3,14 @@
 **Order number:** SBTP1 · **Application program:** number 21, version 4 ·
 **Manufacturer ID:** 0x00FA · **Medium:** KNX TP1 · **Group objects:** 61 (No. 0–60)
 
+This manual describes the **KNX TP1 personality** of the board, which is the
+default firmware variant and the only one that runs on KNX bus power alone. The
+same device model is also available over Modbus RTU
+([modbus-register-map.md](modbus-register-map.md)) and over MQTT
+([mqtt-integration.md](mqtt-integration.md)); which personalities an image
+contains is a build-time choice, described in
+[protocol-variants.md](protocol-variants.md).
+
 This manual is written for the person **commissioning** the device in ETS and
 wiring it into an installation. It describes what the device does, what every
 parameter and every group object means, and how to link the device into typical
@@ -918,7 +926,7 @@ does not implement).
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | ETS download times out on a factory-fresh device | The device certificate has not been added to the project; Data Secure is active, so unauthorised management writes are silently ignored | Add the device certificate (console output at boot), then download again |
-| Heating never runs, control value stays 0 | No floor probe fitted while *Maximum floor temperature* is non-zero and the sensor-failure behaviour is "Switch outputs off" — the limit is treated as engaged | Set *Maximum floor temperature* = 0 when no probe is fitted (object 15 will show it: it reads 1) |
+| Heating never runs, control value stays 0 | A floor probe that *was* reporting has failed, while *Maximum floor temperature* is non-zero and the sensor-failure behaviour is "Switch outputs off" — the limit is held engaged for safety | Repair or unplug the probe. A device that has never seen a probe no longer does this (see [Appendix B](#appendix-b--pitfalls-worth-knowing-before-you-start)); object 15 reads 1 while the limit is engaged |
 | Cooling objects never move | Cooling sequence is "Not used" (the default) | Enable the cooling sequence |
 | Setpoint reverts after a power cut | Runtime setpoints are re-seeded from the ETS parameters at boot | Have the visualisation/scheduler re-send, or set the parameter to the desired value |
 | The scheduler's mode is ignored | A presence detector is linked to object 38 and outranks the mode input | Unlink presence, or accept the priority and drive comfort/standby through presence |
@@ -987,13 +995,21 @@ factory identity. You will need to re-download from ETS afterwards.
 
 ## Appendix B — pitfalls worth knowing before you start
 
-1. **No floor probe + default floor limit = no heating.** The default
-   *Maximum floor temperature* is 28 °C, and the default *Behaviour on sensor
-   failure* ("Switch outputs off") also governs the floor probe: with no probe
-   fitted, the limit is treated as engaged and the heating output is held at 0.
-   **Set *Maximum floor temperature* to 0 on any device without a probe.**
-   Object 15 (Max Floor Temperature Limit Active) reads 1 when this is what is
-   happening.
+1. **The floor limit now distinguishes "no probe" from "broken probe".** This
+   used to be a trap: the default *Maximum floor temperature* is 28 °C and the
+   default *Behaviour on sensor failure* is "Switch outputs off", which the
+   floor probe shares — so a device with no probe fitted treated the limit as
+   engaged and held the heating output at 0 forever, and you had to set
+   *Maximum floor temperature* to 0 by hand on every probe-less device.
+
+   The firmware now applies the floor limit only once a probe has actually
+   reported. A device that has never seen one has no floor to protect and no
+   limit to apply, so **setting *Maximum floor temperature* to 0 is no longer
+   required** (it remains the right way to disable the limit deliberately on a
+   device that does have a probe). A probe that reports and *then* fails is
+   still a genuine fault and still blocks heating under "Switch outputs off" —
+   there is a real slab there and no way to know how hot it is. Object 15 (Max
+   Floor Temperature Limit Active) reads 1 in that case.
 2. **Cooling is off by default.** The cooling sequence must be enabled before
    objects 43/45 or the cooling parameters do anything.
 3. **Presence outranks the scheduler.** Once object 38 has received its first

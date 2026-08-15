@@ -16,6 +16,7 @@
 #include "device_secret.hpp"
 
 #include "device_identity.hpp"
+#include "device_secret.h"
 
 #include "bootloader_random.h"
 #include "esp_efuse.h"
@@ -157,7 +158,48 @@ bool deriveFdskFromEfuse(Serial serial, Fdsk &out)
     return true;
 }
 
+/// Obviously-fake passkey used only when no root secret has been burned. It is
+/// the same on every unprovisioned board by design: a value that looks unique
+/// but is not would invite somebody to print it on a label.
+constexpr uint32_t kDevelopmentPasskey = 123456;
+
 } // namespace
+
+BlePasskeyResult resolveBlePasskey(Serial serial)
+{
+    BlePasskeyResult result{};
+
+    // Deliberately does not provision. resolveFdsk() may burn a fuse because
+    // that is the KNX identity the device is manufactured with; bringing a
+    // service channel up must never have that as a side effect, so an
+    // unprovisioned device gets the development passkey and a loud log instead.
+    if (esp_efuse_get_key_purpose(kRootSecretBlock) != ESP_EFUSE_KEY_PURPOSE_HMAC_UP) {
+        ESP_LOGE(TAG,
+                 "No device root secret in BLOCK_KEY%d — the BLE commissioning passkey falls back "
+                 "to %06" PRIu32 ", which is identical on every unprovisioned board. Provision the "
+                 "root secret (CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN) before shipping.",
+                 kRootSecretBlockIndex, kDevelopmentPasskey);
+        result.passkey = kDevelopmentPasskey;
+        return result;
+    }
+
+    std::array<uint8_t, kBlePasskeyMessageBytes> message{};
+    buildBlePasskeyMessage(serial, message);
+
+    Digest digest{};
+    const esp_err_t err =
+        esp_hmac_calculate(kRootSecretHmacKey, message.data(), message.size(), digest.data());
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_hmac_calculate failed for the BLE passkey: %s", esp_err_to_name(err));
+        result.passkey = kDevelopmentPasskey;
+        return result;
+    }
+
+    result.passkey = blePasskeyFromDigest(digest);
+    result.fromEfuse = true;
+    mbedtls_platform_zeroize(digest.data(), digest.size());
+    return result;
+}
 
 RootSecretResult resolveFdsk(Serial serial)
 {
@@ -246,3 +288,32 @@ RootSecretResult resolveFdsk(Serial serial)
 }
 
 } // namespace sensor_board::secret
+
+extern "C" esp_err_t device_secret_ble_passkey(uint32_t *out_passkey, bool *out_from_efuse)
+{
+    if (out_passkey == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // The serial is the base MAC, the same six bytes the KNX device object
+    // reports and the device certificate encodes. If it cannot be read the KDF
+    // has no per-device input, so there is nothing better to do than say so.
+    uint8_t mac[sensor_board::secret::kSerialBytes] = {};
+    if (esp_read_mac(mac, ESP_MAC_BASE) != ESP_OK) {
+        ESP_LOGE("device_secret",
+                 "esp_read_mac failed; BLE passkey cannot be derived for this device");
+        *out_passkey = 0;
+        if (out_from_efuse != nullptr) {
+            *out_from_efuse = false;
+        }
+        return ESP_OK;
+    }
+
+    const sensor_board::secret::BlePasskeyResult result = sensor_board::secret::resolveBlePasskey(
+        std::span<const uint8_t, sensor_board::secret::kSerialBytes>(mac, sizeof(mac)));
+    *out_passkey = result.passkey;
+    if (out_from_efuse != nullptr) {
+        *out_from_efuse = result.fromEfuse;
+    }
+    return ESP_OK;
+}

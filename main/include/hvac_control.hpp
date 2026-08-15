@@ -808,6 +808,7 @@ private:
         }
 
         if (in.floorTemperatureValid) {
+            floorProbeSeen_ = true;
             if (in.floorTemperatureC >= config_.maxFloorTemperatureC) {
                 outputs_.floorLimitActive = true;
             } else if (in.floorTemperatureC
@@ -817,8 +818,22 @@ private:
             return;
         }
 
-        // Floor probe invalid: reuse the shared SensorFaultBehavior model
-        // (see todo_feature_set.md section 7).
+        // No probe has ever reported. The floor probe is optional hardware, so
+        // this is an installation without one, not a broken one — the same
+        // distinction packStatusGen() already draws between OutOfService and
+        // Fault. There is no floor to protect, so there is no limit to apply.
+        //
+        // Getting this wrong is not a subtle failure: with the default maximum
+        // floor temperature enabled and the default ForceOff fault behaviour, a
+        // factory-fresh board with no probe fitted latched floorLimitActive at
+        // boot and never called for heat again.
+        if (!floorProbeSeen_) {
+            outputs_.floorLimitActive = false;
+            return;
+        }
+
+        // A probe that reported and then stopped is a genuine fault: reuse the
+        // shared SensorFaultBehavior model (see todo_feature_set.md section 7).
         switch (config_.sensorFaultBehavior) {
             case SensorFaultBehavior::Passthrough:
                 outputs_.floorLimitActive = false;  // ignore limit, fault still reported via ControllerFault path
@@ -932,6 +947,9 @@ private:
     float secondsSinceCooling_{1e9f};
     float lastValidRoomTemperatureC_{0.0f};
     bool hasLastValidRoomTemperature_{false};
+    // Tells "no floor probe is fitted" apart from "the fitted probe failed".
+    // Only the second is a fault; see updateFloorLimit().
+    bool floorProbeSeen_{false};
 };
 
 // ---------------------------------------------------------------------------

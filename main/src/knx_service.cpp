@@ -1,11 +1,11 @@
-#include "knx_service.h"
-
 #include "board.h"
-#include "control_state.h"
+#include "control_core.hpp"
+#include "control_service.hpp"
 #include "device_identity.hpp"
 #include "device_secret.hpp"
 #include "hvac_control.hpp"
 #include "knx_product.hpp"
+#include "protocol_adapter.h"
 #include "sensor_fusion_service.h"
 
 #include "driver/gpio.h"
@@ -18,7 +18,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
-#include "nvs_flash.h"
 
 #include "knx/platform/esp32_platform.hpp"
 #include "knx/physical/bitbang_driver_timer_isr_espidf.hpp"
@@ -163,229 +162,32 @@ bool resolveFactoryToolKey(const uint8_t *serial,
 
 namespace hvac_ns = sensor_board::hvac;
 
-// ETS-configurable tuning (see hvac_control.hpp). Snapshotted by the control
-// tick each second, so parameter changes apply within one tick.
-struct HvacSettings {
-    // --- Measurement publishing (KNX sensor FB Heartbeat/MinRepTime/COV) ---
-    uint32_t heartbeatSeconds{kDefaultMeasurementHeartbeatSeconds};
-    uint32_t minRepTimeSeconds{kDefaultMeasurementMinRepTimeSeconds};
-    float roomTemperatureOffsetK{kDefaultRoomTemperatureOffsetK};
-    float roomTemperatureCovK{kDefaultRoomTemperatureCovK};
-    float roomHumidityOffsetPct{kDefaultRoomHumidityOffsetPct};
-    float roomHumidityCovPct{kDefaultRoomHumidityCovPct};
-    float co2CovPpm{static_cast<float>(kDefaultCo2CovPpm)};
-    float pressureCovPa{static_cast<float>(kDefaultPressureCovPa)};
-    float airQualityCovIndex{static_cast<float>(kDefaultAirQualityCovIndex)};
-    float floorTemperatureOffsetK{kDefaultFloorTemperatureOffsetK};
-    float floorTemperatureCovK{kDefaultFloorTemperatureCovK};
-    float floorHumidityCovPct{kDefaultFloorHumidityCovPct};
-    float derivedCov{kDefaultDerivedCovK};
-    float altitudeM{static_cast<float>(kDefaultAltitudeM)};
+// The device's own state — settings, installation inputs, control outputs —
+// lives in control_service.cpp now, not here. This adapter reads and writes it
+// through the same handle every other adapter uses; the only thing it still
+// owns privately is its task.
+//
+// Binding a reference is safe before control_service_start(): state() returns a
+// constant-initialised namespace-scope object, and `mutex` being null is the
+// documented "service not running yet" case that LockGuard tolerates.
+namespace control = sensor_board::control;
+using control::LockGuard;
+using Settings = control::Settings;
+using Outputs = control::Outputs;
 
-    // --- Room control: general ---
-    bool controllerDefaultEnable{kDefaultControllerEnable != 0};
-    hvac_ns::OperatingPreset defaultHvacOperatingMode{
-        static_cast<hvac_ns::OperatingPreset>(kDefaultHvacOperatingMode)};
-    hvac_ns::ControllerMode defaultControllerMode{
-        static_cast<hvac_ns::ControllerMode>(kDefaultControllerMode)};
-    bool heatingEnabled{kDefaultHeatingEnabled != 0};
-    bool coolingEnabled{kDefaultCoolingEnabled != 0};
-    hvac_ns::HeatCoolChangeoverMode heatCoolChangeoverMode{
-        static_cast<hvac_ns::HeatCoolChangeoverMode>(kDefaultHeatCoolChangeoverMode)};
-    bool heatCoolChangeoverPolarityInverted{kDefaultHeatCoolChangeoverPolarity != 0};
-    float minimumHeatCoolChangeoverSeconds{
-        static_cast<float>(kDefaultMinimumHeatCoolChangeoverSeconds)};
-    hvac_ns::WindowOpenBehavior windowOpenBehavior{
-        static_cast<hvac_ns::WindowOpenBehavior>(kDefaultWindowOpenBehavior)};
-    hvac_ns::PresenceBehavior presenceBehavior{
-        static_cast<hvac_ns::PresenceBehavior>(kDefaultPresenceBehavior)};
-    hvac_ns::SensorFaultBehavior sensorFaultBehavior{
-        static_cast<hvac_ns::SensorFaultBehavior>(kDefaultSensorFaultBehavior)};
+auto &g_state = control::state();
 
-    // --- Setpoint ladder ---
-    float comfortHeatingSetpointC{kDefaultComfortHeatingSetpointC};
-    float standbyHeatingReductionK{kDefaultStandbyHeatingReductionK};
-    float economyHeatingReductionK{kDefaultEconomyHeatingReductionK};
-    float protectionHeatingSetpointC{kDefaultProtectionHeatingSetpointC};
-    float coolingDeadbandK{kDefaultCoolingDeadbandK};
-    float standbyCoolingIncreaseK{kDefaultStandbyCoolingIncreaseK};
-    float economyCoolingIncreaseK{kDefaultEconomyCoolingIncreaseK};
-    float protectionCoolingSetpointC{kDefaultProtectionCoolingSetpointC};
-    float minSetpointC{kDefaultMinSetpointC};
-    float maxSetpointC{kDefaultMaxSetpointC};
-    float maxSetpointShiftK{kDefaultMaxSetpointShiftK};
-
-    // --- Heating / cooling loops ---
-    hvac_ns::ControlAlgorithm heatingControlAlgorithm{
-        static_cast<hvac_ns::ControlAlgorithm>(kDefaultHeatingControlAlgorithm)};
-    float heatingKp{kDefaultHeatingKp};
-    float heatingTiSeconds{static_cast<float>(kDefaultHeatingTiSeconds)};
-    float heatingTdSeconds{static_cast<float>(kDefaultHeatingTdSeconds)};
-    uint8_t heatingMinOutputPercent{kDefaultHeatingMinimumOutputPercent};
-    uint8_t heatingMaxOutputPercent{kDefaultHeatingMaximumOutputPercent};
-    hvac_ns::ControlAlgorithm coolingControlAlgorithm{
-        static_cast<hvac_ns::ControlAlgorithm>(kDefaultCoolingControlAlgorithm)};
-    float coolingKp{kDefaultCoolingKp};
-    float coolingTiSeconds{static_cast<float>(kDefaultCoolingTiSeconds)};
-    float coolingTdSeconds{static_cast<float>(kDefaultCoolingTdSeconds)};
-    uint8_t coolingMinOutputPercent{kDefaultCoolingMinimumOutputPercent};
-    uint8_t coolingMaxOutputPercent{kDefaultCoolingMaximumOutputPercent};
-    float thermostatHysteresisC{kDefaultThermostatHysteresisC};
-    hvac_ns::BinaryDemandStrategy binaryDemandStrategy{
-        static_cast<hvac_ns::BinaryDemandStrategy>(kDefaultBinaryDemandStrategy)};
-    uint8_t binaryDemandThresholdPercent{kDefaultBinaryDemandThresholdPercent};
-    float frostAlarmTemperatureC{kDefaultFrostAlarmTemperatureC};
-    float overheatAlarmTemperatureC{kDefaultOverheatAlarmTemperatureC};
-
-    // --- Floor temperature ---
-    float maxFloorTemperatureC{kDefaultMaxFloorTemperatureC};
-    float minFloorTemperatureC{kDefaultMinFloorTemperatureC};
-    float floorHysteresisK{kDefaultFloorHysteresisK};
-    uint8_t floorComfortOutputPercent{kDefaultFloorComfortOutputPercent};
-
-    // --- Condensation protection ---
-    hvac_ns::DewPointSurfaceSource dewPointSurfaceSource{
-        static_cast<hvac_ns::DewPointSurfaceSource>(kDefaultDewPointSurfaceSource)};
-    float dewPointMarginK{kDefaultDewPointMarginK};
-    float dewPointHysteresisK{kDefaultDewPointHysteresisK};
-    bool blockCoolingOnDewPointAlarm{kDefaultBlockCoolingOnDewPointAlarm != 0};
-
-    // --- Slab moisture ---
-    float floorMoistureThresholdPct{kDefaultFloorMoistureThresholdPct};
-    float floorMoistureHysteresisPct{kDefaultFloorMoistureHysteresisPct};
-    float floorMoistureExcessGm3{kDefaultFloorMoistureExcessGm3};
-
-    // --- Ventilation / air quality ---
-    float ventilationSetpointPpm{static_cast<float>(kDefaultVentilationSetpointPpm)};
-    float ventilationBandPpm{static_cast<float>(kDefaultVentilationBandPpm)};
-    float humidityBoostPct{kDefaultHumidityBoostPct};
-    float humidityBandPct{kDefaultHumidityBandPct};
-    float vocThresholdIndex{static_cast<float>(kDefaultVocThresholdIndex)};
-    float vocBandIndex{static_cast<float>(kDefaultVocBandIndex)};
-    uint8_t ventilationBaseDemandPercent{kDefaultVentilationBaseDemandPercent};
-    uint8_t ventilationManualDemandPercent{kDefaultVentilationManualDemandPercent};
-};
-
-// Everything the control tick computes and the bus can read back. Kept as one
-// struct so provideState (read requests, arbitrary thread) and the publish path
-// see exactly the same values.
-struct ControlOutputs {
-    // Derived measurements.
-    float roomDewPointC{0.0f};
-    float roomAbsoluteHumidityGm3{0.0f};
-    float floorAbsoluteHumidityGm3{0.0f};
-    float seaLevelPressurePa{0.0f};
-    float dewPointMarginK{0.0f};
-    bool dewPointAlarm{false};
-    bool floorMoistureAlarm{false};
-    bool freeCoolingAvailable{false};
-    bool freeDryingAvailable{false};
-
-    // Thermostat.
-    bool heatingRequest{false};
-    bool coolingRequest{false};
-    uint8_t heatingControlPercent{0};
-    uint8_t coolingControlPercent{0};
-    bool floorLimitActive{false};
-    bool floorComfortActive{false};
-    bool heatCoolModeHeating{true};  // DPT 1.100: 1 = heat
-    bool enableHeat{false};
-    bool enableCool{false};
-    float activeSetpointC{kDefaultComfortHeatingSetpointC};
-    float heatingSetpointC{kDefaultComfortHeatingSetpointC};
-    float coolingSetpointC{kDefaultComfortHeatingSetpointC + kDefaultCoolingDeadbandK};
-    float setpointShiftFeedbackK{0.0f};
-    hvac_ns::OperatingPreset activePreset{hvac_ns::OperatingPreset::Comfort};
-    hvac_ns::ControllerMode activeControllerMode{hvac_ns::ControllerMode::Auto};
-    uint16_t controllerStatus{0};  // DPT 22.101 StatusRHCC
-
-    // Ventilation.
-    uint8_t ventilationDemandPercent{0};
-    hvac_ns::VentilationLevel ventilationLevel{hvac_ns::VentilationLevel::Off};
-    bool ventilationBoostRequest{false};
-    bool dehumidifyRequest{false};
-    uint16_t airQualityStatus{0};
-
-    // Diagnostics.
-    bool deviceFault{false};
-    uint8_t roomSensorStatus{0};
-    uint8_t floorProbeStatus{0};
-    uint8_t airQualitySensorStatus{0};
-    uint8_t sensorHealthMask{0};
-    bool sensorDisagreement{false};
-};
-
-struct SharedState {
-    SemaphoreHandle_t mutex{nullptr};
+// What only the KNX personality has.
+struct KnxAdapterState {
     TaskHandle_t taskHandle{nullptr};
-    // Post-fusion measurements. Every field carries its own validity, so there
-    // is no separate "which measurements have we ever seen" mask to keep in
-    // step with it any more.
-    sensor_data_t latestSensorData{};
-    bool hasSensorData{false};
     bool started{false};
-    bool toggleProgrammingModeRequested{false};
-    bool acknowledgeAlarmsRequested{false};
-    bool programmingMode{false};
-    HvacSettings hvac{};
-    // Tuning for the acquisition-side fusion layer. Held here so the ETS
-    // parameter callbacks have one place to write to; pushed into
-    // sensor_fusion_configure() by the control tick when it changes.
-    sensor_fusion_config_t fusion{};
-    bool fusionConfigDirty{true};
-
-    // Bus-writable inputs, mirrored back via provideState.
-    bool controllerOnOff{true};
-    hvac_ns::OperatingPreset hvacOperatingMode{hvac_ns::OperatingPreset::Comfort};
-    hvac_ns::ControllerMode controllerMode{hvac_ns::ControllerMode::Auto};
-    bool changeOverStatus{false};
-    bool windowOpen{false};
-    bool windowStatusKnown{false};  // true once a window telegram has been received
-    bool presence{false};
-    bool presenceKnown{false};  // true once a presence telegram has been received
-    bool switchHeat{true};
-    bool switchCool{true};
-    bool externalDewPointAlarm{false};
-    float setpointShiftK{0.0f};
-    hvac_ns::VentilationMode ventilationMode{hvac_ns::VentilationMode::Auto};
-
-    // Neighbour-device inputs. Each stays invalid until a telegram arrives, so
-    // an unlinked object never fabricates an outside temperature of 0 °C.
-    float outsideTemperatureC{0.0f};
-    bool outsideTemperatureValid{false};
-    float outsideHumidityPct{0.0f};
-    bool outsideHumidityValid{false};
-    float flowTemperatureC{0.0f};
-    bool flowTemperatureValid{false};
-
-    ControlOutputs out{};
-    knx_programming_mode_callback_t programmingModeCallback{nullptr};
+    // Raised by the control task through the adapter's on_control_tick hook,
+    // consumed by the service loop. Only ever set true from one context and
+    // cleared from the other, so it needs no lock of its own.
+    volatile bool controlTickPending{true};
 };
 
-SharedState g_state;
-
-class LockGuard {
-public:
-    explicit LockGuard(SemaphoreHandle_t mutex) : mutex_(mutex)
-    {
-        if (mutex_ != nullptr) {
-            xSemaphoreTake(mutex_, portMAX_DELAY);
-        }
-    }
-
-    ~LockGuard()
-    {
-        if (mutex_ != nullptr) {
-            xSemaphoreGive(mutex_);
-        }
-    }
-
-    LockGuard(const LockGuard &) = delete;
-    LockGuard &operator=(const LockGuard &) = delete;
-
-private:
-    SemaphoreHandle_t mutex_;
-};
+KnxAdapterState g_knx;
 
 // The per-port "has this changed?" bookkeeping this snapshot used to carry is
 // gone: the stack's GroupObjectTransmitPolicy already decides Send / Defer /
@@ -396,13 +198,12 @@ private:
 // disagree.
 struct PublishSnapshot {
     sensor_data_t sensorData{};
-    HvacSettings settings{};
-    ControlOutputs out{};
+    Settings settings{};
+    Outputs out{};
     hvac_ns::OperatingPreset hvacOperatingMode{hvac_ns::OperatingPreset::Comfort};
     hvac_ns::ControllerMode controllerMode{hvac_ns::ControllerMode::Auto};
     hvac_ns::VentilationMode ventilationMode{hvac_ns::VentilationMode::Auto};
     bool controllerOnOff{true};
-    bool toggleProgrammingMode{false};
 };
 
 // A port the ETS project left unlinked publishes as a successful no-op, so
@@ -491,7 +292,7 @@ void reportUnlinkedPorts(AppT &app)
 // "reconfigure-from-settings-every-tick" pattern used for the controllers.
 // Write-only CommandPorts never transmit and are intentionally absent.
 template <typename AppT>
-void applyTransmitPolicies(AppT &app, const HvacSettings &settings)
+void applyTransmitPolicies(AppT &app, const Settings &settings)
 {
     const uint32_t heartbeatMs = settings.heartbeatSeconds * 1000u;
     const uint32_t minRepMs = settings.minRepTimeSeconds * 1000u;
@@ -603,353 +404,6 @@ void applyTransmitPolicies(AppT &app, const HvacSettings &settings)
     }
 }
 
-// Corrected sensor readings: the ETS offsets are applied once, here, so every
-// consumer (control loops, derived values, published measurements) sees the
-// same number. Correcting only at the publish path would leave the controller
-// working from an uncorrected temperature, which is exactly the reading the
-// self-heating offset exists to fix.
-struct CorrectedReadings {
-    float roomTemperatureC{0.0f};
-    bool roomTemperatureValid{false};
-    float roomHumidityPct{0.0f};
-    bool roomHumidityValid{false};
-    float floorTemperatureC{0.0f};
-    bool floorTemperatureValid{false};
-    float floorHumidityPct{0.0f};
-    bool floorHumidityValid{false};
-    float co2Ppm{0.0f};
-    bool co2Valid{false};
-    float pressurePa{0.0f};
-    bool pressureValid{false};
-    float iaqIndex{0.0f};
-    bool iaqValid{false};
-
-    bool roomAirValid() const { return roomTemperatureValid && roomHumidityValid; }
-    bool floorProbeValid() const { return floorTemperatureValid && floorHumidityValid; }
-};
-
-// The ETS offsets applied here are the *installation* correction — the board
-// against a reference thermometer on the wall it is mounted on. The corrections
-// between the board's own sensors are a different quantity and are applied one
-// layer down, in the fusion config, before the sources are compared with each
-// other (see sensor_fusion_service.h).
-CorrectedReadings correctReadings(const sensor_data_t &data, const HvacSettings &settings)
-{
-    CorrectedReadings r;
-    r.roomTemperatureValid = data.temperature.valid;
-    r.roomTemperatureC = data.temperature.value + settings.roomTemperatureOffsetK;
-    r.roomHumidityValid = data.humidity.valid;
-    r.roomHumidityPct =
-        hvac_ns::clampf(data.humidity.value + settings.roomHumidityOffsetPct, 0.0f, 100.0f);
-    r.floorTemperatureValid = data.probe_temperature.valid;
-    r.floorTemperatureC = data.probe_temperature.value + settings.floorTemperatureOffsetK;
-    r.floorHumidityValid = data.probe_humidity.valid;
-    r.floorHumidityPct = hvac_ns::clampf(data.probe_humidity.value, 0.0f, 100.0f);
-    r.co2Valid = data.co2.valid;
-    r.co2Ppm = data.co2.value;
-    r.pressureValid = data.pressure.valid;
-    r.pressurePa = data.pressure.value;
-    r.iaqValid = data.iaq.valid;
-    r.iaqIndex = data.iaq.value;
-    return r;
-}
-
-// Room-control tick: snapshot inputs + ETS tuning under the mutex, run the
-// (task-owned, lock-free) controllers, store the outputs back. Called from the
-// KNX task at ~1 Hz. Nothing here decides what to transmit — that is the
-// transmit policy's job (see applyTransmitPolicies).
-template <typename AppT>
-void runHvacControlTick(AppT &app,
-                        hvac_ns::ThermostatController &thermostat,
-                        hvac_ns::VentilationController &ventilation,
-                        hvac_ns::DewPointMonitor &dewPoint,
-                        hvac_ns::FloorMoistureMonitor &floorMoisture,
-                        float dtSeconds)
-{
-    HvacSettings settings;
-    sensor_data_t sensorData{};
-    sensor_fusion_config_t fusionConfig{};
-    bool fusionConfigDirty = false;
-    bool acknowledgeAlarms = false;
-    hvac_ns::ThermostatInputs thermostatIn;
-    hvac_ns::VentilationInputs ventIn;
-    float outsideTemperatureC = 0.0f;
-    bool outsideTemperatureValid = false;
-    float outsideHumidityPct = 0.0f;
-    bool outsideHumidityValid = false;
-    bool presenceFromBus = false;
-    bool windowFromBus = false;
-    {
-        LockGuard lock(g_state.mutex);
-        settings = g_state.hvac;
-        sensorData = g_state.latestSensorData;
-        fusionConfig = g_state.fusion;
-        fusionConfigDirty = g_state.fusionConfigDirty;
-        g_state.fusionConfigDirty = false;
-        acknowledgeAlarms = g_state.acknowledgeAlarmsRequested;
-        g_state.acknowledgeAlarmsRequested = false;
-        presenceFromBus = g_state.presenceKnown;
-        windowFromBus = g_state.windowStatusKnown;
-        thermostatIn.controllerEnable = g_state.controllerOnOff;
-        thermostatIn.hvacOperatingMode = g_state.hvacOperatingMode;
-        thermostatIn.controllerMode = g_state.controllerMode;
-        thermostatIn.heatCoolChangeoverBusValue = g_state.changeOverStatus;
-        thermostatIn.windowOpen = g_state.windowOpen;
-        thermostatIn.presence = g_state.presence;
-        thermostatIn.presenceValid = g_state.presenceKnown;
-        thermostatIn.setpointShiftK = g_state.setpointShiftK;
-        thermostatIn.switchHeat = g_state.switchHeat;
-        thermostatIn.switchCool = g_state.switchCool;
-        thermostatIn.flowTemperatureC = g_state.flowTemperatureC;
-        thermostatIn.flowTemperatureValid = g_state.flowTemperatureValid;
-        thermostatIn.dewPointAlarm = g_state.externalDewPointAlarm;
-        ventIn.mode = g_state.ventilationMode;
-        ventIn.occupied = g_state.presenceKnown ? g_state.presence : false;
-        outsideTemperatureC = g_state.outsideTemperatureC;
-        outsideTemperatureValid = g_state.outsideTemperatureValid;
-        outsideHumidityPct = g_state.outsideHumidityPct;
-        outsideHumidityValid = g_state.outsideHumidityValid;
-    }
-
-    applyTransmitPolicies(app, settings);
-
-    // Push ETS changes down to the acquisition-side fusion layer. Only on
-    // change: reconfiguring rebuilds every channel's config, which is wasted
-    // work at 1 Hz when nothing has moved.
-    if (fusionConfigDirty) {
-        sensor_fusion_configure(&fusionConfig);
-    }
-    if (acknowledgeAlarms) {
-        sensor_fusion_acknowledge_alarms();
-    }
-
-    const CorrectedReadings readings = correctReadings(sensorData, settings);
-
-    thermostatIn.roomTemperatureC = readings.roomTemperatureC;
-    thermostatIn.roomTemperatureValid = readings.roomTemperatureValid;
-    thermostatIn.floorTemperatureC = readings.floorTemperatureC;
-    thermostatIn.floorTemperatureValid = readings.floorTemperatureValid;
-
-    // Derived room events stand in for the bus inputs that were never linked.
-    // A real contact or PIR always wins: once a telegram has arrived on those
-    // objects the installation has the real thing, and an inference must not
-    // override it. Where nothing is linked, this is the difference between
-    // heating into an open window and noticing.
-    if (!windowFromBus && sensorData.events.window_open_detected) {
-        thermostatIn.windowOpen = true;
-    }
-    if (!presenceFromBus && sensorData.events.occupancy_detected) {
-        thermostatIn.presence = true;
-        thermostatIn.presenceValid = true;
-        ventIn.occupied = true;
-    }
-    ventIn.co2Ppm = readings.co2Ppm;
-    ventIn.co2Valid = readings.co2Valid;
-    ventIn.humidityPct = readings.roomHumidityPct;
-    ventIn.humidityValid = readings.roomHumidityValid;
-    ventIn.vocIndex = readings.iaqIndex;
-    ventIn.vocValid = readings.iaqValid;
-
-    // --- Derived values and condensation / moisture monitors -----------------
-    dewPoint.configure({.surfaceSource = settings.dewPointSurfaceSource,
-                        .marginK = settings.dewPointMarginK,
-                        .hysteresisK = settings.dewPointHysteresisK});
-    const auto dewOut = dewPoint.update({
-        .roomTemperatureC = readings.roomTemperatureC,
-        .roomHumidityPct = readings.roomHumidityPct,
-        .roomAirValid = readings.roomAirValid(),
-        .floorTemperatureC = readings.floorTemperatureC,
-        .floorTemperatureValid = readings.floorTemperatureValid,
-        .flowTemperatureC = thermostatIn.flowTemperatureC,
-        .flowTemperatureValid = thermostatIn.flowTemperatureValid,
-    });
-
-    floorMoisture.configure({.thresholdPct = settings.floorMoistureThresholdPct,
-                             .hysteresisPct = settings.floorMoistureHysteresisPct,
-                             .absoluteExcessGm3 = settings.floorMoistureExcessGm3});
-    const auto moistureOut = floorMoisture.update({
-        .floorTemperatureC = readings.floorTemperatureC,
-        .floorHumidityPct = readings.floorHumidityPct,
-        .floorProbeValid = readings.floorProbeValid(),
-        .roomTemperatureC = readings.roomTemperatureC,
-        .roomHumidityPct = readings.roomHumidityPct,
-        .roomAirValid = readings.roomAirValid(),
-    });
-
-    // A locally derived condensation risk carries the same weight as one
-    // received on the DewPointStatus input; either blocks cooling.
-    thermostatIn.dewPointAlarm = thermostatIn.dewPointAlarm || dewOut.alarm;
-
-    // --- Thermostat ----------------------------------------------------------
-    // Reconfigure from the ETS parameters every tick: configure() preserves
-    // controller state (integrators, latches), so this is cheap and makes a
-    // live ETS re-parameterisation take effect within one tick.
-    hvac_ns::ThermostatConfig thermostatCfg;
-    thermostatCfg.heatingPid = {.kp = settings.heatingKp,
-                                .tiSeconds = settings.heatingTiSeconds,
-                                .tdSeconds = settings.heatingTdSeconds};
-    thermostatCfg.coolingPid = {.kp = settings.coolingKp,
-                                .tiSeconds = settings.coolingTiSeconds,
-                                .tdSeconds = settings.coolingTdSeconds,
-                                .reverseActing = true};
-    thermostatCfg.setpoints = {
-        .comfortHeatingC = settings.comfortHeatingSetpointC,
-        .standbyHeatingReductionK = settings.standbyHeatingReductionK,
-        .economyHeatingReductionK = settings.economyHeatingReductionK,
-        .protectionHeatingC = settings.protectionHeatingSetpointC,
-        .coolingDeadbandK = settings.coolingDeadbandK,
-        .standbyCoolingIncreaseK = settings.standbyCoolingIncreaseK,
-        .economyCoolingIncreaseK = settings.economyCoolingIncreaseK,
-        .protectionCoolingC = settings.protectionCoolingSetpointC,
-    };
-    thermostatCfg.minSetpointC = settings.minSetpointC;
-    thermostatCfg.maxSetpointC = settings.maxSetpointC;
-    thermostatCfg.maxSetpointShiftK = settings.maxSetpointShiftK;
-    thermostatCfg.requestHysteresisK = settings.thermostatHysteresisC;
-    thermostatCfg.maxFloorTemperatureC = settings.maxFloorTemperatureC;
-    thermostatCfg.minFloorTemperatureC = settings.minFloorTemperatureC;
-    thermostatCfg.floorHysteresisK = settings.floorHysteresisK;
-    thermostatCfg.floorComfortOutputPercent = settings.floorComfortOutputPercent;
-    thermostatCfg.frostAlarmTemperatureC = settings.frostAlarmTemperatureC;
-    thermostatCfg.overheatAlarmTemperatureC = settings.overheatAlarmTemperatureC;
-    thermostatCfg.blockCoolingOnDewPointAlarm = settings.blockCoolingOnDewPointAlarm;
-    thermostatCfg.heatingEnabled = settings.heatingEnabled;
-    thermostatCfg.coolingEnabled = settings.coolingEnabled;
-    thermostatCfg.heatCoolChangeoverMode = settings.heatCoolChangeoverMode;
-    thermostatCfg.heatCoolChangeoverPolarityInverted = settings.heatCoolChangeoverPolarityInverted;
-    thermostatCfg.heatingAlgorithm = settings.heatingControlAlgorithm;
-    thermostatCfg.coolingAlgorithm = settings.coolingControlAlgorithm;
-    thermostatCfg.heatingMinOutputPercent = settings.heatingMinOutputPercent;
-    thermostatCfg.heatingMaxOutputPercent = settings.heatingMaxOutputPercent;
-    thermostatCfg.coolingMinOutputPercent = settings.coolingMinOutputPercent;
-    thermostatCfg.coolingMaxOutputPercent = settings.coolingMaxOutputPercent;
-    thermostatCfg.binaryDemandStrategy = settings.binaryDemandStrategy;
-    thermostatCfg.binaryDemandThresholdPercent = settings.binaryDemandThresholdPercent;
-    thermostatCfg.minimumHeatCoolChangeoverSeconds = settings.minimumHeatCoolChangeoverSeconds;
-    thermostatCfg.windowOpenBehavior = settings.windowOpenBehavior;
-    thermostatCfg.presenceBehavior = settings.presenceBehavior;
-    thermostatCfg.sensorFaultBehavior = settings.sensorFaultBehavior;
-    thermostat.configure(thermostatCfg);
-
-    ventilation.configure({.co2SetpointPpm = settings.ventilationSetpointPpm,
-                           .co2BandPpm = settings.ventilationBandPpm,
-                           .humidityThresholdPct = settings.humidityBoostPct,
-                           .humidityBandPct = settings.humidityBandPct,
-                           .vocThresholdIndex = settings.vocThresholdIndex,
-                           .vocBandIndex = settings.vocBandIndex,
-                           .baseDemandPercent = settings.ventilationBaseDemandPercent,
-                           .manualDemandPercent = settings.ventilationManualDemandPercent});
-
-    const auto out = thermostat.update(thermostatIn, dtSeconds);
-    const auto ventOut = ventilation.update(ventIn);
-
-    // --- Outside-air opportunity flags ---------------------------------------
-    // Both compare like with like: temperature for cooling, absolute humidity
-    // for drying. Comparing relative humidities would say cold outdoor air is
-    // "wetter" than warm indoor air, which is backwards.
-    ControlOutputs computed;
-    computed.freeCoolingAvailable =
-        outsideTemperatureValid && readings.roomTemperatureValid
-        && outsideTemperatureC < readings.roomTemperatureC - 1.0f
-        && readings.roomTemperatureC > out.coolingSetpointC;
-    if (outsideTemperatureValid && outsideHumidityValid && readings.roomAirValid()) {
-        const float outsideAbs =
-            hvac_ns::psychro::absoluteHumidityGm3(outsideTemperatureC, outsideHumidityPct);
-        computed.freeDryingAvailable =
-            outsideAbs < moistureOut.roomAbsoluteHumidityGm3 - 0.5f;
-    }
-
-    computed.roomDewPointC = dewOut.dewPointC;
-    computed.roomAbsoluteHumidityGm3 = moistureOut.roomAbsoluteHumidityGm3;
-    computed.floorAbsoluteHumidityGm3 = moistureOut.floorAbsoluteHumidityGm3;
-    computed.dewPointMarginK = dewOut.marginK;
-    computed.dewPointAlarm = thermostatIn.dewPointAlarm;
-    computed.floorMoistureAlarm = moistureOut.alarm;
-    computed.seaLevelPressurePa =
-        readings.pressureValid
-            ? hvac_ns::psychro::seaLevelPressurePa(readings.pressurePa, settings.altitudeM,
-                                                   readings.roomTemperatureC)
-            : 0.0f;
-
-    computed.heatingRequest = out.heatingRequest;
-    computed.coolingRequest = out.coolingRequest;
-    computed.heatingControlPercent = out.heatingControlPercent;
-    computed.coolingControlPercent = out.coolingControlPercent;
-    computed.floorLimitActive = out.floorLimitActive;
-    computed.floorComfortActive = out.floorComfortActive;
-    // DPT 1.100 has no "neutral": the spec's own StatusRHCC wording treats
-    // heating as the default, so only active cooling reports 0.
-    computed.heatCoolModeHeating = out.heatCoolState != hvac_ns::HeatCoolState::Cooling;
-    computed.enableHeat = !out.heatingBlocked;
-    computed.enableCool = !out.coolingBlocked;
-    computed.activeSetpointC = out.activeSetpointC;
-    computed.heatingSetpointC = out.heatingSetpointC;
-    computed.coolingSetpointC = out.coolingSetpointC;
-    computed.setpointShiftFeedbackK = out.setpointShiftFeedbackK;
-    computed.activePreset = out.activePreset;
-    // ContrModeAct / ContrModeSecondary report what the controller resolved to,
-    // not what was requested: a Secondary RTC in the same room needs the
-    // decision, and Auto would tell it nothing.
-    computed.activeControllerMode =
-        out.heatCoolState == hvac_ns::HeatCoolState::Heating  ? hvac_ns::ControllerMode::Heat
-        : out.heatCoolState == hvac_ns::HeatCoolState::Cooling ? hvac_ns::ControllerMode::Cool
-        : (out.heatingBlocked && out.coolingBlocked)           ? hvac_ns::ControllerMode::Off
-                                                               : hvac_ns::ControllerMode::Auto;
-    computed.controllerStatus = hvac_ns::packStatusRHCC(out);
-
-    computed.ventilationDemandPercent = ventOut.demandPercent;
-    computed.ventilationLevel = ventOut.level;
-    computed.ventilationBoostRequest = ventOut.boostRequest;
-    computed.dehumidifyRequest = ventOut.dehumidifyRequest;
-
-    uint16_t iaqBits = 0;
-    if (ventOut.humidityHigh) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::HumidityBoost);
-    if (ventOut.co2High) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::Co2Boost);
-    if (ventOut.vocHigh) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::VocBoost);
-    if (ventOut.sensorFault) iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::SensorFault);
-    if (ventOut.dehumidifyRequest) {
-        iaqBits |= static_cast<uint16_t>(hvac_ns::IaqStatusBit::DehumidifyRequest);
-    }
-    computed.airQualityStatus = iaqBits;
-
-    // Per-package StatusGen octets (DPT 21.001). "Never delivered a reading" is
-    // reported as OutOfService rather than Fault: an installation without the
-    // optional floor probe is correctly configured, not broken. The InAlarm bit
-    // now also carries a cross-check failure, because a sensor that disagrees
-    // with its peers is faulty even while it is answering perfectly.
-    const bool anySensorData = sensorData.health.sample_count > 0;
-    const bool roomAirDisputed =
-        sensorData.temperature.disagreement || sensorData.humidity.disagreement;
-    computed.sensorDisagreement = roomAirDisputed;
-    computed.sensorHealthMask = sensorData.health.healthy_mask;
-    computed.roomSensorStatus =
-        hvac_ns::packStatusGen(anySensorData, readings.roomAirValid(), roomAirDisputed);
-    computed.floorProbeStatus = hvac_ns::packStatusGen(
-        readings.floorTemperatureValid || readings.floorHumidityValid,
-        readings.floorProbeValid(), moistureOut.alarm);
-    computed.airQualitySensorStatus =
-        hvac_ns::packStatusGen(anySensorData, readings.co2Valid || readings.iaqValid);
-    // The roll-up alarm covers only what stops the device doing its job: the
-    // room sensor the control loops depend on. A fallback source keeping the
-    // room measured is explicitly NOT a device fault — that is the redundancy
-    // working — but losing every source, or a confirmed fire, is.
-    computed.deviceFault = !readings.roomAirValid() || sensorData.events.fire_alarm;
-
-    {
-        LockGuard lock(g_state.mutex);
-        g_state.out = computed;
-    }
-}
-
-esp_err_t initNvs()
-{
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    return err;
-}
 
 util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platform::Esp32Platform &platform)
 {
@@ -1000,12 +454,10 @@ PublishSnapshot takePublishSnapshot()
     snapshot.sensorData = g_state.latestSensorData;
     snapshot.settings = g_state.hvac;
     snapshot.out = g_state.out;
-    snapshot.hvacOperatingMode = g_state.hvacOperatingMode;
-    snapshot.controllerMode = g_state.controllerMode;
-    snapshot.ventilationMode = g_state.ventilationMode;
-    snapshot.controllerOnOff = g_state.controllerOnOff;
-    snapshot.toggleProgrammingMode = g_state.toggleProgrammingModeRequested;
-    g_state.toggleProgrammingModeRequested = false;
+    snapshot.hvacOperatingMode = g_state.in.hvacOperatingMode;
+    snapshot.controllerMode = g_state.in.controllerMode;
+    snapshot.ventilationMode = g_state.in.ventilationMode;
+    snapshot.controllerOnOff = g_state.in.controllerOnOff;
     return snapshot;
 }
 
@@ -1017,7 +469,7 @@ void publishAllState(AppT &app, const PublishSnapshot &snapshot)
 {
     const auto &out = snapshot.out;
     const auto &sensors = snapshot.sensorData;
-    const CorrectedReadings readings = correctReadings(sensors, snapshot.settings);
+    const control::CorrectedReadings readings = control::correctReadings(sensors, snapshot.settings);
 
     // --- Room air measurements (FB RTS / RRHS / RAQS) ---
     if (readings.roomTemperatureValid) {
@@ -1304,24 +756,24 @@ void knxServiceTask(void *arg)
         })
         .onStateWrite<SensorBoardPort::DewPointStatusInput>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.externalDewPointAlarm = value;
+            g_state.in.externalDewPointAlarm = value;
         })
 
         // ---- Neighbour-device inputs ----
         .onStateWrite<SensorBoardPort::OutsideTemperature>([](float value) {
             LockGuard lock(g_state.mutex);
-            g_state.outsideTemperatureC = value;
-            g_state.outsideTemperatureValid = true;
+            g_state.in.outsideTemperatureC = value;
+            g_state.in.outsideTemperatureValid = true;
         })
         .onStateWrite<SensorBoardPort::OutsideHumidity>([](float value) {
             LockGuard lock(g_state.mutex);
-            g_state.outsideHumidityPct = hvac_ns::clampf(value, 0.0f, 100.0f);
-            g_state.outsideHumidityValid = true;
+            g_state.in.outsideHumidityPct = hvac_ns::clampf(value, 0.0f, 100.0f);
+            g_state.in.outsideHumidityValid = true;
         })
         .onStateWrite<SensorBoardPort::FlowTemperature>([](float value) {
             LockGuard lock(g_state.mutex);
-            g_state.flowTemperatureC = value;
-            g_state.flowTemperatureValid = true;
+            g_state.in.flowTemperatureC = value;
+            g_state.in.flowTemperatureValid = true;
         })
         .provideState<SensorBoardPort::FreeCoolingAvailable>([]() {
             LockGuard lock(g_state.mutex);
@@ -1335,15 +787,15 @@ void knxServiceTask(void *arg)
         // ---- Mode and setpoints (FB RTSM) ----
         .onStateWrite<SensorBoardPort::ControllerOnOff>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.controllerOnOff = value;
+            g_state.in.controllerOnOff = value;
         })
         .provideState<SensorBoardPort::ControllerOnOff>([]() {
             LockGuard lock(g_state.mutex);
-            return g_state.controllerOnOff;
+            return g_state.in.controllerOnOff;
         })
         .onStateWrite<SensorBoardPort::HvacMode>([](Dpt20Mode value) {
             LockGuard lock(g_state.mutex);
-            g_state.hvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(value);
+            g_state.in.hvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(value);
         })
         .provideState<SensorBoardPort::HvacModeStatus>([]() {
             LockGuard lock(g_state.mutex);
@@ -1353,7 +805,7 @@ void knxServiceTask(void *arg)
         // internal enum is compact. Map at the binding boundary only.
         .onStateWrite<SensorBoardPort::ContrMode>([](uint8_t value) {
             LockGuard lock(g_state.mutex);
-            g_state.controllerMode = hvac_ns::controllerModeFromContrMode(value);
+            g_state.in.controllerMode = hvac_ns::controllerModeFromContrMode(value);
         })
         .provideState<SensorBoardPort::ContrModeStatus>([]() {
             LockGuard lock(g_state.mutex);
@@ -1382,7 +834,7 @@ void knxServiceTask(void *arg)
         })
         .onStateWrite<SensorBoardPort::SetpointShift>([](float value) {
             LockGuard lock(g_state.mutex);
-            g_state.setpointShiftK = value;
+            g_state.in.setpointShiftK = value;
         })
         .provideState<SensorBoardPort::SetpointShiftStatus>([]() {
             LockGuard lock(g_state.mutex);
@@ -1404,25 +856,25 @@ void knxServiceTask(void *arg)
         // ---- Room inputs (FB WOS / PRD / WCOS) ----
         .onStateWrite<SensorBoardPort::WindowStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.windowOpen = value;
-            g_state.windowStatusKnown = true;
+            g_state.in.windowOpen = value;
+            g_state.in.windowStatusKnown = true;
         })
         .onStateWrite<SensorBoardPort::PresenceStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.presence = value;
-            g_state.presenceKnown = true;
+            g_state.in.presence = value;
+            g_state.in.presenceKnown = true;
         })
         .onStateWrite<SensorBoardPort::SwitchHeat>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.switchHeat = value;
+            g_state.in.switchHeat = value;
         })
         .onStateWrite<SensorBoardPort::SwitchCool>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.switchCool = value;
+            g_state.in.switchCool = value;
         })
         .onStateWrite<SensorBoardPort::ChangeOverStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
-            g_state.changeOverStatus = value;
+            g_state.in.changeOverStatus = value;
         })
 
         // ---- Controller outputs (FB RTC) ----
@@ -1482,11 +934,11 @@ void knxServiceTask(void *arg)
         })
         .onStateWrite<SensorBoardPort::VentilationMode>([](uint8_t value) {
             LockGuard lock(g_state.mutex);
-            g_state.ventilationMode = static_cast<hvac_ns::VentilationMode>(value);
+            g_state.in.ventilationMode = static_cast<hvac_ns::VentilationMode>(value);
         })
         .provideState<SensorBoardPort::VentilationMode>([]() {
             LockGuard lock(g_state.mutex);
-            return static_cast<uint8_t>(g_state.ventilationMode);
+            return static_cast<uint8_t>(g_state.in.ventilationMode);
         })
         .provideState<SensorBoardPort::VentilationBoostRequest>([]() {
             LockGuard lock(g_state.mutex);
@@ -1858,7 +1310,7 @@ void knxServiceTask(void *arg)
         })
 
         // ---- Sensor fusion and detection ----
-        // These land in the fusion config rather than in HvacSettings and are
+        // These land in the fusion config rather than in Settings and are
         // pushed down to the acquisition side by the control tick.
         .onParameterChanged<SensorBoardParameter::SensorFilterSeconds>([](uint16_t v) {
             LockGuard lock(g_state.mutex);
@@ -1907,16 +1359,10 @@ void knxServiceTask(void *arg)
         })
         .onProgrammingModeChanged([](bool enabled) {
             KNX_LOGI(TAG, "Programming mode: %s", enabled ? "ON" : "OFF");
-
-            knx_programming_mode_callback_t callback = nullptr;
-            {
-                LockGuard lock(g_state.mutex);
-                g_state.programmingMode = enabled;
-                callback = g_state.programmingModeCallback;
-            }
-            if (callback != nullptr) {
-                callback(enabled);
-            }
+            // ETS can enter programming mode over the bus, not only via the
+            // button, so the service hears about it either way and the board LED
+            // has one thing to follow.
+            control_service_set_identify_active(enabled);
         })
         .onLifecycleChanged([](DeviceLifecycleState state) {
             KNX_LOGI(TAG,
@@ -2070,7 +1516,7 @@ void knxServiceTask(void *arg)
 
     {
         LockGuard lock(g_state.mutex);
-        g_state.taskHandle = xTaskGetCurrentTaskHandle();
+        g_knx.taskHandle = xTaskGetCurrentTaskHandle();
         // Seed engineering values from the ETS parameters. Every parameter has
         // an onParameterChanged binding above for live re-parameterisation;
         // this is the one-time load at startup, so the two lists must stay in
@@ -2202,26 +1648,25 @@ void knxServiceTask(void *arg)
         g_state.fusionConfigDirty = true;
 
         // Seed the runtime mode/state inputs from their ETS defaults.
-        g_state.controllerOnOff = s.controllerDefaultEnable;
-        g_state.hvacOperatingMode = s.defaultHvacOperatingMode;
-        g_state.controllerMode = s.defaultControllerMode;
+        g_state.in.controllerOnOff = s.controllerDefaultEnable;
+        g_state.in.hvacOperatingMode = s.defaultHvacOperatingMode;
+        g_state.in.controllerMode = s.defaultControllerMode;
     }
 
     KNX_LOGI(TAG, "ETS-commissionable TP1 sensor bridge started");
 
     DeviceLifecycleState previousLifecycle = app.lifecycleState();
 
-    // Room-control loops (task-owned; configured each tick from ETS parameters).
-    sensor_board::hvac::ThermostatController thermostat;
-    sensor_board::hvac::VentilationController ventilation;
-    sensor_board::hvac::DewPointMonitor dewPoint;
-    sensor_board::hvac::FloorMoistureMonitor floorMoisture;
-    constexpr TickType_t kControlIntervalTicks = pdMS_TO_TICKS(1000);
-    TickType_t lastControlTick = xTaskGetTickCount();
-    // Publishing is offered once per control tick, not once per loop iteration:
-    // the loop also spins at a few milliseconds while the stack has in-flight
-    // work, and re-offering every object that often would burn CPU on
+    // The control loops do not run here any more — control_service.cpp owns
+    // them, and this task is told when a cycle has completed (see
+    // knxAdapterOnControlTick). That is what lets a Modbus-only or MQTT-only
+    // image control the room with no KNX task in the picture at all.
+    //
+    // Publishing is still offered once per control tick, not once per loop
+    // iteration: the loop also spins at a few milliseconds while the stack has
+    // in-flight work, and re-offering every object that often would burn CPU on
     // suppression decisions that cannot have changed.
+    constexpr TickType_t kControlIntervalTicks = pdMS_TO_TICKS(1000);
     bool controlTickDue = true;
 
     // Event-driven wake: the KNX stack signals when new work appears (an inbound
@@ -2234,7 +1679,7 @@ void knxServiceTask(void *arg)
     // ISR), so xTaskNotifyGive is correct; the notification latches, so a signal
     // raised while we are mid-loop is coalesced into the next wake, not lost.
     app.setWorkAvailableCallback([]() {
-        const TaskHandle_t handle = g_state.taskHandle;  // set once at startup
+        const TaskHandle_t handle = g_knx.taskHandle;  // set once at startup
         if (handle != nullptr) {
             xTaskNotifyGive(handle);
         }
@@ -2266,12 +1711,17 @@ void knxServiceTask(void *arg)
     for (;;) {
         app.loop();
 
-        const TickType_t nowTick = xTaskGetTickCount();
-        if ((nowTick - lastControlTick) >= kControlIntervalTicks) {
-            const float dtSeconds =
-                static_cast<float>(nowTick - lastControlTick) * portTICK_PERIOD_MS / 1000.0f;
-            lastControlTick = nowTick;
-            runHvacControlTick(app, thermostat, ventilation, dewPoint, floorMoisture, dtSeconds);
+        if (g_knx.controlTickPending) {
+            g_knx.controlTickPending = false;
+            // The transmit policy is derived from the configured COV deltas and
+            // repetition times, so it is refreshed when a tick may have changed
+            // them — same cadence as before, just driven from the other side.
+            Settings settings;
+            {
+                LockGuard lock(g_state.mutex);
+                settings = g_state.hvac;
+            }
+            applyTransmitPolicies(app, settings);
             controlTickDue = true;
         }
 
@@ -2296,47 +1746,37 @@ void knxServiceTask(void *arg)
                 startupDelayLogged = true;
             }
             // A programming-mode toggle (button) must still be honoured promptly.
-            bool toggleRequested = false;
-            {
-                LockGuard lock(g_state.mutex);
-                toggleRequested = g_state.toggleProgrammingModeRequested;
-                g_state.toggleProgrammingModeRequested = false;
-            }
-            if (toggleRequested) {
+            if (control::takeIdentifyToggleRequest()) {
                 app.toggleProgrammingMode();
             }
         } else if (app.lifecycleState() == DeviceLifecycleState::Operational) {
-            const PublishSnapshot snapshot = takePublishSnapshot();
-            if (snapshot.toggleProgrammingMode) {
+            if (control::takeIdentifyToggleRequest()) {
                 app.toggleProgrammingMode();
             }
+            const PublishSnapshot snapshot = takePublishSnapshot();
             // Offered unconditionally once per control tick; the per-object
             // transmit policy decides what is actually worth a telegram.
             if (controlTickDue) {
                 publishAllState(app, snapshot);
                 controlTickDue = false;
             }
-        } else {
-            const PublishSnapshot snapshot = takePublishSnapshot();
-            if (snapshot.toggleProgrammingMode) {
-                app.toggleProgrammingMode();
-            }
+        } else if (control::takeIdentifyToggleRequest()) {
+            app.toggleProgrammingMode();
         }
 
         previousLifecycle = app.lifecycleState();
 
-        // Park until the stack signals new work or the next control tick is due —
-        // no fixed busy-poll. If polled work is still in flight, wake at the short
-        // active cadence to service it to completion; otherwise sleep for the
-        // remainder of the control interval (a work notification, e.g. an inbound
-        // frame, cuts the sleep short and latches so it is never missed).
-        const TickType_t elapsedTicks = xTaskGetTickCount() - lastControlTick;
-        const TickType_t untilControlTick = (elapsedTicks < kControlIntervalTicks)
-            ? (kControlIntervalTicks - elapsedTicks)
-            : 0;
+        // Park until the stack signals new work or the control task announces
+        // the next cycle — no fixed busy-poll. If polled work is still in
+        // flight, wake at the short active cadence to service it to completion;
+        // otherwise sleep for a whole control interval. Either a work
+        // notification (an inbound frame) or the tick notification cuts the
+        // sleep short, and both latch, so neither is ever missed. The interval
+        // is a ceiling now rather than a schedule — the control task owns the
+        // cadence, and this only bounds how long we sleep if it stops.
         TickType_t blockTicks = app.ownerWorkHint().hasImmediateWork()
             ? kActiveWorkPollTicks
-            : untilControlTick;
+            : kControlIntervalTicks;
         if (blockTicks == 0) {
             blockTicks = 1;  // control tick already due — take it on the next tick
         }
@@ -2346,206 +1786,78 @@ void knxServiceTask(void *arg)
 
 } // namespace
 
-extern "C" esp_err_t knx_service_start(void)
+// ---------------------------------------------------------------------------
+// The adapter descriptor — this file's entire public surface.
+//
+// It used to be five knx_service_* entry points that main.c called directly,
+// including NVS init and factory reset, which is what made KNX structurally
+// mandatory. What is left is the mapping and nothing else.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+esp_err_t knxAdapterStart()
 {
-    if (g_state.started) {
+    if (g_knx.started) {
         return ESP_OK;
     }
-
+    // NVS and the control state are already up: control_service_start() ran
+    // first, which is the ordering protocol_adapters_start_all() guarantees.
     if (g_state.mutex == nullptr) {
-        g_state.mutex = xSemaphoreCreateMutex();
-        if (g_state.mutex == nullptr) {
-            return ESP_ERR_NO_MEM;
-        }
+        KNX_LOGE(TAG, "Control service is not running");
+        return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = initNvs();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize NVS: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    BaseType_t created = xTaskCreate(knxServiceTask, "knx_service", kKnxServiceTaskStackSize, nullptr, 8, nullptr);
+    const BaseType_t created = xTaskCreate(knxServiceTask, "knx_service",
+                                           kKnxServiceTaskStackSize, nullptr, 8, nullptr);
     if (created != pdPASS) {
-        return ESP_FAIL;
+        return ESP_ERR_NO_MEM;
     }
 
-    g_state.started = true;
+    g_knx.started = true;
     return ESP_OK;
 }
 
-extern "C" void knx_service_update_sensor_data(const sensor_data_t *data)
+// Called from the control task. Sets a flag and wakes the service loop; it must
+// not do any KNX work itself, because the control task has no business blocking
+// on a bus with a 104 us bit cell.
+void knxAdapterOnControlTick(uint32_t)
 {
-    if (data == nullptr || g_state.mutex == nullptr) {
-        return;
-    }
-
-    LockGuard lock(g_state.mutex);
-    g_state.latestSensorData = *data;
-    g_state.hasSensorData = true;
-    // Control outputs (requests, PID values) react on the next 1 s control
-    // tick in the KNX task — no recalculation in the sensor task's context.
-}
-
-extern "C" void knx_service_toggle_programming_mode(void)
-{
-    if (g_state.mutex == nullptr) {
-        return;
-    }
-
-    TaskHandle_t handle = nullptr;
-    {
-        LockGuard lock(g_state.mutex);
-        g_state.toggleProgrammingModeRequested = true;
-        handle = g_state.taskHandle;
-    }
-    // The service loop now parks on a notification instead of polling, so wake it
-    // to act on the toggle promptly rather than at the next control tick.
+    g_knx.controlTickPending = true;
+    const TaskHandle_t handle = g_knx.taskHandle;
     if (handle != nullptr) {
         xTaskNotifyGive(handle);
     }
 }
 
-extern "C" void knx_service_reset_nvm(void)
-{
-    KNX_LOGW(TAG, "Resetting KNX NVM state and rebooting");
-    esp_err_t err = nvs_flash_erase();
-    if (err != ESP_OK) {
-        KNX_LOGE(TAG, "NVS erase failed: %s", esp_err_to_name(err));
-    }
-    esp_restart();
-}
-
-// ---------------------------------------------------------------------------
-// control_state.h — the protocol-neutral view of this task's state.
-//
-// Implemented here because this task owns g_state: exposing it through a narrow
-// C interface is what lets the Modbus adapter present the full room-controller
-// model without a second copy of the control logic, and without either adapter
-// knowing about the other.
-// ---------------------------------------------------------------------------
-
-extern "C" void control_state_get(control_state_t *out)
-{
-    if (out == nullptr) {
-        return;
-    }
-    *out = control_state_t{};
-    if (g_state.mutex == nullptr) {
-        return;
-    }
-
-    LockGuard lock(g_state.mutex);
-    const auto &o = g_state.out;
-    const auto &s = g_state.hvac;
-
-    out->sensors = g_state.latestSensorData;
-    out->has_sensor_data = g_state.hasSensorData;
-
-    out->room_dew_point_c = o.roomDewPointC;
-    out->room_absolute_humidity_gm3 = o.roomAbsoluteHumidityGm3;
-    out->floor_absolute_humidity_gm3 = o.floorAbsoluteHumidityGm3;
-    out->sea_level_pressure_pa = o.seaLevelPressurePa;
-    out->dew_point_margin_k = o.dewPointMarginK;
-
-    out->comfort_setpoint_c = s.comfortHeatingSetpointC;
-    out->active_setpoint_c = o.activeSetpointC;
-    out->heating_setpoint_c = o.heatingSetpointC;
-    out->cooling_setpoint_c = o.coolingSetpointC;
-    out->setpoint_shift_k = o.setpointShiftFeedbackK;
-    out->co2_setpoint_ppm = s.ventilationSetpointPpm;
-
-    out->heating_percent = o.heatingControlPercent;
-    out->cooling_percent = o.coolingControlPercent;
-    out->ventilation_percent = o.ventilationDemandPercent;
-    out->ventilation_level = static_cast<uint8_t>(o.ventilationLevel);
-    out->heating_request = o.heatingRequest;
-    out->cooling_request = o.coolingRequest;
-    out->heat_cool_mode_heating = o.heatCoolModeHeating;
-    out->enable_heat = o.enableHeat;
-    out->enable_cool = o.enableCool;
-    out->ventilation_boost_request = o.ventilationBoostRequest;
-    out->dehumidify_request = o.dehumidifyRequest;
-    out->controller_status = o.controllerStatus;
-    out->air_quality_status = o.airQualityStatus;
-
-    out->dew_point_alarm = o.dewPointAlarm;
-    out->floor_moisture_alarm = o.floorMoistureAlarm;
-    out->floor_limit_active = o.floorLimitActive;
-    out->floor_comfort_active = o.floorComfortActive;
-    out->free_cooling_available = o.freeCoolingAvailable;
-    out->free_drying_available = o.freeDryingAvailable;
-    out->device_fault = o.deviceFault;
-    out->room_sensor_status = o.roomSensorStatus;
-    out->floor_probe_status = o.floorProbeStatus;
-    out->air_quality_sensor_status = o.airQualitySensorStatus;
-
-    out->controller_on = g_state.controllerOnOff;
-    out->hvac_operating_mode = static_cast<uint8_t>(o.activePreset);
-    out->controller_mode = static_cast<uint8_t>(o.activeControllerMode);
-    out->ventilation_mode = static_cast<uint8_t>(g_state.ventilationMode);
-    out->window_open = g_state.windowOpen;
-    out->presence = g_state.presence;
-    out->programming_mode = g_state.programmingMode;
-}
-
-extern "C" esp_err_t control_state_write(control_command_t command, float value)
+bool knxAdapterIdentifyActive()
 {
     if (g_state.mutex == nullptr) {
-        return ESP_ERR_INVALID_STATE;
+        return false;
     }
-
-    const bool flag = value != 0.0f;
     LockGuard lock(g_state.mutex);
-    switch (command) {
-    case CONTROL_CMD_CONTROLLER_ON_OFF:
-        g_state.controllerOnOff = flag;
-        return ESP_OK;
-    case CONTROL_CMD_HVAC_MODE:
-        g_state.hvacOperatingMode =
-            static_cast<hvac_ns::OperatingPreset>(static_cast<uint8_t>(value));
-        return ESP_OK;
-    case CONTROL_CMD_CONTROLLER_MODE:
-        g_state.controllerMode = hvac_ns::controllerModeFromContrMode(static_cast<uint8_t>(value));
-        return ESP_OK;
-    case CONTROL_CMD_SETPOINT_BASE:
-        // Same clamping as the KNX SetpointBase write: the ETS min/max are a
-        // property of the installation, not of the protocol that asked.
-        g_state.hvac.comfortHeatingSetpointC =
-            hvac_ns::clampf(value, g_state.hvac.minSetpointC, g_state.hvac.maxSetpointC);
-        return ESP_OK;
-    case CONTROL_CMD_SETPOINT_SHIFT:
-        g_state.setpointShiftK = value;
-        return ESP_OK;
-    case CONTROL_CMD_WINDOW_STATUS:
-        g_state.windowOpen = flag;
-        g_state.windowStatusKnown = true;
-        return ESP_OK;
-    case CONTROL_CMD_PRESENCE:
-        g_state.presence = flag;
-        g_state.presenceKnown = true;
-        return ESP_OK;
-    case CONTROL_CMD_VENTILATION_MODE:
-        g_state.ventilationMode =
-            static_cast<hvac_ns::VentilationMode>(static_cast<uint8_t>(value));
-        return ESP_OK;
-    case CONTROL_CMD_CO2_SETPOINT:
-        g_state.hvac.ventilationSetpointPpm = value;
-        return ESP_OK;
-    case CONTROL_CMD_ACKNOWLEDGE_ALARMS:
-        g_state.acknowledgeAlarmsRequested = true;
-        return ESP_OK;
-    }
-    return ESP_ERR_INVALID_ARG;
+    return g_state.identifyActive;
 }
 
-extern "C" void knx_service_set_programming_mode_callback(knx_programming_mode_callback_t callback)
-{
-    if (g_state.mutex == nullptr) {
-        g_state.programmingModeCallback = callback;
-        return;
-    }
+}  // namespace
 
-    LockGuard lock(g_state.mutex);
-    g_state.programmingModeCallback = callback;
-}
+extern "C" const protocol_adapter_t knx_protocol_adapter = {
+    .name = "knx-tp1",
+    .start = knxAdapterStart,
+    .on_control_tick = knxAdapterOnControlTick,
+    // No on_sensor_data hook: measurements are published from the control tick
+    // under the transmit policy, which is what decides whether a new reading is
+    // worth a telegram. Publishing straight off the sensor task would bypass it.
+    .on_sensor_data = nullptr,
+    .identify_active = knxAdapterIdentifyActive,
+    // KNX owns programming mode wherever it is compiled in. The flag lives in
+    // the stack's device object, ETS can set it over the bus, and the stack is
+    // only safe to touch from the KNX task — so the control service must not
+    // toggle it behind the stack's back. This adapter consumes the button
+    // request on its own task and reports the result back through
+    // control_service_set_identify_active().
+    .owns_programming_mode = true,
+    // Required: on a board wired to a TP1 bus, a device that silently fails to
+    // join it is worse than one that refuses to boot and says why.
+    .required = true,
+};

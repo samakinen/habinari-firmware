@@ -6,10 +6,17 @@ values, the controller outputs and the writable control inputs. A Modbus master
 can therefore read everything a KNX installation can see, and drive the room
 controller as far as a KNX installation can drive it.
 
-Both protocols write into one shared control state, so a setpoint written over
-Modbus is clamped by the same ETS limits, resolved by the same setpoint ladder
-and reported back on both buses. Neither protocol is a second implementation of
-the control logic.
+Every protocol writes into one shared control state, owned by `control_service`,
+so a setpoint written over Modbus is clamped by the same limits, resolved by the
+same setpoint ladder and reported back on every bus. No protocol is a second
+implementation of the control logic.
+
+Modbus is one of the board's field-bus **personalities**, selected at build time
+(`SENSOR_BOARD_PROTOCOL_MODBUS`, on by default). It combines with any other —
+RS-485 is a UART with a direction pin and competes with nothing — and it is the
+only personality that works on both KNX bus power and the 5–30 V auxiliary
+supply. A Modbus-only image carries no KNX stack at all and still controls the
+room. See [protocol-variants.md](protocol-variants.md).
 
 ---
 
@@ -17,13 +24,17 @@ the control logic.
 
 | Setting | Default | Notes |
 |---|---|---|
-| Slave address | 1 | 1–247, held in NVS |
+| Slave address | **none** | 1–246 once assigned; 0 means unassigned, held in NVS |
 | Baud rate | 19200 | 9600 / 19200 / 38400 / 57600 / 115200, held in NVS |
 | Frame | 8N1 | fixed |
 | Mode | RTU, half duplex | direction control on the UART's RTS pin |
 
-Address and baud rate are writable over Modbus — see
-[Changing the line settings](#changing-the-line-settings).
+**A board out of the box has no address and is silent.** It answers nothing
+until it has been commissioned. That is not an inconvenience to work around, it
+is the point — see [Commissioning](#commissioning) below, which is also how the
+address gets written.
+
+Address 247 is reserved as the commissioning address and is never assignable.
 
 ## Conventions
 
@@ -59,7 +70,7 @@ its limit.
 | Addr | Name | Type | Description |
 |---|---|---|---|
 | 0 | Device ID | u16 | `0x5B01`. Confirm before trusting the rest of the map. |
-| 1 | Map version | u16 | Currently `2`. Bumped when register meanings change. |
+| 1 | Map version | u16 | Currently `3`. Bumped when register meanings change. |
 | 2 | Firmware version | u16 | major << 8 \| minor |
 | 3 | Uptime hours | u16 | |
 | 4 | Uptime seconds | u16 | seconds within the current hour |
@@ -70,6 +81,12 @@ its limit.
 | 9 | Error count | u16 | cycles with at least one bus error |
 
 Sensor mask bits: `0` HDC3020, `1` BME688, `2` SCD4x, `3` SHT4x probe.
+
+> **Map version 3** added the serial number at 48–50, the serial-select
+> registers at 12–14, and the unassigned-address convention in
+> [Commissioning](#commissioning). Nothing was renumbered, so an integration
+> built against version 2 keeps working — but a device out of the box no longer
+> answers at address 1, because it no longer has one.
 
 ### Room air measurements (10–19)
 
@@ -131,6 +148,20 @@ open window or an absent room can move away from what was requested.
 | 45 | Temperature source | u16 | sensor package backing register 10 |
 | 46 | Humidity source | u16 | sensor package backing register 11 |
 | 47 | Fire reason mask | u16 | bit 0 rate of rise, bit 1 over-temperature, bit 2 air-quality rise |
+
+### Serial number (48–51)
+
+| Addr | Name | Type | Description |
+|---|---|---|---|
+| 48 | Serial 0 | u16 | `serial[0] << 8 \| serial[1]` |
+| 49 | Serial 1 | u16 | `serial[2] << 8 \| serial[3]` |
+| 50 | Serial 2 | u16 | `serial[4] << 8 \| serial[5]` |
+| 51 | *reserved* | | |
+
+The six bytes are the device's base MAC — the same identity the KNX device
+object reports, the BLE channel advertises, and the box label carries. Readable
+rather than only printable because a master that has just found a board on the
+commissioning address needs to know which one it is before naming it.
 
 A source register that is not `0` (HDC3020) means the reference sensor has
 failed or been voted out and a fallback is carrying the measurement. The reading
@@ -195,10 +226,13 @@ effect — that is deliberate, since the LED is what an installer looks for.
 
 | Addr | Name | Type | Description |
 |---|---|---|---|
-| 0 | Slave address | u16 | 1–247, staged |
+| 0 | Slave address | u16 | 1–246, or 0 to unassign; staged |
 | 1 | Baud rate code | u16 | 0 = 9600, 1 = 19200, 2 = 38400, 3 = 57600, 4 = 115200, staged |
 | 2 | Config commit | u16 | write 1 to persist and apply; self-clears |
 | 3 | *reserved* | | |
+
+A commit is **refused unless the device is selected** — see
+[Commissioning](#commissioning).
 
 ### Control inputs (4–11)
 
@@ -212,26 +246,114 @@ effect — that is deliberate, since the LED is what an installer looks for.
 | 9 | CO₂ setpoint | u16 | ppm | ventilation setpoint |
 | 10–11 | *reserved* | | | |
 
+### Serial select (12–15)
+
+| Addr | Name | Type | Description |
+|---|---|---|---|
+| 12 | Serial select 0 | u16 | `serial[0] << 8 \| serial[1]` |
+| 13 | Serial select 1 | u16 | `serial[2] << 8 \| serial[3]` |
+| 14 | Serial select 2 | u16 | `serial[4] << 8 \| serial[5]` |
+| 15 | *reserved* | | |
+
+Write a device's serial number here to select it for commissioning. The
+selection arms for **30 seconds**, during which that device — and only that
+device — accepts a config commit. Writing zeros releases it, as does the commit
+itself.
+
+Selection is detected as a *change* to these registers, because a memory-mapped
+register area has no write callback and rewriting the same value looks like
+nothing happening. To re-arm an expired selection, write zeros and then the
+serial again.
+
 Every write goes through the same handling as the equivalent KNX telegram,
 including the ETS-configured limits. **Read back after writing:** a setpoint
 outside the configured minimum/maximum comes back clamped, and a change made
 over KNX appears here too.
 
-### Changing the line settings
+---
 
-Writing register 0 or 1 alone does nothing. Stage the new values, then write `1`
-to register 2:
+## Commissioning
 
-1. Write the new address to register 0 and/or the baud code to register 1.
-2. Write `1` to register 2 (config commit).
-3. The board acknowledges, persists the settings, waits ~100 ms and restarts its
-   Modbus stack on the new settings.
-4. Reconnect at the new address and rate.
+**Modbus standardises no way to give a device an address.** DALI has randomised
+binary-search arbitration, M-Bus has secondary addressing over fabrication
+numbers, CANopen has LSS, KNX has the programming button. Modbus has DIP
+switches and vendor conventions, and this is ours.
+
+The spec offers exactly two things worth building on, and both are used here:
+
+* **address 0 is broadcast** — every slave processes the frame, none reply, so a
+  write to it can never collide however many devices hear it;
+* **247 is by convention a service address**, and 248–255 are reserved.
+
+### The three states
+
+| Assigned address | Programming mode | Answers to | Accepts a commit |
+|---|---|---|---|
+| none | no | *nothing* (listens on address 0) | no |
+| none | yes | 247, the commissioning address | yes |
+| 1–246 | no | its own address | only if serial-selected |
+| 1–246 | yes | its own address | yes |
+
+"Silent" means the slave is configured with address 0. It matches only frames
+addressed to 0, and the spec forbids answering those — so it **hears every
+broadcast and can never transmit**. That distinction is load-bearing: a device
+that had simply stopped its UART would be unreachable by any means at all,
+including the one mechanism meant to reach devices nobody can get to.
+
+This is what lets any number of factory-fresh boards hang on one pair from the
+first day. Two devices sharing an address both reply to a request for it, the
+frames overlap on the wire, and the master gets a CRC error from a bus it cannot
+talk its way out of. Devices that never transmit cannot do that to each other.
+
+An **already-addressed** device keeps its address even while selected. Moving it
+to 247 would drop it off a live bus for as long as somebody leant on the button,
+and the master already knows where to find it.
+
+### Selecting a device
+
+Two ways, and they exist for two different situations.
+
+**The programming button**, when somebody can reach the device. Hold it for a
+second; the LED lights. This is the same state, button and LED that KNX
+individual addressing and the BLE service channel use — a board with its LED lit
+is the board that can be commissioned, whatever protocol you reach it with. It
+lapses on its own after 15 minutes.
+
+**The serial number**, when nobody can — a board already above a ceiling. Write
+its serial to registers 12–14 over **broadcast**; only the matching device arms.
+Because a broadcast needs no reply, this reaches a device that is silent for want
+of an address, and no two devices can collide answering it.
+
+### Assigning an address
+
+Writing register 0 or 1 alone does nothing. Stage the values, then commit:
+
+1. Select the device (button, or a serial-select write).
+2. Write the new address to register 0 and/or the baud code to register 1.
+3. Write `1` to register 2 (config commit).
+4. The board persists, waits ~100 ms and restarts its Modbus stack on the new
+   settings.
+5. Reconnect at the new address and rate.
 
 The commit is a separate step because changing the address of the device you are
 mid-transaction with would otherwise lose the response to the very write that
 requested it. Invalid values are rejected and logged, and the previous settings
 stay in force.
+
+A commit from an unselected device is **refused**. Reachable is not the same as
+selected: without that rule a stray or mistargeted master write could re-address
+a device in a running building, and the first anyone would know is a BMS point
+going dark.
+
+Writing address `0` unassigns the device and returns it to the silent state —
+which is what to do with a board being pulled out of one installation and into
+another.
+
+### On a KNX build
+
+The Modbus address is a Modbus problem, so it is solved here, but a KNX+Modbus
+image has the same button and the same programming mode driving both. Pressing
+it once selects the device for ETS *and* for RS-485 addressing.
 
 ---
 
@@ -255,13 +377,37 @@ request : 01 06 0004 00E1    -> 225 = 22.5 °C
 Then read register 4 back: if the ETS maximum setpoint is 22.0 °C the device
 reports `220`, not `225`.
 
-**Move the device to address 7 at 38400 baud:**
+**Commission a fresh board with the button** — hold the programming button until
+the LED lights, then talk to the commissioning address:
 
 ```
-01 06 0000 0007    ; stage address 7
-01 06 0001 0002    ; stage baud code 2 (38400)
-01 06 0002 0001    ; commit
+F7 04 0030 0003    ; read serial from 247, registers 48-50
+F7 04 06 84F7 03A1 B2C3
+                   ; -> 84:F7:03:A1:B2:C3, the serial on the box label
+F7 06 0000 0007    ; stage address 7
+F7 06 0001 0002    ; stage baud code 2 (38400)
+F7 06 0002 0001    ; commit
                    ; reconnect as 07 @ 38400
+```
+
+**Commission a board nobody can reach**, by serial, over broadcast. Nothing
+replies to any of these — confirmation is the read at the end:
+
+```
+00 10 000C 0003 06 84F7 03A1 B2C3   ; select 84:F7:03:A1:B2:C3
+00 10 0000 0003 06 0007 0002 0001   ; address 7, 38400, commit
+                                    ; every other board ignores both frames
+07 04 0030 0003                     ; confirm: read the serial back at address 7
+```
+
+**Move an addressed device to another address** — it is already reachable, so
+select it by its own serial rather than walking to it:
+
+```
+01 10 000C 0003 06 84F7 03A1 B2C3   ; select this device
+01 06 0000 0007                     ; stage address 7
+01 06 0002 0001                     ; commit
+                                    ; reconnect as 07
 ```
 
 ---

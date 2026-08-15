@@ -1,3 +1,179 @@
+menu "Sensor board protocols"
+
+    comment "Field-bus personalities. These are alternatives, not layers."
+
+    config SENSOR_BOARD_PROTOCOL_KNX
+        bool "KNX TP1"
+        default y
+        help
+            Speak KNX TP1 through the STKNX transceiver, commissioned from ETS.
+
+            This is the bus-powered personality: the device runs entirely off
+            the KNX bus terminal with no auxiliary supply.
+
+            Mutually exclusive with the Wi-Fi/MQTT personality, and the build
+            enforces it. The TP1 receiver bit-bangs a 104 us bit cell and samples
+            at 52 us, against a measured worst-case ISR jitter of 51 us on this
+            board — one microsecond of margin. A radio stack in the same image
+            spends margin that is not there.
+
+    config SENSOR_BOARD_PROTOCOL_MODBUS
+        bool "Modbus RTU (RS-485)"
+        default y
+        help
+            Expose the room-controller model as Modbus RTU holding, input,
+            coil and discrete registers on the SP3485EN transceiver.
+
+            Safe to combine with any other personality: RS-485 is a UART with a
+            direction pin and competes with nothing.
+
+            A board out of the box has no address and is silent. It is
+            commissioned either from the programming button — which brings it up
+            on the commissioning address, exactly as KNX does — or by writing its
+            serial number over broadcast, which reaches a device nobody can get
+            to. Modbus standardises no addressing mechanism at all; see
+            docs/modbus-register-map.md for why this is the shape it is.
+
+    config SENSOR_BOARD_PROTOCOL_MQTT
+        bool "MQTT over Wi-Fi"
+        default n
+        select SENSOR_BOARD_REQUIRES_AUX_POWER
+        help
+            Join a Wi-Fi network and publish the room-controller model as JSON
+            over MQTT, with Home Assistant discovery so the device appears as a
+            climate entity plus sensors without any manual YAML.
+
+            Needs the 5-30 V auxiliary supply: Wi-Fi transmit peaks well past
+            what the KNX bus terminal can deliver. Cannot be combined with the
+            KNX personality.
+
+    config SENSOR_BOARD_REQUIRES_AUX_POWER
+        bool
+        help
+            Set automatically by any personality that cannot run on KNX bus
+            power alone. Logged at boot so a field failure to come up on bus
+            power reads as a configuration mistake rather than a dead board.
+
+    menu "MQTT personality"
+        depends on SENSOR_BOARD_PROTOCOL_MQTT
+
+        config SENSOR_BOARD_MQTT_BASE_TOPIC
+            string "Base topic prefix"
+            default "sensorboard"
+            help
+                Topics are <prefix>/<device-id>/... where <device-id> is derived
+                from the MAC address, so several boards coexist under one prefix.
+
+        config SENSOR_BOARD_MQTT_DISCOVERY_PREFIX
+            string "Home Assistant discovery prefix"
+            default "homeassistant"
+            help
+                Set empty to publish no discovery configuration at all.
+
+        config SENSOR_BOARD_MQTT_STATE_INTERVAL_S
+            int "State heartbeat interval (seconds)"
+            range 1 3600
+            default 10
+            help
+                How often the state document is republished when nothing has
+                changed, so a subscriber can tell a quiet room from a dead
+                device.
+
+                This is a heartbeat, not a cadence. The device compares each
+                document against the last one it sent and publishes as soon as
+                anything differs — at up to 1 Hz, the control tick rate — and an
+                accepted command always publishes immediately.
+    endmenu
+
+endmenu
+
+menu "Sensor board service channel"
+
+    comment "Out-of-band configuration. Not a field bus — see oob_service.h."
+
+    config SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S
+        int "Programming mode timeout (seconds, 0 = never)"
+        range 0 3600
+        default 900
+        help
+            How long the board stays in programming mode before leaving it by
+            itself.
+
+            Programming mode is the one protocol-neutral "this device is
+            selected" state, and every commissioning path is gated on it: the
+            KNX individual address, BLE pairing, and Modbus re-addressing. A
+            device left selected is a device anybody within reach can re-address
+            or pair with, so it does not stay selected because somebody walked
+            away.
+
+            This does not interrupt an ETS download. Programming mode is only
+            needed for the individual-address write; everything after it is
+            normally addressed, so a download that outlives the timeout carries
+            on unaffected.
+
+            Set to 0 to keep the pre-timeout behaviour, where only a second
+            button press or ETS leaves programming mode.
+
+    config SENSOR_BOARD_OOB_BLE
+        bool "BLE commissioning and diagnostics channel"
+        depends on !SENSOR_BOARD_PROTOCOL_KNX
+        default n
+        select SENSOR_BOARD_REQUIRES_AUX_POWER
+        help
+            Expose the device_config registry over a BLE GATT service, so an
+            installer with a phone or a laptop can write the settings that no
+            field bus can write.
+
+            The device advertises only while it is in programming mode — the
+            same button, the same LED and the same state that KNX individual
+            addressing and Modbus re-addressing use. There is no second gesture
+            and no separate BLE window; outside programming mode the radio is
+            silent and the board cannot be found at all.
+
+            The gap it fills is the Wi-Fi one, and it is circular: the SSID,
+            passphrase and broker URI decide whether the device has a network at
+            all, and nothing on the network can write them because there is no
+            network until they are right.
+
+            Modbus has the same shape of problem but solves it on its own bus —
+            see docs/modbus-register-map.md. This channel is still the pleasanter
+            way to do it from a phone, and the only way to reach a setting that
+            no compiled-in personality exposes.
+
+            Not available in a KNX image, and the dependency above is not a
+            packaging decision:
+
+              - ETS is already a complete out-of-band channel. It reaches the
+                device through the programming button and the individual
+                address, so a KNX device never has the circularity this solves,
+                and every setting is in the application program already.
+              - The bit-banged TP1 receiver samples a 104 us bit cell at 52 us
+                against a measured worst-case ISR jitter of 51 us. The BLE
+                controller installs its own high-priority interrupts and has
+                hard MAC deadlines; it spends margin that is not there.
+              - KNX is the bus-powered personality, within about 10 mA at 29 V.
+                A BLE transmit burst is not in that budget.
+
+            Costs roughly 430 kB of flash (measured: 349 kB for a Modbus-only
+            image against 776 kB with this enabled) plus the controller and host
+            RAM.
+
+    menu "BLE channel"
+        depends on SENSOR_BOARD_OOB_BLE
+
+        config SENSOR_BOARD_OOB_BLE_STATUS_PERIOD_MS
+            int "Status notification period (ms)"
+            range 250 60000
+            default 2000
+            help
+                How often live readings are notified to a subscribed client.
+                Only while somebody is connected and has subscribed, so this
+                costs nothing in normal operation.
+
+    endmenu
+
+endmenu
+
 menu "Sensor board device secret"
 
     config SENSOR_BOARD_ROOT_SECRET_EFUSE_BLOCK

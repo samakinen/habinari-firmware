@@ -50,6 +50,18 @@ inline constexpr char kFdskLabel[] = "KNstaX/KNX-FDSK/v1";
 inline constexpr size_t kFdskLabelLen = sizeof(kFdskLabel) - 1;
 inline constexpr size_t kFdskMessageBytes = kFdskLabelLen + kSerialBytes;
 
+// The BLE out-of-band channel's pairing passkey, derived from the same root
+// under a different label. That is the whole point of domain separation: the
+// device needs a second printable per-device credential with exactly the
+// properties the FDSK has — unique, unpredictable from public data, surviving a
+// factory reset — and the label makes it impossible for one to reveal the
+// other. A device that speaks both would print two independent values.
+inline constexpr char kBlePasskeyLabel[] = "sensorboard/BLE-passkey/v1";
+inline constexpr size_t kBlePasskeyLabelLen = sizeof(kBlePasskeyLabel) - 1;
+inline constexpr size_t kBlePasskeyMessageBytes = kBlePasskeyLabelLen + kSerialBytes;
+/// Bluetooth passkey entry is a six-digit decimal number, 000000..999999.
+inline constexpr uint32_t kBlePasskeyModulus = 1000000;
+
 // --- Entropy gate ---------------------------------------------------------
 // Burning an eFuse is irreversible, so the sample the key is folded from is
 // measured first and the burn is refused if the source looks dead. These are
@@ -144,6 +156,22 @@ void fdskFromDigest(const Digest &digest, Fdsk &out);
 /// cross-check against the peripheral.
 bool deriveFdsk(const RootSecret &root, Serial serial, Fdsk &out);
 
+/// Build the BLE passkey KDF message: label || serial.
+void buildBlePasskeyMessage(Serial serial, std::array<uint8_t, kBlePasskeyMessageBytes> &out);
+
+/**
+ * @brief Fold an HMAC-SHA256 digest into a six-digit passkey.
+ *
+ * The first four bytes, big-endian, modulo 10^6. The modulo bias is about one
+ * part in 4300 across the range — far below anything that matters against a
+ * space of a million that an attacker must guess online, one interactive
+ * pairing attempt at a time, inside a commissioning window.
+ */
+uint32_t blePasskeyFromDigest(const Digest &digest);
+
+/// Reference (software) derivation of the BLE pairing passkey.
+bool deriveBlePasskey(const RootSecret &root, Serial serial, uint32_t &out);
+
 // --- Platform layer (device_secret_esp.cpp) -------------------------------
 
 enum class RootSecretState {
@@ -162,6 +190,26 @@ struct RootSecretResult {
     /// when it came from the eFuse-backed HMAC peripheral.
     bool fdskValid{false};
 };
+
+struct BlePasskeyResult {
+    uint32_t passkey{0};
+    /// True when the passkey came from the eFuse-backed HMAC peripheral, i.e.
+    /// when it is the value printed on this device's label. False means the
+    /// root secret has not been provisioned and the caller is looking at a
+    /// build-time fallback that is identical on every unprovisioned board.
+    bool fromEfuse{false};
+};
+
+/**
+ * @brief Resolve the BLE pairing passkey for this device.
+ *
+ * Reads the eFuse key block and derives through the HMAC peripheral, exactly as
+ * resolveFdsk() does, but never provisions: burning a fuse is a manufacturing
+ * step and must not be a side effect of bringing a service channel up. On an
+ * unprovisioned device this reports fromEfuse = false and a fixed development
+ * passkey, which the service channel logs loudly.
+ */
+BlePasskeyResult resolveBlePasskey(Serial serial);
 
 /**
  * @brief Resolve the device FDSK, provisioning the root secret if needed.

@@ -2,3 +2,6 @@ dependencies:
   pedrominatel/sht4x: '*'
   espressif/esp-modbus: '*'
   espressif/libsodium: '*'
+  # Only linked into the Wi-Fi/MQTT personality (see main/CMakeLists.txt); it is
+  # fetched for every build so the dependency lock stays stable across variants.
+  espressif/mqtt: '*'

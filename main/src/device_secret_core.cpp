@@ -272,4 +272,34 @@ bool deriveFdsk(const RootSecret &root, Serial serial, Fdsk &out)
     return true;
 }
 
+void buildBlePasskeyMessage(Serial serial, std::array<uint8_t, kBlePasskeyMessageBytes> &out)
+{
+    std::memcpy(out.data(), kBlePasskeyLabel, kBlePasskeyLabelLen);
+    std::memcpy(out.data() + kBlePasskeyLabelLen, serial.data(), kSerialBytes);
+}
+
+uint32_t blePasskeyFromDigest(const Digest &digest)
+{
+    const uint32_t head = (static_cast<uint32_t>(digest[0]) << 24)
+                          | (static_cast<uint32_t>(digest[1]) << 16)
+                          | (static_cast<uint32_t>(digest[2]) << 8)
+                          | static_cast<uint32_t>(digest[3]);
+    return head % kBlePasskeyModulus;
+}
+
+bool deriveBlePasskey(const RootSecret &root, Serial serial, uint32_t &out)
+{
+    std::array<uint8_t, kBlePasskeyMessageBytes> message{};
+    buildBlePasskeyMessage(serial, message);
+
+    Digest digest{};
+    if (!hmacSha256(std::span<const uint8_t>(root.data(), root.size()),
+                    std::span<const uint8_t>(message.data(), message.size()), digest)) {
+        return false;
+    }
+    out = blePasskeyFromDigest(digest);
+    mbedtls_platform_zeroize(digest.data(), digest.size());
+    return true;
+}
+
 } // namespace sensor_board::secret

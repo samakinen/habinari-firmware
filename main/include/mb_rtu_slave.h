@@ -44,8 +44,17 @@ typedef struct {
     mb_holding_registers_t applied_holding;
     uint8_t applied_coils[MB_COIL_BYTES];
 
+    // Commissioning. `slave_address` is what the device has been *given*
+    // (MB_SLAVE_ADDR_UNASSIGNED until somebody does); `listen_address` is what
+    // the stack is currently answering to, which differs while an unassigned
+    // device is selected or muted. See the addressing note in
+    // modbus_registers.h.
     uint8_t slave_address;
+    uint8_t listen_address;
     uint16_t baud_code;
+
+    uint8_t serial[6];              ///< base MAC: the identity on the box label
+    int64_t serial_select_expiry_us; ///< 0 when no serial selection is armed
 } mb_rtu_slave_t;
 
 typedef mb_rtu_slave_t *mb_rtu_slave_handle_t;

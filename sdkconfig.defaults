@@ -1,3 +1,18 @@
+# The board is an ESP32-C6. Stating the target here rather than relying on
+# `idf.py set-target` means a fresh clone builds the right binary: without it
+# the build silently falls back to the plain ESP32 default.
+CONFIG_IDF_TARGET="esp32c6"
+
+# The board's KNX physical layer is the STKNX transceiver driven by the
+# bit-banging backend, not a TPUART. The KNX_TP1_PHYSICAL choice defaults to
+# KNX_TP1_TPUART, so this has to be stated: without it every
+# CONFIG_KNX_TP1_BITBANG_* option below is a child of a disabled parent and is
+# silently dropped, and the build fails on the first reference to one of them.
+#
+# This used to live only in an untracked ./sdkconfig set once through
+# menuconfig, which meant a fresh clone did not build.
+CONFIG_KNX_MEDIUM_TP1=y
+CONFIG_KNX_TP1_BITBANG=y
 CONFIG_KNX_TP1_BITBANG_TX_PIN=4
 CONFIG_KNX_TP1_BITBANG_RX_PIN=5
 # CONFIG_KNX_TP1_BITBANG_RX_PULLUP is not set
