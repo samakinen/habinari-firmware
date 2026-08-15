@@ -10,13 +10,13 @@
 #
 # This variant needs the 5-30 V auxiliary supply on the secondary connector.
 # It will not run on KNX bus power.
-# CONFIG_SENSOR_BOARD_PROTOCOL_KNX is not set
-CONFIG_SENSOR_BOARD_PROTOCOL_MODBUS=y
-CONFIG_SENSOR_BOARD_PROTOCOL_MQTT=y
+# CONFIG_HABINARI_PROTOCOL_KNX is not set
+CONFIG_HABINARI_PROTOCOL_MODBUS=y
+CONFIG_HABINARI_PROTOCOL_MQTT=y
 
-CONFIG_SENSOR_BOARD_MQTT_BASE_TOPIC="sensorboard"
-CONFIG_SENSOR_BOARD_MQTT_DISCOVERY_PREFIX="homeassistant"
-CONFIG_SENSOR_BOARD_MQTT_STATE_INTERVAL_S=10
+CONFIG_HABINARI_MQTT_BASE_TOPIC="habinari"
+CONFIG_HABINARI_MQTT_DISCOVERY_PREFIX="homeassistant"
+CONFIG_HABINARI_MQTT_STATE_INTERVAL_S=10
 
 # The KNX bit-timing options in sdkconfig.defaults are inert without the KNX
 # personality, but the driver they configure is not built either, so leave them.

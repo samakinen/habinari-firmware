@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include "knx/product/commissioned_product.hpp"
@@ -43,7 +46,7 @@
  * migration is kept. Bump kParameterLayoutVersion when the byte layout changes.
  */
 
-namespace sensor_board_knx {
+namespace habinari_knx {
 
 using namespace knx;
 using namespace knx::application;
@@ -62,13 +65,13 @@ using namespace knx::product;
 // fully settable by the integrator (DPT 9 parameters render as decimal editors).
 // ---------------------------------------------------------------------------
 
-using namespace sensor_board::config;
+using namespace habinari::config;
 
 // ---------------------------------------------------------------------------
 // KNX group-object (logical port) identity.
 // ---------------------------------------------------------------------------
 
-enum class SensorBoardPort : uint16_t {
+enum class HabinariPort : uint16_t {
     // --- Room air sensors: FB RTS / RRHS / RAQS ---------------------------
     RoomTemperature = 0,          // RTS.TempRoom, DPT 9.001
     RoomHumidity = 1,             // RRHS.HumRelRoom, DPT 9.007
@@ -171,7 +174,7 @@ enum class SensorBoardPort : uint16_t {
 // defines the ProgramData / RS-0000 byte layout.
 // ---------------------------------------------------------------------------
 
-enum class SensorBoardParameter : uint16_t {
+enum class HabinariParameter : uint16_t {
     ParameterLayoutVersion = 0,
 
     // Measurements
@@ -280,7 +283,7 @@ enum class SensorBoardParameter : uint16_t {
 
 // Shorthand for the visibility conditions below: ETS hides a parameter unless
 // the named parameter currently holds the given value.
-constexpr uint16_t paramId(SensorBoardParameter id)
+constexpr uint16_t paramId(HabinariParameter id)
 {
     return static_cast<uint16_t>(id);
 }
@@ -299,24 +302,24 @@ inline constexpr std::string_view kGroupVentilation = "Ventilation and air quali
 inline constexpr std::string_view kGroupFusion = "Sensor fusion and detection";
 inline constexpr std::string_view kGroupDevice = "Device";
 
-inline constexpr auto kSensorBoardProduct =
+inline constexpr auto kHabinariProduct =
     makeCommissionedProduct(
         makeEndpointDefinition<
-            SensorBoardPort,
+            HabinariPort,
             // ---- FB RTS / RRHS / RAQS: room air measurements ---------------
-            endpoint::semantics::TemperatureState<SensorBoardPort::RoomTemperature,
+            endpoint::semantics::TemperatureState<HabinariPort::RoomTemperature,
                                                   "room_temperature",
                                                   "Room Air Temperature",
                                                   false>,
-            endpoint::semantics::HumidityState<SensorBoardPort::RoomHumidity,
+            endpoint::semantics::HumidityState<HabinariPort::RoomHumidity,
                                                "room_humidity",
                                                "Room Relative Humidity",
                                                false>,
-            endpoint::semantics::Co2State<SensorBoardPort::RoomCo2,
+            endpoint::semantics::Co2State<HabinariPort::RoomCo2,
                                           "room_co2",
                                           "Room CO2 (SCD4x)",
                                           false>,
-            endpoint::StatePort<SensorBoardPort::RoomAirPressure,
+            endpoint::StatePort<HabinariPort::RoomAirPressure,
                                 float,
                                 "room_air_pressure",
                                 "Air Pressure (station)",
@@ -324,31 +327,31 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
             // Only the sea-level-reduced value is comparable with a forecast or
             // with another site, which is what a visualisation actually wants.
-            endpoint::StatePort<SensorBoardPort::RoomAirPressureSeaLevel,
+            endpoint::StatePort<HabinariPort::RoomAirPressureSeaLevel,
                                 float,
                                 "room_air_pressure_sea_level",
                                 "Air Pressure (sea level)",
                                 application::dptids::Pressure,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::RoomAirQualityIndex,
+            endpoint::StatePort<HabinariPort::RoomAirQualityIndex,
                                 uint16_t,
                                 "room_air_quality_index",
                                 "Air Quality Index (BSEC IAQ 0..500)",
                                 application::dptids::Counter16,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::RoomCo2Equivalent,
+            endpoint::StatePort<HabinariPort::RoomCo2Equivalent,
                                 float,
                                 "room_co2_equivalent",
                                 "CO2 Equivalent (BSEC)",
                                 application::dptids::CO2,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::RoomVocEquivalent,
+            endpoint::StatePort<HabinariPort::RoomVocEquivalent,
                                 float,
                                 "room_voc_equivalent",
                                 "Breath-VOC Equivalent (BSEC)",
                                 application::dptids::CO2,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::AirQualityAccuracy,
+            endpoint::StatePort<HabinariPort::AirQualityAccuracy,
                                 uint8_t,
                                 "air_quality_accuracy",
                                 "Air Quality Accuracy (BSEC 0..3)",
@@ -356,11 +359,11 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
 
             // ---- Derived room air values -----------------------------------
-            endpoint::semantics::TemperatureState<SensorBoardPort::RoomDewPoint,
+            endpoint::semantics::TemperatureState<HabinariPort::RoomDewPoint,
                                                   "room_dew_point",
                                                   "Room Dew Point",
                                                   false>,
-            endpoint::StatePort<SensorBoardPort::RoomAbsoluteHumidity,
+            endpoint::StatePort<HabinariPort::RoomAbsoluteHumidity,
                                 float,
                                 "room_absolute_humidity",
                                 "Room Absolute Humidity",
@@ -368,31 +371,31 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
 
             // ---- FB FTS + slab moisture -------------------------------------
-            endpoint::semantics::TemperatureState<SensorBoardPort::FloorTemperature,
+            endpoint::semantics::TemperatureState<HabinariPort::FloorTemperature,
                                                   "floor_temperature",
                                                   "Floor Temperature",
                                                   false>,
-            endpoint::semantics::HumidityState<SensorBoardPort::FloorHumidity,
+            endpoint::semantics::HumidityState<HabinariPort::FloorHumidity,
                                                "floor_humidity",
                                                "Floor Slab Relative Humidity",
                                                false>,
-            endpoint::StatePort<SensorBoardPort::FloorAbsoluteHumidity,
+            endpoint::StatePort<HabinariPort::FloorAbsoluteHumidity,
                                 float,
                                 "floor_absolute_humidity",
                                 "Floor Slab Absolute Humidity",
                                 application::dptids::AbsoluteHumidity,
                                 false>,
-            endpoint::semantics::AlarmState<SensorBoardPort::FloorMoistureAlarm,
+            endpoint::semantics::AlarmState<HabinariPort::FloorMoistureAlarm,
                                             "floor_moisture_alarm",
                                             "Floor Slab Moisture Alarm",
                                             false>,
-            endpoint::StatePort<SensorBoardPort::FloorLimitActive,
+            endpoint::StatePort<HabinariPort::FloorLimitActive,
                                 bool,
                                 "floor_limit_active",
                                 "Max Floor Temperature Limit Active",
                                 application::dptids::State,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::FloorComfortActive,
+            endpoint::StatePort<HabinariPort::FloorComfortActive,
                                 bool,
                                 "floor_comfort_active",
                                 "Min Floor Temperature Active",
@@ -400,17 +403,17 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
 
             // ---- FB DPS: condensation protection ----------------------------
-            endpoint::semantics::AlarmState<SensorBoardPort::DewPointAlarm,
+            endpoint::semantics::AlarmState<HabinariPort::DewPointAlarm,
                                             "dew_point_alarm",
                                             "Dew Point Alarm",
                                             false>,
-            endpoint::StatePort<SensorBoardPort::DewPointMargin,
+            endpoint::StatePort<HabinariPort::DewPointMargin,
                                 float,
                                 "dew_point_margin",
                                 "Dew Point Margin (surface - dew point)",
                                 application::dptids::TemperatureDelta,
                                 false>,
-            endpoint::CommandPort<SensorBoardPort::DewPointStatusInput,
+            endpoint::CommandPort<HabinariPort::DewPointStatusInput,
                                   bool,
                                   "dew_point_status_input",
                                   "Dew Point Alarm Input (external sensor)",
@@ -418,31 +421,31 @@ inline constexpr auto kSensorBoardProduct =
                                   false>,
 
             // ---- System / neighbour inputs -----------------------------------
-            endpoint::CommandPort<SensorBoardPort::OutsideTemperature,
+            endpoint::CommandPort<HabinariPort::OutsideTemperature,
                                   float,
                                   "outside_temperature",
                                   "Outside Temperature Input",
                                   application::dptids::Temperature,
                                   false>,
-            endpoint::CommandPort<SensorBoardPort::OutsideHumidity,
+            endpoint::CommandPort<HabinariPort::OutsideHumidity,
                                   float,
                                   "outside_humidity",
                                   "Outside Relative Humidity Input",
                                   application::dptids::Humidity,
                                   false>,
-            endpoint::CommandPort<SensorBoardPort::FlowTemperature,
+            endpoint::CommandPort<HabinariPort::FlowTemperature,
                                   float,
                                   "flow_temperature",
                                   "Cooling Flow Temperature Input",
                                   application::dptids::Temperature,
                                   false>,
-            endpoint::StatePort<SensorBoardPort::FreeCoolingAvailable,
+            endpoint::StatePort<HabinariPort::FreeCoolingAvailable,
                                 bool,
                                 "free_cooling_available",
                                 "Free Cooling Available (outside air)",
                                 application::dptids::State,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::FreeDryingAvailable,
+            endpoint::StatePort<HabinariPort::FreeDryingAvailable,
                                 bool,
                                 "free_drying_available",
                                 "Free Drying Available (outside air)",
@@ -450,7 +453,7 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
 
             // ---- FB RTSM: mode and setpoints ---------------------------------
-            endpoint::semantics::SwitchStateInOut<SensorBoardPort::ControllerOnOff,
+            endpoint::semantics::SwitchStateInOut<HabinariPort::ControllerOnOff,
                                                   "controller_on_off",
                                                   "Controller On/Off",
                                                   true>,
@@ -458,25 +461,25 @@ inline constexpr auto kSensorBoardProduct =
             // controller actually resolved to can legitimately differ (window
             // open, presence, building protection), and a single in/out object
             // cannot express that without lying to whichever end reads it.
-            endpoint::CommandPort<SensorBoardPort::HvacMode,
+            endpoint::CommandPort<HabinariPort::HvacMode,
                                   application::Dpt20Mode,
                                   "hvac_mode",
                                   "HVAC Operating Mode Input",
                                   application::dptids::HvacModeComfort,
                                   true>,
-            endpoint::StatePort<SensorBoardPort::HvacModeStatus,
+            endpoint::StatePort<HabinariPort::HvacModeStatus,
                                 application::Dpt20Mode,
                                 "hvac_mode_status",
                                 "HVAC Operating Mode Status",
                                 application::dptids::HvacModeComfort,
                                 true>,
-            endpoint::CommandPort<SensorBoardPort::ContrMode,
+            endpoint::CommandPort<HabinariPort::ContrMode,
                                   uint8_t,
                                   "contr_mode",
                                   "Controller Mode Input (0=Auto 1=Heat 3=Cool 6=Off)",
                                   application::dptids::HvacContrMode,
                                   true>,
-            endpoint::StatePort<SensorBoardPort::ContrModeStatus,
+            endpoint::StatePort<HabinariPort::ContrModeStatus,
                                 uint8_t,
                                 "contr_mode_status",
                                 "Controller Mode Status",
@@ -485,69 +488,69 @@ inline constexpr auto kSensorBoardProduct =
             // Drives a second RTC in the same room (e.g. radiator alongside the
             // underfloor circuit) so the two can never fight — KNX Vol 7/19/20
             // clause 6.3.4.2, Main/Secondary RTC.
-            endpoint::StatePort<SensorBoardPort::ContrModeSecondary,
+            endpoint::StatePort<HabinariPort::ContrModeSecondary,
                                 uint8_t,
                                 "contr_mode_secondary",
                                 "Controller Mode for Secondary Controller",
                                 application::dptids::HvacContrMode,
                                 false>,
-            endpoint::StateInOutPort<SensorBoardPort::SetpointBase,
+            endpoint::StateInOutPort<HabinariPort::SetpointBase,
                                      float,
                                      "setpoint_base",
                                      "Base Setpoint (Comfort heating)",
                                      application::dptids::Temperature,
                                      true>,
-            endpoint::CommandPort<SensorBoardPort::SetpointShift,
+            endpoint::CommandPort<HabinariPort::SetpointShift,
                                   float,
                                   "setpoint_shift",
                                   "Setpoint Shift Input",
                                   application::dptids::TemperatureDelta,
                                   false>,
-            endpoint::StatePort<SensorBoardPort::SetpointShiftStatus,
+            endpoint::StatePort<HabinariPort::SetpointShiftStatus,
                                 float,
                                 "setpoint_shift_status",
                                 "Setpoint Shift Status",
                                 application::dptids::TemperatureDelta,
                                 false>,
-            endpoint::semantics::TemperatureState<SensorBoardPort::SetpointStatus,
+            endpoint::semantics::TemperatureState<HabinariPort::SetpointStatus,
                                                   "setpoint_status",
                                                   "Active Setpoint Status",
                                                   false>,
-            endpoint::semantics::TemperatureState<SensorBoardPort::SetpointHeatingStatus,
+            endpoint::semantics::TemperatureState<HabinariPort::SetpointHeatingStatus,
                                                   "setpoint_heating_status",
                                                   "Effective Heating Setpoint",
                                                   false>,
-            endpoint::semantics::TemperatureState<SensorBoardPort::SetpointCoolingStatus,
+            endpoint::semantics::TemperatureState<HabinariPort::SetpointCoolingStatus,
                                                   "setpoint_cooling_status",
                                                   "Effective Cooling Setpoint",
                                                   false>,
 
             // ---- FB WOS / PRD / WCOS: room inputs ----------------------------
-            endpoint::CommandPort<SensorBoardPort::WindowStatus,
+            endpoint::CommandPort<HabinariPort::WindowStatus,
                                   bool,
                                   "window_status",
                                   "Window Contact Input",
                                   application::dptids::WindowDoor,
                                   false>,
-            endpoint::CommandPort<SensorBoardPort::PresenceStatus,
+            endpoint::CommandPort<HabinariPort::PresenceStatus,
                                   bool,
                                   "presence_status",
                                   "Presence Input",
                                   application::dptids::Occupancy,
                                   false>,
-            endpoint::CommandPort<SensorBoardPort::SwitchHeat,
+            endpoint::CommandPort<HabinariPort::SwitchHeat,
                                   bool,
                                   "switch_heat",
                                   "Heating Enable Input",
                                   application::dptids::Enable,
                                   false>,
-            endpoint::CommandPort<SensorBoardPort::SwitchCool,
+            endpoint::CommandPort<HabinariPort::SwitchCool,
                                   bool,
                                   "switch_cool",
                                   "Cooling Enable Input",
                                   application::dptids::Enable,
                                   false>,
-            endpoint::CommandPort<SensorBoardPort::ChangeOverStatus,
+            endpoint::CommandPort<HabinariPort::ChangeOverStatus,
                                   bool,
                                   "change_over_status",
                                   "Water Changeover Input (1=Heat)",
@@ -555,41 +558,41 @@ inline constexpr auto kSensorBoardProduct =
                                   false>,
 
             // ---- FB RTC: controller outputs ----------------------------------
-            endpoint::semantics::PercentState<SensorBoardPort::HeatingControlValue,
+            endpoint::semantics::PercentState<HabinariPort::HeatingControlValue,
                                               "heating_control_value",
                                               "Heating Control Value",
                                               false>,
-            endpoint::semantics::PercentState<SensorBoardPort::CoolingControlValue,
+            endpoint::semantics::PercentState<HabinariPort::CoolingControlValue,
                                               "cooling_control_value",
                                               "Cooling Control Value",
                                               false>,
-            endpoint::semantics::SwitchState<SensorBoardPort::HeatingRequest,
+            endpoint::semantics::SwitchState<HabinariPort::HeatingRequest,
                                              "heating_request",
                                              "Heating Demand",
                                              false>,
-            endpoint::semantics::SwitchState<SensorBoardPort::CoolingRequest,
+            endpoint::semantics::SwitchState<HabinariPort::CoolingRequest,
                                              "cooling_request",
                                              "Cooling Demand",
                                              false>,
-            endpoint::StatePort<SensorBoardPort::HeatCoolModeStatus,
+            endpoint::StatePort<HabinariPort::HeatCoolModeStatus,
                                 bool,
                                 "heat_cool_mode_status",
                                 "Heat/Cool Mode Status (1=Heat)",
                                 application::dptids::HeatCool,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::EnableHeatStatus,
+            endpoint::StatePort<HabinariPort::EnableHeatStatus,
                                 bool,
                                 "enable_heat_status",
                                 "Heating Enabled Status",
                                 application::dptids::Enable,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::EnableCoolStatus,
+            endpoint::StatePort<HabinariPort::EnableCoolStatus,
                                 bool,
                                 "enable_cool_status",
                                 "Cooling Enabled Status",
                                 application::dptids::Enable,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::ControllerStatus,
+            endpoint::StatePort<HabinariPort::ControllerStatus,
                                 uint16_t,
                                 "controller_status",
                                 "Controller Status (DPT 22.101 StatusRHCC)",
@@ -597,37 +600,37 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
 
             // ---- Ventilation / air quality -------------------------------------
-            endpoint::StateInOutPort<SensorBoardPort::Co2Setpoint,
+            endpoint::StateInOutPort<HabinariPort::Co2Setpoint,
                                      float,
                                      "co2_setpoint",
                                      "CO2 Setpoint",
                                      application::dptids::CO2,
                                      true>,
-            endpoint::semantics::PercentState<SensorBoardPort::VentilationDemand,
+            endpoint::semantics::PercentState<HabinariPort::VentilationDemand,
                                               "ventilation_demand",
                                               "Ventilation Demand",
                                               false>,
-            endpoint::StatePort<SensorBoardPort::VentilationStage,
+            endpoint::StatePort<HabinariPort::VentilationStage,
                                 uint8_t,
                                 "ventilation_stage",
                                 "Ventilation Stage (0=Off..4=Boost)",
                                 application::dptids::Level,
                                 false>,
-            endpoint::StateInOutPort<SensorBoardPort::VentilationMode,
+            endpoint::StateInOutPort<HabinariPort::VentilationMode,
                                      uint8_t,
                                      "ventilation_mode",
                                      "Ventilation Mode (0=Auto 1=Manual 2=Off 3=Boost)",
                                      application::dptids::Level,
                                      true>,
-            endpoint::semantics::SwitchState<SensorBoardPort::VentilationBoostRequest,
+            endpoint::semantics::SwitchState<HabinariPort::VentilationBoostRequest,
                                              "ventilation_boost_request",
                                              "Ventilation Boost Request",
                                              false>,
-            endpoint::semantics::SwitchState<SensorBoardPort::DehumidifyRequest,
+            endpoint::semantics::SwitchState<HabinariPort::DehumidifyRequest,
                                              "dehumidify_request",
                                              "Dehumidification Request",
                                              false>,
-            endpoint::StatePort<SensorBoardPort::AirQualityStatus,
+            endpoint::StatePort<HabinariPort::AirQualityStatus,
                                 uint16_t,
                                 "air_quality_status",
                                 "Air Quality Status (bitset)",
@@ -635,26 +638,26 @@ inline constexpr auto kSensorBoardProduct =
                                 false>,
 
             // ---- Device diagnostics ---------------------------------------------
-            endpoint::semantics::AlarmState<SensorBoardPort::DeviceFault,
+            endpoint::semantics::AlarmState<HabinariPort::DeviceFault,
                                             "device_fault",
                                             "Device Fault",
                                             false>,
             // KNX FB sensor status octets (DPT 21.001 StatusGen), one per
             // physical sensor package rather than per measurand: a failure is a
             // property of the part, and this keeps the object count honest.
-            endpoint::StatePort<SensorBoardPort::RoomSensorStatus,
+            endpoint::StatePort<HabinariPort::RoomSensorStatus,
                                 uint8_t,
                                 "room_sensor_status",
                                 "Room Sensor Status (DPT 21.001)",
                                 application::dptids::StatusGen,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::FloorProbeStatus,
+            endpoint::StatePort<HabinariPort::FloorProbeStatus,
                                 uint8_t,
                                 "floor_probe_status",
                                 "Floor Probe Status (DPT 21.001)",
                                 application::dptids::StatusGen,
                                 false>,
-            endpoint::StatePort<SensorBoardPort::AirQualitySensorStatus,
+            endpoint::StatePort<HabinariPort::AirQualitySensorStatus,
                                 uint8_t,
                                 "air_quality_sensor_status",
                                 "Air Quality Sensor Status (DPT 21.001)",
@@ -664,7 +667,7 @@ inline constexpr auto kSensorBoardProduct =
             // (HDC3020, BME688, SCD4x, SHT4x). The StatusGen octets above say
             // whether a *measurement* is healthy; this says which *part* is,
             // which is what a service visit needs to know.
-            endpoint::StatePort<SensorBoardPort::SensorHealthMask,
+            endpoint::StatePort<HabinariPort::SensorHealthMask,
                                 uint8_t,
                                 "sensor_health_mask",
                                 "Sensor Package Health (bitmask)",
@@ -674,47 +677,52 @@ inline constexpr auto kSensorBoardProduct =
             // three that measure humidity. When they stop agreeing, one of them
             // has drifted — a fault that is invisible to any single-sensor
             // device and that silently controls the room to the wrong value.
-            endpoint::semantics::AlarmState<SensorBoardPort::SensorDisagreementAlarm,
+            endpoint::semantics::AlarmState<HabinariPort::SensorDisagreementAlarm,
                                             "sensor_disagreement_alarm",
                                             "Sensor Cross-Check Alarm",
                                             false>,
 
             // ---- Derived events -------------------------------------------------
-            endpoint::semantics::AlarmState<SensorBoardPort::FireAlarm,
+            endpoint::semantics::AlarmState<HabinariPort::FireAlarm,
                                             "fire_alarm",
                                             "Rapid Temperature Rise / Fire Alarm (advisory)",
                                             false>,
-            endpoint::semantics::AlarmState<SensorBoardPort::FirePreAlarm,
+            endpoint::semantics::AlarmState<HabinariPort::FirePreAlarm,
                                             "fire_pre_alarm",
                                             "Rapid Temperature Rise Pre-Alarm",
                                             false>,
-            endpoint::StatePort<SensorBoardPort::TemperatureTrend,
+            endpoint::StatePort<HabinariPort::TemperatureTrend,
                                 float,
                                 "temperature_trend",
                                 "Room Temperature Trend (K/h)",
                                 application::dptids::TemperatureDelta,
                                 false>,
-            endpoint::semantics::OccupancyState<SensorBoardPort::OccupancyDetected,
+            endpoint::semantics::OccupancyState<HabinariPort::OccupancyDetected,
                                                 "occupancy_detected",
                                                 "Occupancy Detected (from CO2)",
                                                 false>,
-            endpoint::StatePort<SensorBoardPort::EstimatedOccupants,
+            endpoint::StatePort<HabinariPort::EstimatedOccupants,
                                 uint8_t,
                                 "estimated_occupants",
                                 "Estimated Occupants (indication only)",
                                 application::dptids::Level,
                                 false>,
-            endpoint::semantics::WindowDoorState<SensorBoardPort::WindowOpenDetected,
+            endpoint::semantics::WindowDoorState<HabinariPort::WindowOpenDetected,
                                                  "window_open_detected",
                                                  "Open Window Detected (from air change)",
                                                  false>,
-            endpoint::semantics::AlarmAckCommand<SensorBoardPort::AlarmAcknowledge,
+            endpoint::semantics::AlarmAckCommand<HabinariPort::AlarmAcknowledge,
                                                  "alarm_acknowledge",
                                                  "Alarm Acknowledge",
                                                  false>>(
             ProductIdentity{
-                .productKey = "sensor_board_tp1",
-                .productDisplayName = "Room HVAC Sensor/Controller TP1",
+                .productKey = "habinari_tp1",
+                .productDisplayName = "Habinari Room HVAC Sensor/Controller TP1",
+                // Development placeholder. A device distributed as a KNX
+                // product needs a manufacturer ID assigned by the KNX
+                // Association and a certified application program; replace
+                // this with yours before shipping anything. See
+                // THIRD-PARTY-NOTICES.md.
                 .manufacturerId = ManufacturerId(0x00FA),
                 .medium = endpoint::Medium::TP1,
                 .applicationNumber = 21,
@@ -726,10 +734,10 @@ inline constexpr auto kSensorBoardProduct =
                 // which ETS cross-checks before allowing a download.
                 .hardwareSerialNumber = 1,
                 .hardwareVersion = 1,
-                .orderNumber = "SBTP1",
+                .orderNumber = "HBTP1",
             },
             PersistencePolicy{
-                .namespacePrefix = "sensorboard_tp1",
+                .namespacePrefix = "habinari_tp1",
                 .schemaVersion = 2,
                 .persistKnxState = true,
             },
@@ -749,7 +757,7 @@ inline constexpr auto kSensorBoardProduct =
             }),
         makeParameterSchema(
             // ---- Device ------------------------------------------------------
-            ParameterDescriptor<SensorBoardParameter::ParameterLayoutVersion, uint16_t>{
+            ParameterDescriptor<HabinariParameter::ParameterLayoutVersion, uint16_t>{
                 .key = "parameter_layout_version",
                 .displayName = "Parameter Layout Version (do not change)",
                 .defaultValue = kParameterLayoutVersion,
@@ -762,7 +770,7 @@ inline constexpr auto kSensorBoardProduct =
             // changes, and the per-measurand knob that does matter — the COV
             // delta, whose sensible value differs by orders of magnitude
             // between K, %RH and ppm — is kept individually.
-            ParameterDescriptor<SensorBoardParameter::MeasurementHeartbeatSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::MeasurementHeartbeatSeconds, uint16_t>{
                 .key = "measurement_heartbeat_seconds",
                 .displayName = "Cyclic retransmission (heartbeat)",
                 .defaultValue = kDefaultMeasurementHeartbeatSeconds,
@@ -770,7 +778,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::MeasurementMinRepTimeSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::MeasurementMinRepTimeSeconds, uint16_t>{
                 .key = "measurement_min_rep_time_seconds",
                 .displayName = "Minimum time between transmissions",
                 .defaultValue = kDefaultMeasurementMinRepTimeSeconds,
@@ -780,7 +788,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupMeasurement},
             // Self-heating is the dominant error on a wall-mounted board that
             // also powers a TP1 transceiver, so an offset is not optional here.
-            ParameterDescriptor<SensorBoardParameter::RoomTemperatureOffset, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::RoomTemperatureOffset, Dpt9Float>{
                 .key = "room_temperature_offset",
                 .displayName = "Room temperature correction",
                 .defaultValue = Dpt9Float{kDefaultRoomTemperatureOffsetK},
@@ -788,7 +796,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::RoomTemperatureCov, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::RoomTemperatureCov, Dpt9Float>{
                 .key = "room_temperature_cov",
                 .displayName = "Room temperature change to send",
                 .defaultValue = Dpt9Float{kDefaultRoomTemperatureCovK},
@@ -796,7 +804,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::RoomHumidityOffset, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::RoomHumidityOffset, Dpt9Float>{
                 .key = "room_humidity_offset",
                 .displayName = "Room humidity correction",
                 .defaultValue = Dpt9Float{kDefaultRoomHumidityOffsetPct},
@@ -804,7 +812,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 20,
                 .unit = "%",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::RoomHumidityCov, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::RoomHumidityCov, Dpt9Float>{
                 .key = "room_humidity_cov",
                 .displayName = "Room humidity change to send",
                 .defaultValue = Dpt9Float{kDefaultRoomHumidityCovPct},
@@ -812,7 +820,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 50,
                 .unit = "%",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::Co2Cov, uint16_t>{
+            ParameterDescriptor<HabinariParameter::Co2Cov, uint16_t>{
                 .key = "co2_cov",
                 .displayName = "CO2 change to send",
                 .defaultValue = kDefaultCo2CovPpm,
@@ -820,7 +828,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 5000,
                 .unit = "ppm",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::PressureCov, uint16_t>{
+            ParameterDescriptor<HabinariParameter::PressureCov, uint16_t>{
                 .key = "pressure_cov",
                 .displayName = "Air pressure change to send",
                 .defaultValue = kDefaultPressureCovPa,
@@ -828,14 +836,14 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10000,
                 .unit = "Pa",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::AirQualityCov, uint16_t>{
+            ParameterDescriptor<HabinariParameter::AirQualityCov, uint16_t>{
                 .key = "air_quality_cov",
                 .displayName = "Air quality index change to send",
                 .defaultValue = kDefaultAirQualityCovIndex,
                 .minValue = 0,
                 .maxValue = 500,
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::FloorTemperatureOffset, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorTemperatureOffset, Dpt9Float>{
                 .key = "floor_temperature_offset",
                 .displayName = "Floor temperature correction",
                 .defaultValue = Dpt9Float{kDefaultFloorTemperatureOffsetK},
@@ -843,7 +851,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::FloorTemperatureCov, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorTemperatureCov, Dpt9Float>{
                 .key = "floor_temperature_cov",
                 .displayName = "Floor temperature change to send",
                 .defaultValue = Dpt9Float{kDefaultFloorTemperatureCovK},
@@ -851,7 +859,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::FloorHumidityCov, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorHumidityCov, Dpt9Float>{
                 .key = "floor_humidity_cov",
                 .displayName = "Floor humidity change to send",
                 .defaultValue = Dpt9Float{kDefaultFloorHumidityCovPct},
@@ -859,14 +867,14 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 50,
                 .unit = "%",
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::DerivedValueCov, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::DerivedValueCov, Dpt9Float>{
                 .key = "derived_value_cov",
                 .displayName = "Dew point / absolute humidity change to send",
                 .defaultValue = Dpt9Float{kDefaultDerivedCovK},
                 .minValue = 0,
                 .maxValue = 10,
                 .group = kGroupMeasurement},
-            ParameterDescriptor<SensorBoardParameter::AltitudeM, uint16_t>{
+            ParameterDescriptor<HabinariParameter::AltitudeM, uint16_t>{
                 .key = "altitude_m",
                 .displayName = "Installation altitude above sea level",
                 .defaultValue = kDefaultAltitudeM,
@@ -876,13 +884,13 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupMeasurement},
 
             // ---- Room control: general ---------------------------------------
-            ParameterDescriptor<SensorBoardParameter::ControllerDefaultEnable, uint8_t>{
+            ParameterDescriptor<HabinariParameter::ControllerDefaultEnable, uint8_t>{
                 .key = "controller_default_enable",
                 .displayName = "Controller state after download",
                 .defaultValue = kDefaultControllerEnable,
                 .options = parameterOptions(ParameterOption{0, "Off"}, ParameterOption{1, "On"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::DefaultHvacOperatingMode, uint8_t>{
+            ParameterDescriptor<HabinariParameter::DefaultHvacOperatingMode, uint8_t>{
                 .key = "default_hvac_operating_mode",
                 .displayName = "HVAC operating mode after download",
                 .defaultValue = kDefaultHvacOperatingMode,
@@ -892,7 +900,7 @@ inline constexpr auto kSensorBoardProduct =
                                             ParameterOption{3, "Economy"},
                                             ParameterOption{4, "Building protection"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::DefaultControllerMode, uint8_t>{
+            ParameterDescriptor<HabinariParameter::DefaultControllerMode, uint8_t>{
                 .key = "default_controller_mode",
                 .displayName = "Controller mode after download",
                 .defaultValue = kDefaultControllerMode,
@@ -901,21 +909,21 @@ inline constexpr auto kSensorBoardProduct =
                                             ParameterOption{2, "Cool"},
                                             ParameterOption{3, "Off"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::HeatingEnabled, uint8_t>{
+            ParameterDescriptor<HabinariParameter::HeatingEnabled, uint8_t>{
                 .key = "heating_enabled",
                 .displayName = "Heating sequence",
                 .defaultValue = kDefaultHeatingEnabled,
                 .options = parameterOptions(ParameterOption{0, "Not used"},
                                             ParameterOption{1, "Used"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::CoolingEnabled, uint8_t>{
+            ParameterDescriptor<HabinariParameter::CoolingEnabled, uint8_t>{
                 .key = "cooling_enabled",
                 .displayName = "Cooling sequence",
                 .defaultValue = kDefaultCoolingEnabled,
                 .options = parameterOptions(ParameterOption{0, "Not used"},
                                             ParameterOption{1, "Used"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::HeatCoolChangeoverMode, uint8_t>{
+            ParameterDescriptor<HabinariParameter::HeatCoolChangeoverMode, uint8_t>{
                 .key = "heat_cool_changeover_mode",
                 .displayName = "Heat/cool changeover",
                 .defaultValue = kDefaultHeatCoolChangeoverMode,
@@ -924,16 +932,16 @@ inline constexpr auto kSensorBoardProduct =
                                             ParameterOption{2, "Fixed: heating only"},
                                             ParameterOption{3, "Fixed: cooling only"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::HeatCoolChangeoverPolarity, uint8_t>{
+            ParameterDescriptor<HabinariParameter::HeatCoolChangeoverPolarity, uint8_t>{
                 .key = "heat_cool_changeover_polarity",
                 .displayName = "Changeover input polarity",
                 .defaultValue = kDefaultHeatCoolChangeoverPolarity,
                 .options = parameterOptions(ParameterOption{0, "1 = heating (DPT 1.100)"},
                                             ParameterOption{1, "1 = cooling (inverted)"}),
                 .group = kGroupControlGeneral,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::HeatCoolChangeoverMode),
+                .visibleWhenParameterId = paramId(HabinariParameter::HeatCoolChangeoverMode),
                 .visibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::MinimumHeatCoolChangeoverSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::MinimumHeatCoolChangeoverSeconds, uint16_t>{
                 .key = "minimum_heat_cool_changeover_seconds",
                 .displayName = "Minimum delay between heating and cooling",
                 .defaultValue = kDefaultMinimumHeatCoolChangeoverSeconds,
@@ -941,7 +949,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::WindowOpenBehavior, uint8_t>{
+            ParameterDescriptor<HabinariParameter::WindowOpenBehavior, uint8_t>{
                 .key = "window_open_behavior",
                 .displayName = "Behaviour with window open",
                 .defaultValue = kDefaultWindowOpenBehavior,
@@ -949,14 +957,14 @@ inline constexpr auto kSensorBoardProduct =
                                             ParameterOption{1, "Building protection setpoint"},
                                             ParameterOption{2, "Switch outputs off"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::PresenceBehavior, uint8_t>{
+            ParameterDescriptor<HabinariParameter::PresenceBehavior, uint8_t>{
                 .key = "presence_behavior",
                 .displayName = "Mode when the room is unoccupied",
                 .defaultValue = kDefaultPresenceBehavior,
                 .options = parameterOptions(ParameterOption{0, "Standby"},
                                             ParameterOption{1, "Economy"}),
                 .group = kGroupControlGeneral},
-            ParameterDescriptor<SensorBoardParameter::SensorFaultBehavior, uint8_t>{
+            ParameterDescriptor<HabinariParameter::SensorFaultBehavior, uint8_t>{
                 .key = "sensor_fault_behavior",
                 .displayName = "Behaviour on sensor failure",
                 .defaultValue = kDefaultSensorFaultBehavior,
@@ -970,7 +978,7 @@ inline constexpr auto kSensorBoardProduct =
             // are shifts away from it, and only building protection is absolute
             // again. One setpoint write from an HMI or Home Assistant then moves
             // the whole ladder coherently.
-            ParameterDescriptor<SensorBoardParameter::ComfortHeatingSetpoint, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::ComfortHeatingSetpoint, Dpt9Float>{
                 .key = "comfort_heating_setpoint",
                 .displayName = "Comfort heating setpoint",
                 .defaultValue = Dpt9Float{kDefaultComfortHeatingSetpointC},
@@ -978,7 +986,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 40,
                 .unit = "°C",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::StandbyHeatingReduction, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::StandbyHeatingReduction, Dpt9Float>{
                 .key = "standby_heating_reduction",
                 .displayName = "Standby: reduction below comfort",
                 .defaultValue = Dpt9Float{kDefaultStandbyHeatingReductionK},
@@ -986,7 +994,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 15,
                 .unit = "K",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::EconomyHeatingReduction, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::EconomyHeatingReduction, Dpt9Float>{
                 .key = "economy_heating_reduction",
                 .displayName = "Economy: reduction below comfort",
                 .defaultValue = Dpt9Float{kDefaultEconomyHeatingReductionK},
@@ -994,7 +1002,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 20,
                 .unit = "K",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::ProtectionHeatingSetpoint, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::ProtectionHeatingSetpoint, Dpt9Float>{
                 .key = "protection_heating_setpoint",
                 .displayName = "Building protection: frost setpoint",
                 .defaultValue = Dpt9Float{kDefaultProtectionHeatingSetpointC},
@@ -1002,7 +1010,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 15,
                 .unit = "°C",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::CoolingDeadband, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::CoolingDeadband, Dpt9Float>{
                 .key = "cooling_deadband",
                 .displayName = "Dead band between heating and cooling",
                 .defaultValue = Dpt9Float{kDefaultCoolingDeadbandK},
@@ -1010,7 +1018,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::StandbyCoolingIncrease, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::StandbyCoolingIncrease, Dpt9Float>{
                 .key = "standby_cooling_increase",
                 .displayName = "Standby: increase above comfort cooling",
                 .defaultValue = Dpt9Float{kDefaultStandbyCoolingIncreaseK},
@@ -1018,9 +1026,9 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 15,
                 .unit = "K",
                 .group = kGroupSetpoints,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .visibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .visibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::EconomyCoolingIncrease, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::EconomyCoolingIncrease, Dpt9Float>{
                 .key = "economy_cooling_increase",
                 .displayName = "Economy: increase above comfort cooling",
                 .defaultValue = Dpt9Float{kDefaultEconomyCoolingIncreaseK},
@@ -1028,9 +1036,9 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 20,
                 .unit = "K",
                 .group = kGroupSetpoints,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .visibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .visibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::ProtectionCoolingSetpoint, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::ProtectionCoolingSetpoint, Dpt9Float>{
                 .key = "protection_cooling_setpoint",
                 .displayName = "Building protection: heat setpoint",
                 .defaultValue = Dpt9Float{kDefaultProtectionCoolingSetpointC},
@@ -1038,9 +1046,9 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 45,
                 .unit = "°C",
                 .group = kGroupSetpoints,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .visibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .visibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::MinSetpoint, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::MinSetpoint, Dpt9Float>{
                 .key = "min_setpoint",
                 .displayName = "Lowest allowed setpoint",
                 .defaultValue = Dpt9Float{kDefaultMinSetpointC},
@@ -1048,7 +1056,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 25,
                 .unit = "°C",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::MaxSetpoint, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::MaxSetpoint, Dpt9Float>{
                 .key = "max_setpoint",
                 .displayName = "Highest allowed setpoint",
                 .defaultValue = Dpt9Float{kDefaultMaxSetpointC},
@@ -1056,7 +1064,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 45,
                 .unit = "°C",
                 .group = kGroupSetpoints},
-            ParameterDescriptor<SensorBoardParameter::MaxSetpointShift, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::MaxSetpointShift, Dpt9Float>{
                 .key = "max_setpoint_shift",
                 .displayName = "Maximum manual setpoint shift",
                 .defaultValue = Dpt9Float{kDefaultMaxSetpointShiftK},
@@ -1071,16 +1079,16 @@ inline constexpr auto kSensorBoardProduct =
             // settings that the controller ignores. Cooling below is deliberately
             // identical in shape: the two sequences differ only in which enable
             // and which algorithm parameter they follow.
-            ParameterDescriptor<SensorBoardParameter::HeatingControlAlgorithm, uint8_t>{
+            ParameterDescriptor<HabinariParameter::HeatingControlAlgorithm, uint8_t>{
                 .key = "heating_control_algorithm",
                 .displayName = "Heating control algorithm",
                 .defaultValue = kDefaultHeatingControlAlgorithm,
                 .options = parameterOptions(ParameterOption{0, "Two-point (on/off)"},
                                             ParameterOption{1, "Continuous PI"}),
                 .group = kGroupHeating,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::HeatingKp, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::HeatingKp, Dpt9Float>{
                 .key = "heating_pid_kp",
                 .displayName = "Heating proportional gain",
                 .defaultValue = Dpt9Float{kDefaultHeatingKp},
@@ -1088,11 +1096,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 200,
                 .unit = "%/K",
                 .group = kGroupHeating,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::HeatingControlAlgorithm),
+                .visibleWhenParameterId = paramId(HabinariParameter::HeatingControlAlgorithm),
                 .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::HeatingTiSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::HeatingTiSeconds, uint16_t>{
                 .key = "heating_pid_ti_seconds",
                 .displayName = "Heating reset time (0 = P only)",
                 .defaultValue = kDefaultHeatingTiSeconds,
@@ -1100,11 +1108,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupHeating,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::HeatingControlAlgorithm),
+                .visibleWhenParameterId = paramId(HabinariParameter::HeatingControlAlgorithm),
                 .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::HeatingTdSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::HeatingTdSeconds, uint16_t>{
                 .key = "heating_pid_td_seconds",
                 .displayName = "Heating derivative time (0 = off)",
                 .defaultValue = kDefaultHeatingTdSeconds,
@@ -1112,11 +1120,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupHeating,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::HeatingControlAlgorithm),
+                .visibleWhenParameterId = paramId(HabinariParameter::HeatingControlAlgorithm),
                 .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::HeatingMinimumOutputPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::HeatingMinimumOutputPercent, uint8_t>{
                 .key = "heating_minimum_output_percent",
                 .displayName = "Heating minimum control value",
                 .defaultValue = kDefaultHeatingMinimumOutputPercent,
@@ -1124,9 +1132,9 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupHeating,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::HeatingMaximumOutputPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::HeatingMaximumOutputPercent, uint8_t>{
                 .key = "heating_maximum_output_percent",
                 .displayName = "Heating maximum control value",
                 .defaultValue = kDefaultHeatingMaximumOutputPercent,
@@ -1134,7 +1142,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupHeating,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::HeatingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
                 .groupVisibleWhenValue = 1},
 
             // ---- Cooling control -------------------------------------------------
@@ -1142,16 +1150,16 @@ inline constexpr auto kSensorBoardProduct =
             // sequence. The PI terms follow the cooling algorithm rather than the
             // cooling enable: gating them on the enable made them appear under a
             // two-point configuration, where they do nothing.
-            ParameterDescriptor<SensorBoardParameter::CoolingControlAlgorithm, uint8_t>{
+            ParameterDescriptor<HabinariParameter::CoolingControlAlgorithm, uint8_t>{
                 .key = "cooling_control_algorithm",
                 .displayName = "Cooling control algorithm",
                 .defaultValue = kDefaultCoolingControlAlgorithm,
                 .options = parameterOptions(ParameterOption{0, "Two-point (on/off)"},
                                             ParameterOption{1, "Continuous PI"}),
                 .group = kGroupCooling,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::CoolingKp, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::CoolingKp, Dpt9Float>{
                 .key = "cooling_pid_kp",
                 .displayName = "Cooling proportional gain",
                 .defaultValue = Dpt9Float{kDefaultCoolingKp},
@@ -1159,11 +1167,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 200,
                 .unit = "%/K",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingControlAlgorithm),
+                .visibleWhenParameterId = paramId(HabinariParameter::CoolingControlAlgorithm),
                 .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::CoolingTiSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::CoolingTiSeconds, uint16_t>{
                 .key = "cooling_pid_ti_seconds",
                 .displayName = "Cooling reset time (0 = P only)",
                 .defaultValue = kDefaultCoolingTiSeconds,
@@ -1171,11 +1179,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingControlAlgorithm),
+                .visibleWhenParameterId = paramId(HabinariParameter::CoolingControlAlgorithm),
                 .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::CoolingTdSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::CoolingTdSeconds, uint16_t>{
                 .key = "cooling_pid_td_seconds",
                 .displayName = "Cooling derivative time (0 = off)",
                 .defaultValue = kDefaultCoolingTdSeconds,
@@ -1183,11 +1191,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 65535,
                 .unit = "s",
                 .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::CoolingControlAlgorithm),
+                .visibleWhenParameterId = paramId(HabinariParameter::CoolingControlAlgorithm),
                 .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::CoolingMinimumOutputPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::CoolingMinimumOutputPercent, uint8_t>{
                 .key = "cooling_minimum_output_percent",
                 .displayName = "Cooling minimum control value",
                 .defaultValue = kDefaultCoolingMinimumOutputPercent,
@@ -1195,9 +1203,9 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupCooling,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .groupVisibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::CoolingMaximumOutputPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::CoolingMaximumOutputPercent, uint8_t>{
                 .key = "cooling_maximum_output_percent",
                 .displayName = "Cooling maximum control value",
                 .defaultValue = kDefaultCoolingMaximumOutputPercent,
@@ -1205,11 +1213,11 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupCooling,
-                .groupVisibleWhenParameterId = paramId(SensorBoardParameter::CoolingEnabled),
+                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
                 .groupVisibleWhenValue = 1},
 
             // ---- Control loop behaviour ------------------------------------------
-            ParameterDescriptor<SensorBoardParameter::ThermostatHysteresis, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::ThermostatHysteresis, Dpt9Float>{
                 .key = "thermostat_hysteresis",
                 .displayName = "Two-point switching hysteresis",
                 .defaultValue = Dpt9Float{kDefaultThermostatHysteresisC},
@@ -1217,14 +1225,14 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 5,
                 .unit = "K",
                 .group = kGroupLoop},
-            ParameterDescriptor<SensorBoardParameter::BinaryDemandStrategy, uint8_t>{
+            ParameterDescriptor<HabinariParameter::BinaryDemandStrategy, uint8_t>{
                 .key = "binary_demand_strategy",
                 .displayName = "Binary demand derived from",
                 .defaultValue = kDefaultBinaryDemandStrategy,
                 .options = parameterOptions(ParameterOption{0, "Temperature hysteresis"},
                                             ParameterOption{1, "Control value threshold"}),
                 .group = kGroupLoop},
-            ParameterDescriptor<SensorBoardParameter::BinaryDemandThresholdPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::BinaryDemandThresholdPercent, uint8_t>{
                 .key = "binary_demand_threshold_percent",
                 .displayName = "Binary demand control-value threshold",
                 .defaultValue = kDefaultBinaryDemandThresholdPercent,
@@ -1232,9 +1240,9 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupLoop,
-                .visibleWhenParameterId = paramId(SensorBoardParameter::BinaryDemandStrategy),
+                .visibleWhenParameterId = paramId(HabinariParameter::BinaryDemandStrategy),
                 .visibleWhenValue = 1},
-            ParameterDescriptor<SensorBoardParameter::FrostAlarmTemperature, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FrostAlarmTemperature, Dpt9Float>{
                 .key = "frost_alarm_temperature",
                 .displayName = "Frost alarm below (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultFrostAlarmTemperatureC},
@@ -1242,7 +1250,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 20,
                 .unit = "°C",
                 .group = kGroupLoop},
-            ParameterDescriptor<SensorBoardParameter::OverheatAlarmTemperature, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::OverheatAlarmTemperature, Dpt9Float>{
                 .key = "overheat_alarm_temperature",
                 .displayName = "Overheat alarm above (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultOverheatAlarmTemperatureC},
@@ -1252,7 +1260,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupLoop},
 
             // ---- Floor temperature -------------------------------------------------
-            ParameterDescriptor<SensorBoardParameter::MaxFloorTemperature, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::MaxFloorTemperature, Dpt9Float>{
                 .key = "max_floor_temperature",
                 .displayName = "Maximum floor temperature (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultMaxFloorTemperatureC},
@@ -1260,7 +1268,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 45,
                 .unit = "°C",
                 .group = kGroupFloor},
-            ParameterDescriptor<SensorBoardParameter::MinFloorTemperature, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::MinFloorTemperature, Dpt9Float>{
                 .key = "min_floor_temperature",
                 .displayName = "Minimum floor temperature (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultMinFloorTemperatureC},
@@ -1268,7 +1276,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 35,
                 .unit = "°C",
                 .group = kGroupFloor},
-            ParameterDescriptor<SensorBoardParameter::FloorHysteresis, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorHysteresis, Dpt9Float>{
                 .key = "floor_hysteresis",
                 .displayName = "Floor temperature hysteresis",
                 .defaultValue = Dpt9Float{kDefaultFloorHysteresisK},
@@ -1276,7 +1284,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupFloor},
-            ParameterDescriptor<SensorBoardParameter::FloorComfortOutputPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::FloorComfortOutputPercent, uint8_t>{
                 .key = "floor_comfort_output_percent",
                 .displayName = "Control value while holding minimum floor temperature",
                 .defaultValue = kDefaultFloorComfortOutputPercent,
@@ -1286,7 +1294,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupFloor},
 
             // ---- Condensation protection -------------------------------------------
-            ParameterDescriptor<SensorBoardParameter::DewPointSurfaceSource, uint8_t>{
+            ParameterDescriptor<HabinariParameter::DewPointSurfaceSource, uint8_t>{
                 .key = "dew_point_surface_source",
                 .displayName = "Surface temperature used for condensation check",
                 .defaultValue = kDefaultDewPointSurfaceSource,
@@ -1295,7 +1303,7 @@ inline constexpr auto kSensorBoardProduct =
                                             ParameterOption{2, "Flow temperature input"},
                                             ParameterOption{3, "Coldest available"}),
                 .group = kGroupDewPoint},
-            ParameterDescriptor<SensorBoardParameter::DewPointMargin, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::DewPointMargin, Dpt9Float>{
                 .key = "dew_point_margin",
                 .displayName = "Alarm when surface is within",
                 .defaultValue = Dpt9Float{kDefaultDewPointMarginK},
@@ -1303,7 +1311,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K of dew point",
                 .group = kGroupDewPoint},
-            ParameterDescriptor<SensorBoardParameter::DewPointHysteresis, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::DewPointHysteresis, Dpt9Float>{
                 .key = "dew_point_hysteresis",
                 .displayName = "Dew point alarm hysteresis",
                 .defaultValue = Dpt9Float{kDefaultDewPointHysteresisK},
@@ -1311,7 +1319,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 10,
                 .unit = "K",
                 .group = kGroupDewPoint},
-            ParameterDescriptor<SensorBoardParameter::BlockCoolingOnDewPointAlarm, uint8_t>{
+            ParameterDescriptor<HabinariParameter::BlockCoolingOnDewPointAlarm, uint8_t>{
                 .key = "block_cooling_on_dew_point_alarm",
                 .displayName = "Cooling during a dew point alarm",
                 .defaultValue = kDefaultBlockCoolingOnDewPointAlarm,
@@ -1320,7 +1328,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupDewPoint},
 
             // ---- Slab moisture detection ---------------------------------------------
-            ParameterDescriptor<SensorBoardParameter::FloorMoistureThreshold, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorMoistureThreshold, Dpt9Float>{
                 .key = "floor_moisture_threshold",
                 .displayName = "Slab humidity alarm above (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultFloorMoistureThresholdPct},
@@ -1328,7 +1336,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupMoisture},
-            ParameterDescriptor<SensorBoardParameter::FloorMoistureHysteresis, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorMoistureHysteresis, Dpt9Float>{
                 .key = "floor_moisture_hysteresis",
                 .displayName = "Slab humidity alarm hysteresis",
                 .defaultValue = Dpt9Float{kDefaultFloorMoistureHysteresisPct},
@@ -1341,7 +1349,7 @@ inline constexpr auto kSensorBoardProduct =
             // colder of the two — which is exactly where a relative-humidity
             // comparison misleads. Detects evaporating liquid water long before
             // the relative reading looks alarming.
-            ParameterDescriptor<SensorBoardParameter::FloorMoistureExcess, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FloorMoistureExcess, Dpt9Float>{
                 .key = "floor_moisture_excess",
                 .displayName = "Alarm when slab is wetter than the room by (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultFloorMoistureExcessGm3},
@@ -1351,7 +1359,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupMoisture},
 
             // ---- Ventilation and air quality --------------------------------------------
-            ParameterDescriptor<SensorBoardParameter::VentilationSetpoint, uint16_t>{
+            ParameterDescriptor<HabinariParameter::VentilationSetpoint, uint16_t>{
                 .key = "ventilation_setpoint",
                 .displayName = "CO2 setpoint (demand starts here)",
                 .defaultValue = kDefaultVentilationSetpointPpm,
@@ -1359,7 +1367,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 5000,
                 .unit = "ppm",
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::VentilationBand, uint16_t>{
+            ParameterDescriptor<HabinariParameter::VentilationBand, uint16_t>{
                 .key = "ventilation_band",
                 .displayName = "CO2 band to full demand",
                 .defaultValue = kDefaultVentilationBandPpm,
@@ -1367,7 +1375,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 5000,
                 .unit = "ppm",
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::HumidityBoostThreshold, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::HumidityBoostThreshold, Dpt9Float>{
                 .key = "humidity_boost_threshold",
                 .displayName = "Humidity setpoint (demand starts here)",
                 .defaultValue = Dpt9Float{kDefaultHumidityBoostPct},
@@ -1375,7 +1383,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::HumidityBoostBand, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::HumidityBoostBand, Dpt9Float>{
                 .key = "humidity_boost_band",
                 .displayName = "Humidity band to full demand",
                 .defaultValue = Dpt9Float{kDefaultHumidityBandPct},
@@ -1383,21 +1391,21 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 50,
                 .unit = "%",
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::VocBoostThreshold, uint16_t>{
+            ParameterDescriptor<HabinariParameter::VocBoostThreshold, uint16_t>{
                 .key = "voc_boost_threshold",
                 .displayName = "Air quality index setpoint (0 = off)",
                 .defaultValue = kDefaultVocThresholdIndex,
                 .minValue = 0,
                 .maxValue = 500,
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::VocBoostBand, uint16_t>{
+            ParameterDescriptor<HabinariParameter::VocBoostBand, uint16_t>{
                 .key = "voc_boost_band",
                 .displayName = "Air quality index band to full demand",
                 .defaultValue = kDefaultVocBandIndex,
                 .minValue = 0,
                 .maxValue = 500,
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::VentilationBaseDemandPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::VentilationBaseDemandPercent, uint8_t>{
                 .key = "ventilation_base_demand_percent",
                 .displayName = "Base ventilation while the room is occupied",
                 .defaultValue = kDefaultVentilationBaseDemandPercent,
@@ -1405,7 +1413,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 100,
                 .unit = "%",
                 .group = kGroupVentilation},
-            ParameterDescriptor<SensorBoardParameter::VentilationManualDemandPercent, uint8_t>{
+            ParameterDescriptor<HabinariParameter::VentilationManualDemandPercent, uint8_t>{
                 .key = "ventilation_manual_demand_percent",
                 .displayName = "Demand in manual ventilation mode",
                 .defaultValue = kDefaultVentilationManualDemandPercent,
@@ -1415,7 +1423,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupVentilation},
 
             // ---- Sensor fusion and detection ---------------------------------
-            ParameterDescriptor<SensorBoardParameter::SensorFilterSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::SensorFilterSeconds, uint16_t>{
                 .key = "sensor_filter_seconds",
                 .displayName = "Measurement smoothing time constant",
                 .defaultValue = kDefaultSensorFilterSeconds,
@@ -1428,7 +1436,7 @@ inline constexpr auto kSensorBoardProduct =
             // same thing any more, which means one of them has drifted: with
             // three sources the outlier is voted out of the published value,
             // with two it is only reported.
-            ParameterDescriptor<SensorBoardParameter::TemperatureCrossCheck, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::TemperatureCrossCheck, Dpt9Float>{
                 .key = "temperature_cross_check",
                 .displayName = "Temperature sensor disagreement limit (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultTemperatureCrossCheckK},
@@ -1436,7 +1444,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 20,
                 .unit = "K",
                 .group = kGroupFusion},
-            ParameterDescriptor<SensorBoardParameter::HumidityCrossCheck, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::HumidityCrossCheck, Dpt9Float>{
                 .key = "humidity_cross_check",
                 .displayName = "Humidity sensor disagreement limit (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultHumidityCrossCheckPct},
@@ -1446,7 +1454,7 @@ inline constexpr auto kSensorBoardProduct =
                 .group = kGroupFusion},
             // Advisory heat detection. Not a substitute for a certified fire
             // detector — see the FireAlarm object's description and the manual.
-            ParameterDescriptor<SensorBoardParameter::FireRateOfRise, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FireRateOfRise, Dpt9Float>{
                 .key = "fire_rate_of_rise",
                 .displayName = "Rapid rise alarm threshold (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultFireRateOfRiseKPerMin},
@@ -1454,7 +1462,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 30,
                 .unit = "K/min",
                 .group = kGroupFusion},
-            ParameterDescriptor<SensorBoardParameter::FireAbsoluteTemperature, Dpt9Float>{
+            ParameterDescriptor<HabinariParameter::FireAbsoluteTemperature, Dpt9Float>{
                 .key = "fire_absolute_temperature",
                 .displayName = "Over-temperature alarm threshold (0 = off)",
                 .defaultValue = Dpt9Float{kDefaultFireAbsoluteTemperatureC},
@@ -1462,7 +1470,7 @@ inline constexpr auto kSensorBoardProduct =
                 .maxValue = 120,
                 .unit = "C",
                 .group = kGroupFusion},
-            ParameterDescriptor<SensorBoardParameter::FireConfirmSeconds, uint16_t>{
+            ParameterDescriptor<HabinariParameter::FireConfirmSeconds, uint16_t>{
                 .key = "fire_confirm_seconds",
                 .displayName = "Rapid rise confirmation time",
                 .defaultValue = kDefaultFireConfirmSeconds,
@@ -1474,21 +1482,21 @@ inline constexpr auto kSensorBoardProduct =
             // combustion also drives the BME688 gas signal, so requiring both
             // is the strongest false-alarm defence available here — at the cost
             // of needing a calibrated BSEC, which takes hours after a cold boot.
-            ParameterDescriptor<SensorBoardParameter::FireRequireAirQuality, uint8_t>{
+            ParameterDescriptor<HabinariParameter::FireRequireAirQuality, uint8_t>{
                 .key = "fire_require_air_quality",
                 .displayName = "Also require rising air pollution",
                 .defaultValue = kDefaultFireRequireAirQuality,
                 .options = parameterOptions(ParameterOption{0, "No - temperature alone"},
                                             ParameterOption{1, "Yes - fewer false alarms"}),
                 .group = kGroupFusion},
-            ParameterDescriptor<SensorBoardParameter::Co2OccupancyEnabled, uint8_t>{
+            ParameterDescriptor<HabinariParameter::Co2OccupancyEnabled, uint8_t>{
                 .key = "co2_occupancy_enabled",
                 .displayName = "Derive occupancy from CO2",
                 .defaultValue = kDefaultCo2OccupancyEnabled,
                 .options = parameterOptions(ParameterOption{0, "Disabled"},
                                             ParameterOption{1, "Enabled"}),
                 .group = kGroupFusion},
-            ParameterDescriptor<SensorBoardParameter::WindowDetectEnabled, uint8_t>{
+            ParameterDescriptor<HabinariParameter::WindowDetectEnabled, uint8_t>{
                 .key = "window_detect_enabled",
                 .displayName = "Detect open windows from air change",
                 .defaultValue = kDefaultWindowDetectEnabled,
@@ -1496,4 +1504,4 @@ inline constexpr auto kSensorBoardProduct =
                                             ParameterOption{1, "Enabled"}),
                 .group = kGroupFusion}));
 
-} // namespace sensor_board_knx
+} // namespace habinari_knx

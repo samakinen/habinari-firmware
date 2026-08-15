@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include "control_defaults.hpp"
@@ -34,14 +37,14 @@
  * the mutex, the task and the 1 Hz cadence. Nothing in this header locks.
  */
 
-namespace sensor_board {
+namespace habinari {
 namespace control {
 
-namespace hvac_ns = ::sensor_board::hvac;
+namespace hvac_ns = ::habinari::hvac;
 
 // Factory defaults are the member initialisers below, so Settings{} is exactly
 // what an un-commissioned device runs on.
-using namespace ::sensor_board::config;
+using namespace ::habinari::config;
 
 // ---------------------------------------------------------------------------
 // Settings — the configured tuning. Snapshotted by the control tick each
@@ -559,4 +562,4 @@ private:
 };
 
 }  // namespace control
-}  // namespace sensor_board
+}  // namespace habinari

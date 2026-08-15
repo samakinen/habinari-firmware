@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 // Host tests for the sensor conditioning / redundancy / event-detection layer
 // in main/include/sensor_fusion.hpp.
 //
@@ -14,7 +17,7 @@
 #include <cstdio>
 #include <vector>
 
-using namespace sensor_board::fusion;
+using namespace habinari::fusion;
 
 namespace {
 

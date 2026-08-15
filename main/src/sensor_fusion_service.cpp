@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #include "sensor_fusion_service.h"
 
 #include "sensor_fusion.hpp"
@@ -18,7 +21,7 @@
 
 namespace {
 
-namespace fu = sensor_board::fusion;
+namespace fu = habinari::fusion;
 
 static const char *TAG = "sensor_fusion";
 

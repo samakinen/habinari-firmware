@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 /**
@@ -32,7 +35,7 @@
 #include <cstdint>
 #include <span>
 
-namespace sensor_board::secret {
+namespace habinari::secret {
 
 inline constexpr size_t kRootSecretBytes = 32;
 inline constexpr size_t kFdskBytes = 16;
@@ -56,7 +59,7 @@ inline constexpr size_t kFdskMessageBytes = kFdskLabelLen + kSerialBytes;
 // properties the FDSK has — unique, unpredictable from public data, surviving a
 // factory reset — and the label makes it impossible for one to reveal the
 // other. A device that speaks both would print two independent values.
-inline constexpr char kBlePasskeyLabel[] = "sensorboard/BLE-passkey/v1";
+inline constexpr char kBlePasskeyLabel[] = "habinari/BLE-passkey/v1";
 inline constexpr size_t kBlePasskeyLabelLen = sizeof(kBlePasskeyLabel) - 1;
 inline constexpr size_t kBlePasskeyMessageBytes = kBlePasskeyLabelLen + kSerialBytes;
 /// Bluetooth passkey entry is a six-digit decimal number, 000000..999999.
@@ -218,9 +221,9 @@ BlePasskeyResult resolveBlePasskey(Serial serial);
  * the FDSK is derived through the peripheral and returned. If the block is
  * unused, a candidate root secret is gathered and gated; it is then burned
  * (and the derivation cross-checked against software HMAC) when
- * CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN is set, or merely logged when it is
+ * CONFIG_HABINARI_ROOT_SECRET_BURN is set, or merely logged when it is
  * not. Logs its own detail; the caller only needs the result.
  */
 RootSecretResult resolveFdsk(Serial serial);
 
-} // namespace sensor_board::secret
+} // namespace habinari::secret

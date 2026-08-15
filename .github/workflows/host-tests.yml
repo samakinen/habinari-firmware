@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
+#
+# Builds and runs the portable parts of the firmware on the runner. No ESP-IDF
+# and no hardware, so it stays fast enough to gate every push.
+#
+# Once components/KNstaX is public, a target build is worth adding as a second
+# job:
+#
+#   firmware:
+#     runs-on: ubuntu-latest
+#     container: espressif/idf:release-v5.5
+#     steps:
+#       - uses: actions/checkout@v4
+#         with: { submodules: recursive }
+#       - run: . $IDF_PATH/export.sh && idf.py set-target esp32c6 build
+#
+# It needs the submodule to be publicly cloneable, which is why it is not
+# enabled here yet.
+
+name: host tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S main/test -B build_host_tests
+
+      - name: Build
+        run: cmake --build build_host_tests -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build_host_tests --output-on-failure

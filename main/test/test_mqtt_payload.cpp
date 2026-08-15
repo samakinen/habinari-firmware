@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * Host tests for the MQTT wire format in main/include/mqtt_payload.h.
  *
@@ -20,7 +23,7 @@
 #include <cstring>
 #include <string>
 
-namespace hvac = sensor_board::hvac;
+namespace hvac = habinari::hvac;
 
 namespace {
 

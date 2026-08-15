@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
 """
-Commission a sensor board over its BLE service channel.
+Commission a Habinari device over its BLE service channel.
 
 This is the reference client for the GATT contract in
 docs/ble-commissioning.md — small enough to read in one sitting, which is the
@@ -23,7 +25,7 @@ The device advertises only while it is in programming mode: hold the programming
 button for a second (the LED lights), or power up a board that has never been
 commissioned. Outside programming mode `scan` finds nothing, and that is correct
 behaviour rather than a fault. Programming mode lapses on its own after
-CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S — 15 minutes by default.
+CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S — 15 minutes by default.
 
 That is the same state, the same button and the same LED that KNX individual
 addressing and Modbus re-addressing use. A board with its LED lit is the board

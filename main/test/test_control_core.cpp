@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * Host tests for the control core in main/include/control_core.hpp.
  *
@@ -23,8 +26,8 @@
 #include <cmath>
 #include <cstdio>
 
-using namespace sensor_board::control;
-namespace hvac = sensor_board::hvac;
+using namespace habinari::control;
+namespace hvac = habinari::hvac;
 
 namespace {
 

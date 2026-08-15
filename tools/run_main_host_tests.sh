@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
 # Configure, build and run the host tests for the portable sources in main/.
 # The firmware itself still builds with idf.py; this covers only the code that
 # has no ESP-IDF dependency (the device root secret KDF and the ETS device

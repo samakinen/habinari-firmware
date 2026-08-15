@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include "esp_err.h"
@@ -83,9 +86,9 @@ typedef struct {
 
     // --- Mode / inputs, whatever last set them ------------------------------
     bool controller_on;
-    uint8_t hvac_operating_mode;  ///< sensor_board::hvac::OperatingPreset
-    uint8_t controller_mode;      ///< sensor_board::hvac::ControllerMode
-    uint8_t ventilation_mode;     ///< sensor_board::hvac::VentilationMode
+    uint8_t hvac_operating_mode;  ///< habinari::hvac::OperatingPreset
+    uint8_t controller_mode;      ///< habinari::hvac::ControllerMode
+    uint8_t ventilation_mode;     ///< habinari::hvac::VentilationMode
     bool window_open;
     bool presence;
     bool programming_mode;        ///< KNX programming mode is active

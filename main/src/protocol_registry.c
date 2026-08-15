@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /*
  * Which field-bus personalities this image contains.
  *
@@ -12,13 +15,13 @@
 
 static const char *TAG = "protocols";
 
-#if CONFIG_SENSOR_BOARD_PROTOCOL_KNX
+#if CONFIG_HABINARI_PROTOCOL_KNX
 extern const protocol_adapter_t knx_protocol_adapter;
 #endif
-#if CONFIG_SENSOR_BOARD_PROTOCOL_MODBUS
+#if CONFIG_HABINARI_PROTOCOL_MODBUS
 extern const protocol_adapter_t modbus_protocol_adapter;
 #endif
-#if CONFIG_SENSOR_BOARD_PROTOCOL_MQTT
+#if CONFIG_HABINARI_PROTOCOL_MQTT
 extern const protocol_adapter_t mqtt_protocol_adapter;
 #endif
 
@@ -37,14 +40,14 @@ extern const protocol_adapter_t mqtt_protocol_adapter;
  * radio stacks at all: the timing guarantee is a property of the binary, not of
  * a runtime flag someone could get wrong.
  */
-#if CONFIG_SENSOR_BOARD_PROTOCOL_KNX && CONFIG_SENSOR_BOARD_PROTOCOL_MQTT
-#error "KNX TP1 and the Wi-Fi/MQTT personality cannot share an image: the bit-banged TP1 receiver has ~1 us of timing margin and the radio stack will consume it. Pick one in menuconfig -> Sensor board protocols."
+#if CONFIG_HABINARI_PROTOCOL_KNX && CONFIG_HABINARI_PROTOCOL_MQTT
+#error "KNX TP1 and the Wi-Fi/MQTT personality cannot share an image: the bit-banged TP1 receiver has ~1 us of timing margin and the radio stack will consume it. Pick one in menuconfig -> Habinari protocols."
 #endif
 
 /*
  * The same argument, applied to the BLE service channel — and it is worth being
  * explicit rather than leaving it to Kconfig, because CONFIG_BT_ENABLED is not
- * ours to gate. CONFIG_SENSOR_BOARD_OOB_BLE already depends on !KNX and would be
+ * ours to gate. CONFIG_HABINARI_OOB_BLE already depends on !KNX and would be
  * silently dropped from a KNX configuration; this catches the other route in,
  * where somebody enables the Bluetooth controller directly and expects the TP1
  * receiver to survive it.
@@ -53,18 +56,18 @@ extern const protocol_adapter_t mqtt_protocol_adapter;
  * reaches it through the programming button and the individual address, which is
  * the same circularity-breaking trick, standardised and already in the box.
  */
-#if CONFIG_SENSOR_BOARD_PROTOCOL_KNX && CONFIG_BT_ENABLED
+#if CONFIG_HABINARI_PROTOCOL_KNX && CONFIG_BT_ENABLED
 #error "KNX TP1 and the Bluetooth controller cannot share an image, for the same reason as the Wi-Fi personality: the bit-banged TP1 receiver has ~1 us of ISR-jitter margin and the BLE MAC has hard deadlines of its own. A KNX device is configured from ETS and needs no out-of-band channel."
 #endif
 
 static const protocol_adapter_t *const s_adapters[] = {
-#if CONFIG_SENSOR_BOARD_PROTOCOL_KNX
+#if CONFIG_HABINARI_PROTOCOL_KNX
     &knx_protocol_adapter,
 #endif
-#if CONFIG_SENSOR_BOARD_PROTOCOL_MODBUS
+#if CONFIG_HABINARI_PROTOCOL_MODBUS
     &modbus_protocol_adapter,
 #endif
-#if CONFIG_SENSOR_BOARD_PROTOCOL_MQTT
+#if CONFIG_HABINARI_PROTOCOL_MQTT
     &mqtt_protocol_adapter,
 #endif
     NULL,  /* keeps the array well-formed when nothing is enabled */

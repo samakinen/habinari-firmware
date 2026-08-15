@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /*
- * Room HVAC sensor/controller board — application entry point.
+ * Habinari room HVAC sensor/controller — application entry point.
  *
  * Three things start here, in this order and for this reason:
  *
@@ -89,7 +92,7 @@ static void on_identify_changed(bool active)
 // commissioning address. One gesture, one LED, one meaning — a device the
 // installer has touched is the device that can be configured.
 //
-// It lapses by itself after CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S, so
+// It lapses by itself after CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S, so
 // walking away is not the same as leaving the door open.
 #define BUTTON_POLL_PERIOD_MS 50
 #define BUTTON_LONG_PRESS_MS 1000  // enter/leave programming mode

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include <stdbool.h>
@@ -53,7 +56,7 @@ extern "C" {
  * A device that has never been committed puts *itself* into programming mode at
  * boot, because there is no other way in and nobody has told it anything yet.
  * Programming mode then lapses on its own
- * (CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S), so a board is never left
+ * (CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S), so a board is never left
  * advertising because somebody walked away.
  *
  * Inside it, a link must be paired with LE Secure Connections and a six-digit
@@ -133,7 +136,7 @@ enum {
 
 /* --- Lifecycle ------------------------------------------------------------ */
 
-#if CONFIG_SENSOR_BOARD_OOB_BLE
+#if CONFIG_HABINARI_OOB_BLE
 
 /**
  * @brief Bring the channel up. Call after every owner has registered its
@@ -161,7 +164,7 @@ bool oob_service_advertising(void);
 /// True while an authenticated client is connected.
 bool oob_service_client_connected(void);
 
-#else /* !CONFIG_SENSOR_BOARD_OOB_BLE */
+#else /* !CONFIG_HABINARI_OOB_BLE */
 
 /* No channel in this image. Inline no-ops rather than #ifdefs at every call
  * site: main.c should not know which service channels exist, for the same
@@ -171,7 +174,7 @@ static inline void oob_service_set_programming_mode(bool active) { (void)active;
 static inline bool oob_service_advertising(void) { return false; }
 static inline bool oob_service_client_connected(void) { return false; }
 
-#endif /* CONFIG_SENSOR_BOARD_OOB_BLE */
+#endif /* CONFIG_HABINARI_OOB_BLE */
 
 #ifdef __cplusplus
 }

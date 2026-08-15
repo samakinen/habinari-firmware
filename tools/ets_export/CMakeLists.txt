@@ -1,6 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
+
 cmake_minimum_required(VERSION 3.21)
 
-project(sensor_board_ets_export LANGUAGES CXX)
+project(habinari_ets_export LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,8 +27,8 @@ add_subdirectory("${REPO_ROOT}/components/KNstaX" "${CMAKE_BINARY_DIR}/knstax")
 
 include("${REPO_ROOT}/components/KNstaX/cmake/knx_product.cmake")
 
-knx_commissioned_product(sensor_board_tp1_ets
+knx_commissioned_product(habinari_tp1_ets
     DEFINITION  "${REPO_ROOT}/main/include/knx_product.hpp"
-    SYMBOL      sensor_board_knx::kSensorBoardProduct
+    SYMBOL      habinari_knx::kHabinariProduct
     OUTPUT_DIR  "${ETS_EXPORT_OUTPUT_DIR}"
 )

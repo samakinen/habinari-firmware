@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /*
  * MQTT wire format: state out as JSON, commands in as scalars.
  *
@@ -11,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Code points from sensor_board::hvac (hvac_control.hpp). Mirrored rather than
+/* Code points from habinari::hvac (hvac_control.hpp). Mirrored rather than
  * included because that header is C++; the host test asserts the two agree. */
 #define PRESET_AUTO 0
 #define PRESET_COMFORT 1

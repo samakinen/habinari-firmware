@@ -12,7 +12,7 @@ same setpoint ladder and reported back on every bus. No protocol is a second
 implementation of the control logic.
 
 Modbus is one of the board's field-bus **personalities**, selected at build time
-(`SENSOR_BOARD_PROTOCOL_MODBUS`, on by default). It combines with any other —
+(`HABINARI_PROTOCOL_MODBUS`, on by default). It combines with any other —
 RS-485 is a UART with a direction pin and competes with nothing — and it is the
 only personality that works on both KNX bus power and the 5–30 V auxiliary
 supply. A Modbus-only image carries no KNX stack at all and still controls the

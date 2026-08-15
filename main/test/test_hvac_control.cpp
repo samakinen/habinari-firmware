@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * Host tests for the portable room-control logic in main/include/hvac_control.hpp.
  *
@@ -13,7 +16,7 @@
 
 #include <cmath>
 
-using namespace sensor_board::hvac;
+using namespace habinari::hvac;
 
 namespace {
 

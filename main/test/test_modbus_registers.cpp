@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 // Host tests for the Modbus register map in main/include/modbus_registers.h.
 //
 // Two things are worth testing without hardware, and they are exactly the two

@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Habinari commissioning</title>
+<meta name="description" content="Commission a Habinari device over its BLE service channel, from a browser.">
+<meta name="theme-color" content="#0b6bcb">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+
+<!--
+  The second client for the out-of-band service channel.
+
+  tools/ble_config.py is the reference implementation and stays the thing to
+  reach for on a bench, because it prints exactly what the device reports. This
+  page is the one an installer uses: same GATT contract (wire version 1,
+  docs/ble-commissioning.md), no binaries on the commissioning machine, and a
+  form that builds itself out of the descriptors the device hands over.
+
+  It is one file on purpose. There is no build step, no dependency to go stale,
+  and the whole client is readable in one sitting — the same standard the CLI
+  was held to. Web Bluetooth needs a secure context, so it has to be served over
+  HTTPS or from localhost; see README.md for how it is hosted.
+-->
+
+<style>
+/* -- Palette. Light by default, dark when the platform asks for it. --------- */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #f8f9fb;
+  --line: #d9dde3;
+  --text: #14181d;
+  --muted: #5b6672;
+  --accent: #0b6bcb;
+  --accent-text: #ffffff;
+  --ok: #1a7f4b;
+  --warn: #96590a;
+  --warn-bg: #fdf3e2;
+  --danger: #b3261e;
+  --danger-bg: #fdeceb;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1c2027;
+    --panel-2: #22262e;
+    --line: #333a44;
+    --text: #e8ebef;
+    --muted: #9aa4b1;
+    --accent: #4c9aff;
+    --accent-text: #0b1220;
+    --ok: #4ec98a;
+    --warn: #e2b062;
+    --warn-bg: #33291a;
+    --danger: #f2857c;
+    --danger-bg: #3a1f1e;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0 0 4.5rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 1rem; }
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1rem; margin: 0 0 .75rem; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+p { margin: .5rem 0; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
+a { color: var(--accent); }
+
+header {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: .75rem;
+  padding: .75rem 1rem;
+  padding-top: max(.75rem, env(safe-area-inset-top));
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+header .grow { flex: 1; min-width: 0; }
+header .sub { color: var(--muted); font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 1rem; margin-bottom: 1rem; box-shadow: var(--shadow);
+}
+
+button {
+  font: inherit; font-weight: 600;
+  padding: .6rem 1rem; min-height: 2.75rem;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+button.small { padding: .35rem .7rem; min-height: 2.25rem; font-size: .9rem; }
+
+input, select {
+  font: inherit; width: 100%;
+  padding: .55rem .65rem; min-height: 2.75rem;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); color: var(--text);
+}
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input:disabled { color: var(--muted); }
+
+.row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.hidden { display: none !important; }
+
+/* -- Banners --------------------------------------------------------------- */
+.note { border-radius: 8px; padding: .7rem .85rem; margin-bottom: .75rem; font-size: .92rem; }
+.note.warn { background: var(--warn-bg); color: var(--warn); border: 1px solid currentColor; }
+.note.bad { background: var(--danger-bg); color: var(--danger); border: 1px solid currentColor; }
+.note.info { background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+
+/* -- Device identity ------------------------------------------------------- */
+.facts { display: grid; grid-template-columns: auto 1fr; gap: .3rem .9rem; font-size: .92rem; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+
+.pill {
+  display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+  font-size: .75rem; font-weight: 600; border: 1px solid currentColor;
+}
+.pill.ok { color: var(--ok); }
+.pill.warn { color: var(--warn); }
+.pill.bad { color: var(--danger); }
+
+/* -- Settings -------------------------------------------------------------- */
+.item { padding: .85rem 0; border-top: 1px solid var(--line); }
+.item:first-of-type { border-top: 0; }
+.item .head { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
+.item .label { font-weight: 600; }
+.item .key { color: var(--muted); font-size: .8rem; }
+.item .hint { color: var(--muted); font-size: .8rem; margin-top: .15rem; }
+.item .control { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
+.item .control .field { flex: 1; min-width: 8rem; }
+.item .msg { font-size: .85rem; margin-top: .35rem; }
+.item .msg.bad { color: var(--danger); }
+.item .msg.ok { color: var(--ok); }
+.item.dirty { background: var(--panel-2); margin: 0 -1rem; padding-left: 1rem; padding-right: 1rem; }
+.readonly-value { padding: .55rem 0; font-weight: 600; }
+
+/* -- Live status ----------------------------------------------------------- */
+.readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: .75rem; }
+.reading { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: .6rem .7rem; }
+.reading .n { font-size: 1.35rem; font-weight: 650; letter-spacing: -.01em; }
+.reading .u { font-size: .8rem; color: var(--muted); font-weight: 400; }
+.reading .t { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.stale { opacity: .5; }
+
+/* -- Sticky commit bar ----------------------------------------------------- */
+.bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+  display: flex; gap: .75rem; align-items: center;
+  padding: .75rem 1rem; padding-bottom: max(.75rem, env(safe-area-inset-bottom));
+  background: var(--panel); border-top: 1px solid var(--line);
+}
+.bar .grow { flex: 1; font-size: .85rem; color: var(--muted); }
+
+dialog {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); color: var(--text);
+  max-width: 26rem; width: calc(100% - 2rem); padding: 1.25rem;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .5); }
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="grow">
+    <h1 id="title">Habinari</h1>
+    <div class="sub" id="subtitle">Not connected</div>
+  </div>
+  <button id="connect" class="primary">Connect</button>
+  <button id="disconnect" class="hidden">Disconnect</button>
+</header>
+
+<main>
+
+<!-- Shown when the browser cannot do this at all. -->
+<section id="unsupported" class="panel hidden">
+  <h2>This browser cannot talk to the board</h2>
+  <div id="unsupported-why" class="note bad"></div>
+  <p>Web Bluetooth is available in Chrome and Edge on Windows, macOS, Linux and
+     ChromeOS, and in Chrome on Android. Safari and Firefox have not implemented
+     it, and on iOS every browser uses Safari's engine — so an iPhone or iPad
+     cannot run this page.</p>
+  <p>On any platform, <code>tools/ble_config.py</code> does the same job from a
+     terminal.</p>
+</section>
+
+<!-- The landing state: how to get a board to show up at all. -->
+<section id="intro" class="panel">
+  <h2>Before you connect</h2>
+  <p>The board advertises <strong>only while it is in programming mode</strong>.
+     Hold the programming button for a second — the LED lights, and stays lit for
+     as long as the window is open. A board that has never been commissioned puts
+     itself into programming mode at boot.</p>
+  <p>An empty device chooser is almost always a board that is not in programming
+     mode, rather than a fault.</p>
+  <p class="mono" style="color: var(--muted)">Programming mode lapses on its own
+     after 15 minutes by default.</p>
+</section>
+
+<section id="pairing-help" class="panel hidden">
+  <h2>The board wants pairing</h2>
+  <div class="note warn">
+    Every characteristic needs an encrypted, authenticated link, so the first
+    connection has to pair with the board's six-digit passkey.
+  </div>
+  <p>The passkey is unique per device, derived from its eFuse root secret, and is
+     printed on the device (or logged by the firmware on a bench). Your operating
+     system raises the prompt, not this page:</p>
+  <ul>
+    <li><strong>Android, Windows, macOS</strong> — a system passkey dialog
+        appears; type the six digits.</li>
+    <li><strong>Linux</strong> — Chrome has no pairing agent. Pair once with
+        <code>bluetoothctl</code>: <code>agent KeyboardDisplay</code>,
+        <code>default-agent</code>, <code>pair &lt;address&gt;</code>, the six
+        digits, then <code>trust &lt;address&gt;</code>. The bond is reused
+        afterwards.</li>
+  </ul>
+  <p>Bonds survive reboots. A factory reset erases them along with everything
+     else.</p>
+</section>
+
+<div id="banners"></div>
+
+<!-- Everything below appears once a device is connected. -->
+<div id="device" class="hidden">
+
+  <section class="panel">
+    <h2>Device</h2>
+    <dl class="facts">
+      <dt>Serial</dt><dd class="mono" id="d-serial">—</dd>
+      <dt>Firmware</dt><dd class="mono" id="d-firmware">—</dd>
+      <dt>Personalities</dt><dd id="d-personalities">—</dd>
+      <dt>State</dt><dd id="d-state">—</dd>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <h2>Live status</h2>
+    <div class="readings" id="readings"></div>
+    <div class="row" style="margin-top: .9rem">
+      <button id="identify" class="small">Identify: off</button>
+      <span class="sub" id="status-age" style="color: var(--muted); font-size: .8rem"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="row" style="justify-content: space-between; margin-bottom: .5rem">
+      <h2 style="margin: 0">Settings</h2>
+      <button id="save-all" class="small primary" disabled>Save all changes</button>
+    </div>
+    <div id="items"></div>
+    <p id="no-items" class="hidden" style="color: var(--muted)">
+      This build registers no out-of-band settings.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Actions</h2>
+    <div class="actions">
+      <button id="reboot">Restart</button>
+      <button id="end">Leave programming mode</button>
+      <button id="factory-reset" class="danger">Factory reset…</button>
+    </div>
+    <p style="color: var(--muted); font-size: .88rem; margin-top: .75rem">
+      Leaving programming mode stops advertising and takes an unaddressed Modbus
+      board back off the bus — it is one state, so leaving it leaves all of it.
+    </p>
+  </section>
+
+</div>
+</main>
+
+<div id="commit-bar" class="bar hidden">
+  <span class="grow" id="commit-hint">Commit marks the board commissioned and restarts it.</span>
+  <button id="commit" class="primary">Commit &amp; restart</button>
+</div>
+
+<dialog id="reset-dialog">
+  <h2 style="text-transform: none; color: var(--text); font-size: 1.1rem">Factory reset</h2>
+  <p>This erases all persisted state — commissioning, settings and Bluetooth
+     bonds — and reboots. It cannot be undone.</p>
+  <p>Type <code>erase</code> to confirm:</p>
+  <input id="reset-confirm" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <div class="actions" style="margin-top: 1rem; justify-content: flex-end">
+    <button id="reset-cancel">Cancel</button>
+    <button id="reset-go" class="danger" disabled>Erase everything</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+
+/* ==========================================================================
+   1. The wire contract
+   Mirrors main/include/oob_service.h. Change the version byte there, never the
+   meaning of a field, and this file follows.
+   ========================================================================== */
+
+const uuid = (suffix) => `1d298b96-21f7-4109-87a0-17de9955${suffix}`;
+const UUID = {
+  service:    uuid("0000"),
+  info:       uuid("0001"),
+  select:     uuid("0002"),
+  descriptor: uuid("0003"),
+  value:      uuid("0004"),
+  control:    uuid("0005"),
+  status:     uuid("0006"),
+};
+
+const WIRE_VERSION = 1;
+
+const CMD = { COMMIT: 0x01, REBOOT: 0x02, IDENTIFY: 0x03, FACTORY_RESET: 0x04, END: 0x05 };
+const FACTORY_RESET_MAGIC = "RST!";
+
+const TYPE = { BOOL: 0, UINT: 1, INT: 2, FLOAT: 3, ENUM: 4, STRING: 5 };
+const TYPE_NAMES = ["bool", "uint", "int", "float", "enum", "string"];
+
+const ITEM_FLAG = { SECRET: 1 << 0, READ_ONLY: 1 << 1, REBOOT: 1 << 2 };
+const INFO_FLAG = { PROVISIONED: 1 << 0, REBOOT_PENDING: 1 << 1, SECRET_FROM_EFUSE: 1 << 2 };
+const STATUS_FLAG = { HAS_SENSOR_DATA: 1 << 0, IDENTIFY: 1 << 1, DEVICE_FAULT: 1 << 2, REBOOT_PENDING: 1 << 3 };
+
+const INVALID_SIGNED = -32768;
+
+/* device_config.h: the registry's own hard limit on a string value. */
+const STRING_MAX = 128;
+
+/* Names for the code points the status blob carries as bare numbers. From
+ * main/include/hvac_control.hpp and sensor_data.h — display only, so a wrong
+ * guess here can never reach the device. */
+const HVAC_MODES = ["Auto", "Comfort", "Standby", "Economy", "Building protection"];
+const CONTROLLER_MODES = ["Auto", "Heat", "Cool", "Off"];
+const SENSOR_NAMES = ["HDC302x", "BME68x", "SCD4x", "SHT4x"];
+
+/* ==========================================================================
+   2. Decoding
+   ========================================================================== */
+
+const decoder = new TextDecoder("utf-8");
+
+/** NUL-separated strings, as the descriptor and info blobs carry them. */
+function splitStrings(bytes, count) {
+  const parts = decoder.decode(bytes).split("\0");
+  if (count === undefined) return parts;
+  while (parts.length < count) parts.push("");
+  return parts.slice(0, count);
+}
+
+function checkVersion(version, what) {
+  if (version !== WIRE_VERSION) {
+    throw new Error(
+      `${what} reports wire version ${version}; this page speaks ${WIRE_VERSION}. ` +
+      `Update whichever is older.`);
+  }
+}
+
+function parseInfo(view) {
+  const version = view.getUint8(0);
+  checkVersion(version, "Device");
+  const raw = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  const [firmware, personalities] = splitStrings(raw.subarray(10), 2);
+  return {
+    itemCount: view.getUint8(1),
+    flags: view.getUint8(2),
+    serial: Array.from(raw.subarray(4, 10)),
+    firmware,
+    personalities,
+  };
+}
+
+function parseDescriptor(view) {
+  const raw = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  const enumCount = view.getUint8(12);
+  const strings = splitStrings(raw.subarray(13), 3 + enumCount);
+  return {
+    index: view.getUint16(0, true),
+    type: view.getUint8(2),
+    flags: view.getUint8(3),
+    min: view.getFloat32(4, true),
+    max: view.getFloat32(8, true),
+    key: strings[0],
+    label: strings[1],
+    unit: strings[2],
+    enumLabels: strings.slice(3, 3 + enumCount),
+  };
+}
+
+function parseStatus(view) {
+  checkVersion(view.getUint8(0), "Status");
+  const scaled = (raw, scale) => (raw === INVALID_SIGNED ? null : raw / scale);
+  return {
+    flags: view.getUint8(1),
+    temperature: scaled(view.getInt16(2, true), 100),
+    humidity: scaled(view.getInt16(4, true), 100),
+    co2: scaled(view.getInt16(6, true), 1),
+    setpoint: scaled(view.getInt16(8, true), 100),
+    heating: view.getUint8(10),
+    cooling: view.getUint8(11),
+    ventilation: view.getUint8(12),
+    hvacMode: view.getUint8(13),
+    controllerMode: view.getUint8(14),
+    healthMask: view.getUint8(15),
+    uptime: view.getUint32(16, true),
+  };
+}
+
+/* ==========================================================================
+   3. The board
+
+   select / descriptor / value is a stateful cursor shared by one connection, so
+   every exchange that uses it has to run to completion before the next one
+   starts. One promise chain is the whole mechanism.
+   ========================================================================== */
+
+class Board {
+  constructor(device, chars) {
+    this.device = device;
+    this.chars = chars;
+    this._chain = Promise.resolve();
+  }
+
+  /** Serialise against the shared cursor. */
+  _locked(fn) {
+    const result = this._chain.then(fn);
+    this._chain = result.catch(() => {});   /* one failure must not wedge the queue */
+    return result;
+  }
+
+  static async connect(device) {
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(UUID.service);
+    const names = ["info", "select", "descriptor", "value", "control", "status"];
+    const chars = {};
+    for (const name of names) {
+      chars[name] = await service.getCharacteristic(UUID[name]);
+    }
+    return new Board(device, chars);
+  }
+
+  /* The first read is what triggers pairing, because every characteristic
+   * demands an authenticated link. */
+  info() {
+    return this._locked(async () => parseInfo(await this.chars.info.readValue()));
+  }
+
+  status() {
+    return this._locked(async () => parseStatus(await this.chars.status.readValue()));
+  }
+
+  async _select(index) {
+    const buf = new DataView(new ArrayBuffer(2));
+    buf.setUint16(0, index, true);
+    await writeChar(this.chars.select, buf.buffer);
+  }
+
+  item(index) {
+    return this._locked(async () => {
+      await this._select(index);
+      return parseDescriptor(await this.chars.descriptor.readValue());
+    });
+  }
+
+  readValue(index) {
+    return this._locked(async () => {
+      await this._select(index);
+      return decoder.decode(await this.chars.value.readValue());
+    });
+  }
+
+  writeValue(index, text) {
+    return this._locked(async () => {
+      await this._select(index);
+      await writeChar(this.chars.value, new TextEncoder().encode(text));
+      /* Read back through the same cursor, so what is shown is what the device
+       * stored rather than what we sent. */
+      return decoder.decode(await this.chars.value.readValue());
+    });
+  }
+
+  control(opcode, payload = []) {
+    return this._locked(() =>
+      writeChar(this.chars.control, Uint8Array.from([opcode, ...payload])));
+  }
+
+  async watchStatus(onStatus) {
+    const chr = this.chars.status;
+    chr.addEventListener("characteristicvaluechanged", (event) => {
+      try {
+        onStatus(parseStatus(event.target.value));
+      } catch (err) {
+        console.warn("status notification:", err);
+      }
+    });
+    await chr.startNotifications();
+  }
+}
+
+/** writeValueWithResponse where it exists; writeValue on older Chrome. */
+function writeChar(chr, data) {
+  return chr.writeValueWithResponse
+    ? chr.writeValueWithResponse(data)
+    : chr.writeValue(data);
+}
+
+/* ==========================================================================
+   4. Value handling
+
+   The device refuses out-of-range values rather than clamping them, and Web
+   Bluetooth flattens every ATT error into one generic DOMException — so `0x13
+   value not allowed` and `0x03 write not permitted` are indistinguishable by the
+   time they reach here. The descriptor carries type, bounds and enum labels, so
+   the check that produces a useful message happens before the write and the
+   device's refusal is the backstop it should be.
+
+   These rules mirror device_config.c exactly; where they disagree, that file is
+   right.
+   ========================================================================== */
+
+/** min == max == 0 means unbounded, as within_bounds() has it. */
+const unbounded = (item) => item.min === 0 && item.max === 0;
+
+function stringLimit(item) {
+  const configured = Math.floor(item.max);
+  return item.max > 0 && configured < STRING_MAX ? configured : STRING_MAX;
+}
+
+function rangeText(item) {
+  if (item.enumLabels.length) return item.enumLabels.join(" | ");
+  if (item.type === TYPE.STRING) return `up to ${stringLimit(item)} characters`;
+  if (item.type === TYPE.BOOL) return "";
+  if (unbounded(item)) return "";
+  return `${formatNumber(item.min)} … ${formatNumber(item.max)}`;
+}
+
+const formatNumber = (n) => String(Number(n.toFixed(6)));
+
+/**
+ * Validate against the item's own type and bounds.
+ * @returns null when acceptable, otherwise the reason it is not.
+ */
+function validate(item, text) {
+  switch (item.type) {
+    case TYPE.BOOL:
+      return /^(1|0|true|false|on|off|yes|no)$/i.test(text) ? null : "Expected on or off.";
+
+    case TYPE.UINT:
+      if (!/^\d+$/.test(text)) return "Expected a whole number, with no sign or spaces.";
+      if (Number(text) > 0xFFFFFFFF) return "Too large: the device stores this as a 32-bit number.";
+      return checkBounds(item, Number(text));
+
+    case TYPE.INT:
+      if (!/^-?\d+$/.test(text)) return "Expected a whole number.";
+      return checkBounds(item, Number(text));
+
+    case TYPE.FLOAT: {
+      const value = Number(text);
+      if (text.trim() === "" || !Number.isFinite(value)) return "Expected a number.";
+      return checkBounds(item, value);
+    }
+
+    case TYPE.ENUM:
+      if (item.enumLabels.some((label) => label.toLowerCase() === text.toLowerCase())) return null;
+      if (!/^\d+$/.test(text)) return `Expected one of: ${item.enumLabels.join(", ")}`;
+      if (item.enumLabels.length) {
+        return Number(text) < item.enumLabels.length ? null : `Expected one of: ${item.enumLabels.join(", ")}`;
+      }
+      return checkBounds(item, Number(text));
+
+    case TYPE.STRING: {
+      const limit = stringLimit(item);
+      /* The device counts bytes, not code units: an accented SSID is longer than
+       * it looks. */
+      const bytes = new TextEncoder().encode(text).length;
+      return bytes <= limit ? null : `Too long: ${bytes} bytes, the limit is ${limit}.`;
+    }
+
+    default:
+      return "Unknown setting type.";
+  }
+}
+
+function checkBounds(item, value) {
+  if (unbounded(item)) return null;
+  if (value < item.min || value > item.max) {
+    return `Out of range. Accepts ${formatNumber(item.min)} to ${formatNumber(item.max)}.`;
+  }
+  return null;
+}
+
+/* ==========================================================================
+   5. UI
+   ========================================================================== */
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+
+const ui = {
+  device: null,
+  board: null,
+  info: null,
+  rows: [],          /* one per registered setting */
+  identifyOn: false,
+  expectDisconnect: null,   /* a message, when a disconnect is the point */
+};
+
+/* -- Banners --------------------------------------------------------------- */
+
+function banner(kind, text) {
+  const node = el("div", `note ${kind}`, text);
+  $("banners").append(node);
+  return node;
+}
+
+const clearBanners = () => { $("banners").textContent = ""; };
+
+/* -- Connect / disconnect -------------------------------------------------- */
+
+async function connect(acceptAll) {
+  clearBanners();
+  let device;
+  try {
+    device = await navigator.bluetooth.requestDevice(acceptAll
+      /* The escape hatch. The service UUID rides in the scan response rather
+       * than the advertisement, and not every platform merges the two before
+       * applying a filter — so if the filtered chooser is empty, this shows
+       * everything and lets the installer pick by name. */
+      ? { acceptAllDevices: true, optionalServices: [UUID.service] }
+      : { filters: [{ services: [UUID.service] }], optionalServices: [UUID.service] });
+  } catch (err) {
+    if (err.name === "NotFoundError") {
+      /* Either the chooser was dismissed or it was empty. Both end here, and
+       * the useful thing to say is the same. */
+      const note = banner("info",
+        "No board picked. The device advertises only while its LED is lit — hold " +
+        "the programming button for a second and try again. ");
+      const link = el("a", null, "Board not in the list?");
+      link.href = "#";
+      link.onclick = (event) => { event.preventDefault(); connect(true); };
+      note.append(link);
+      return;
+    }
+    banner("bad", `Could not open the device chooser: ${err.message}`);
+    return;
+  }
+
+  $("connect").disabled = true;
+  $("connect").textContent = "Connecting…";
+
+  try {
+    ui.board = await Board.connect(device);
+    ui.info = await ui.board.info();     /* the read that triggers pairing */
+  } catch (err) {
+    ui.board = null;
+    $("connect").disabled = false;
+    $("connect").textContent = "Connect";
+    if (device.gatt.connected) device.gatt.disconnect();
+    reportConnectFailure(err);
+    return;
+  }
+
+  /* Registered only now that there is something to lose. Registering it before
+   * the connect would let the teardown above fire onDisconnected, which clears
+   * banners — and take the failure message with it. */
+  ui.device = device;
+  device.addEventListener("gattserverdisconnected", onDisconnected);
+
+  $("connect").classList.add("hidden");
+  $("connect").disabled = false;
+  $("connect").textContent = "Connect";
+  $("disconnect").classList.remove("hidden");
+  $("intro").classList.add("hidden");
+  $("pairing-help").classList.add("hidden");
+  $("device").classList.remove("hidden");
+  $("commit-bar").classList.remove("hidden");
+  $("title").textContent = device.name || "Habinari";
+  $("subtitle").textContent = "Connected";
+
+  renderInfo(ui.info);
+  await loadItems(ui.info.itemCount);
+
+  try {
+    await ui.board.watchStatus(renderStatus);
+    renderStatus(await ui.board.status());
+  } catch (err) {
+    banner("warn", `Live status unavailable: ${describeError(err)}`);
+  }
+}
+
+function reportConnectFailure(err) {
+  const text = describeError(err);
+  if (err.name === "SecurityError" || err.name === "NetworkError" || /insufficient|auth|encrypt|pair/i.test(text)) {
+    $("pairing-help").classList.remove("hidden");
+    banner("bad", `Could not read from the board: ${text}`);
+  } else {
+    banner("bad", `Connection failed: ${text}`);
+  }
+}
+
+function onDisconnected() {
+  const expected = ui.expectDisconnect;
+  ui.expectDisconnect = null;
+  ui.device?.removeEventListener("gattserverdisconnected", onDisconnected);
+  ui.device = null;
+  ui.board = null;
+  ui.info = null;
+  ui.rows = [];
+
+  $("device").classList.add("hidden");
+  $("commit-bar").classList.add("hidden");
+  $("disconnect").classList.add("hidden");
+  $("connect").classList.remove("hidden");
+  $("intro").classList.remove("hidden");
+  $("subtitle").textContent = "Not connected";
+  $("title").textContent = "Habinari";
+
+  clearBanners();
+  banner(expected ? "info" : "warn", expected ||
+    "The board disconnected. Programming mode may have lapsed — hold the " +
+    "programming button for a second and connect again.");
+}
+
+/** Web Bluetooth collapses ATT errors into one DOMException; salvage what we can. */
+function describeError(err) {
+  if (!err) return "unknown error";
+  if (err.name === "NetworkError" && !ui.board) return "the link dropped before the exchange finished";
+  return err.message || err.name || String(err);
+}
+
+/* -- Device facts ---------------------------------------------------------- */
+
+function renderInfo(info) {
+  $("d-serial").textContent = info.serial.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
+  $("d-firmware").textContent = info.firmware || "—";
+  $("d-personalities").textContent = info.personalities || "(none)";
+
+  const state = $("d-state");
+  state.textContent = "";
+  const provisioned = (info.flags & INFO_FLAG.PROVISIONED) !== 0;
+  state.append(el("span", `pill ${provisioned ? "ok" : "warn"}`,
+    provisioned ? "Commissioned" : "Not commissioned"));
+  if (info.flags & INFO_FLAG.REBOOT_PENDING) {
+    state.append(" ", el("span", "pill warn", "Restart pending"));
+  }
+
+  if (!(info.flags & INFO_FLAG.SECRET_FROM_EFUSE)) {
+    banner("warn",
+      "This board has no eFuse root secret, so its Bluetooth passkey is the " +
+      "development fallback 123456 — the same on every unprovisioned board. " +
+      "Do not leave it in a building in this state.");
+  }
+}
+
+/* -- Settings -------------------------------------------------------------- */
+
+async function loadItems(count) {
+  const container = $("items");
+  container.textContent = "";
+  ui.rows = [];
+
+  if (count === 0) {
+    $("no-items").classList.remove("hidden");
+    return;
+  }
+  $("no-items").classList.add("hidden");
+
+  for (let index = 0; index < count; index++) {
+    /* A link that drops in the middle of this must not turn into one warning
+     * per remaining setting on top of the disconnect notice. */
+    if (!ui.board) return;
+    try {
+      const item = await ui.board.item(index);
+      const value = await ui.board.readValue(index);
+      const row = buildRow(item, value);
+      ui.rows.push(row);
+      container.append(row.node);
+    } catch (err) {
+      banner("warn", `Could not read setting ${index}: ${describeError(err)}`);
+    }
+  }
+  refreshSaveAll();
+}
+
+function buildRow(item, value) {
+  const node = el("div", "item");
+
+  const head = el("div", "head");
+  head.append(el("span", "label", item.label || item.key));
+  head.append(el("span", "key mono", item.key));
+  node.append(head);
+
+  const notes = [TYPE_NAMES[item.type] || "?", rangeText(item)];
+  if (item.unit) notes.splice(1, 0, item.unit);
+  if (item.flags & ITEM_FLAG.READ_ONLY) notes.push("read-only");
+  if (item.flags & ITEM_FLAG.SECRET) notes.push("write-only");
+  if (item.flags & ITEM_FLAG.REBOOT) notes.push("takes effect after a restart");
+  node.append(el("div", "hint", notes.filter(Boolean).join(" · ")));
+
+  const control = el("div", "control");
+  const msg = el("div", "msg");
+  const row = { item, node, msg, value, input: null, save: null, dirty: false };
+
+  if (item.flags & ITEM_FLAG.READ_ONLY) {
+    control.append(el("div", "readonly-value", value + (item.unit ? ` ${item.unit}` : "")));
+    node.append(control, msg);
+    return row;
+  }
+
+  const input = buildInput(item, value);
+  input.classList.add("field");
+  const save = el("button", "small primary", "Save");
+  save.disabled = true;
+
+  const onEdit = () => {
+    row.dirty = true;
+    node.classList.add("dirty");
+    save.disabled = false;
+    msg.textContent = "";
+    msg.className = "msg";
+    refreshSaveAll();
+  };
+  input.addEventListener("input", onEdit);
+  input.addEventListener("change", onEdit);
+  save.addEventListener("click", () => saveRow(row));
+
+  row.input = input;
+  row.save = save;
+  control.append(input, save);
+  node.append(control, msg);
+  return row;
+}
+
+function buildInput(item, value) {
+  /* A secret never comes back out, so its field starts empty and says what the
+   * device reported instead: <set> or <unset>. */
+  if (item.flags & ITEM_FLAG.SECRET) {
+    const input = el("input");
+    input.type = "password";
+    input.autocomplete = "new-password";
+    input.placeholder = value === "<set>" ? "•••••••• (stored — type to replace)" : "not set";
+    input.maxLength = stringLimit(item);
+    return input;
+  }
+
+  if (item.type === TYPE.BOOL || (item.type === TYPE.ENUM && item.enumLabels.length)) {
+    const select = el("select");
+    const options = item.type === TYPE.BOOL ? ["on", "off"] : item.enumLabels;
+    for (const option of options) {
+      const node = el("option", null, option);
+      node.value = option;
+      select.append(node);
+    }
+    /* The device renders a bool as on/off and an enum as its label, so the
+     * readback normally matches an option verbatim. When it does not — an enum
+     * whose current code point has no label — show the raw value rather than
+     * silently displaying the first option as though it were current. */
+    if (options.includes(value)) {
+      select.value = value;
+    } else {
+      const unknown = el("option", null, `${value} (unknown)`);
+      unknown.value = value;
+      unknown.disabled = true;
+      select.prepend(unknown);
+      select.value = value;
+    }
+    return select;
+  }
+
+  const input = el("input");
+  if (item.type === TYPE.STRING) {
+    input.type = "text";
+    input.maxLength = stringLimit(item);
+    input.autocapitalize = "off";
+    input.spellcheck = false;
+  } else {
+    input.type = "number";
+    input.step = item.type === TYPE.FLOAT ? "any" : "1";
+    input.inputMode = item.type === TYPE.FLOAT ? "decimal" : "numeric";
+    if (!unbounded(item)) { input.min = item.min; input.max = item.max; }
+  }
+  input.value = value;
+  return input;
+}
+
+async function saveRow(row) {
+  const text = row.input.value;
+  const { item, msg } = row;
+
+  if (!ui.board) {
+    msg.className = "msg bad";
+    msg.textContent = "Not connected.";
+    return;
+  }
+
+  if ((item.flags & ITEM_FLAG.SECRET) && text === "") {
+    msg.className = "msg bad";
+    msg.textContent = "Nothing to write. Leave the field alone to keep the stored value.";
+    return;
+  }
+
+  const problem = validate(item, text);
+  if (problem) {
+    msg.className = "msg bad";
+    msg.textContent = problem;
+    return;
+  }
+
+  row.save.disabled = true;
+  msg.className = "msg";
+  msg.textContent = "Saving…";
+
+  try {
+    const readback = await ui.board.writeValue(item.index, text);
+    row.value = readback;
+    row.dirty = false;
+    row.node.classList.remove("dirty");
+    msg.className = "msg ok";
+    msg.textContent = (item.flags & ITEM_FLAG.SECRET)
+      ? "Stored."
+      : `Stored: ${readback}`;
+    if (item.flags & ITEM_FLAG.SECRET) {
+      row.input.value = "";
+      row.input.placeholder = "•••••••• (stored — type to replace)";
+    } else if (row.input.tagName !== "SELECT") {
+      row.input.value = readback;
+    }
+    if (item.flags & ITEM_FLAG.REBOOT) {
+      $("commit-hint").textContent = "A setting needs a restart. Commit when you are finished.";
+    }
+  } catch (err) {
+    row.save.disabled = false;
+    msg.className = "msg bad";
+    if (!ui.board?.device.gatt.connected) {
+      msg.textContent = "The link dropped before the board answered. Nothing was stored.";
+    } else {
+      /* Validation already passed here, so a refusal means the page and the
+       * device disagree about the bounds — say what the device published. */
+      const range = rangeText(item);
+      msg.textContent = `The board refused this value${range ? `. It accepts ${range}` : ""}.`;
+    }
+    console.warn(`write ${item.key}:`, err);
+  }
+  refreshSaveAll();
+}
+
+function refreshSaveAll() {
+  $("save-all").disabled = !ui.rows.some((row) => row.dirty);
+}
+
+async function saveAll() {
+  $("save-all").disabled = true;
+  for (const row of ui.rows.filter((row) => row.dirty)) {
+    await saveRow(row);
+  }
+  refreshSaveAll();
+}
+
+/* -- Live status ----------------------------------------------------------- */
+
+function renderStatus(status) {
+  const container = $("readings");
+  container.textContent = "";
+
+  const stale = !(status.flags & STATUS_FLAG.HAS_SENSOR_DATA);
+  const reading = (title, value, unit, digits = 1) => {
+    const node = el("div", "reading");
+    node.append(el("div", "t", title));
+    const line = el("div", "n", value === null || value === undefined ? "—" : Number(value).toFixed(digits));
+    if (unit) line.append(el("span", "u", ` ${unit}`));
+    node.append(line);
+    return node;
+  };
+
+  container.append(
+    reading("Temperature", status.temperature, "°C"),
+    reading("Humidity", status.humidity, "%RH"),
+    reading("CO₂", status.co2, "ppm", 0),
+    reading("Setpoint", status.setpoint, "°C"),
+    reading("Heating", status.heating, "%", 0),
+    reading("Cooling", status.cooling, "%", 0),
+    reading("Ventilation", status.ventilation, "%", 0),
+  );
+  if (stale) container.classList.add("stale"); else container.classList.remove("stale");
+
+  const text = el("div", "reading");
+  text.style.gridColumn = "1 / -1";
+  text.append(el("div", "t", "Mode"));
+  text.append(el("div", null,
+    `${HVAC_MODES[status.hvacMode] ?? status.hvacMode} · ` +
+    `${CONTROLLER_MODES[status.controllerMode] ?? status.controllerMode} · ` +
+    `sensors ${healthText(status.healthMask)} · up ${uptimeText(status.uptime)}`));
+  container.append(text);
+
+  ui.identifyOn = (status.flags & STATUS_FLAG.IDENTIFY) !== 0;
+  $("identify").textContent = `Identify: ${ui.identifyOn ? "on" : "off"}`;
+
+  const marks = [];
+  if (stale) marks.push("no readings yet");
+  if (status.flags & STATUS_FLAG.DEVICE_FAULT) marks.push("FAULT");
+  if (status.flags & STATUS_FLAG.REBOOT_PENDING) marks.push("restart pending");
+  $("status-age").textContent = marks.join(" · ");
+}
+
+function healthText(mask) {
+  const healthy = SENSOR_NAMES.filter((_, bit) => mask & (1 << bit));
+  return healthy.length ? healthy.join(", ") : "none healthy";
+}
+
+function uptimeText(seconds) {
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+  const hours = Math.floor(seconds / 3600);
+  return hours < 48 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
+}
+
+/* -- Actions --------------------------------------------------------------- */
+
+async function control(opcode, payload, expectDisconnect) {
+  if (!ui.board) return false;
+  try {
+    if (expectDisconnect) ui.expectDisconnect = expectDisconnect;
+    await ui.board.control(opcode, payload);
+    return true;
+  } catch (err) {
+    /* The device defers a restart by half a second so the ATT response gets
+     * out, but a link that drops first is the command working, not failing —
+     * so for those, a rejected write is not news. It is news if the link is
+     * still up, because then nothing happened. */
+    if (!expectDisconnect || ui.board?.device.gatt.connected) {
+      ui.expectDisconnect = null;
+      banner("bad", `Command failed: ${describeError(err)}`);
+      return false;
+    }
+    return true;
+  }
+}
+
+/* ==========================================================================
+   6. Wiring
+   ========================================================================== */
+
+$("connect").addEventListener("click", () => connect(false));
+$("disconnect").addEventListener("click", () => {
+  ui.expectDisconnect = "Disconnected. The board is still in programming mode until it lapses.";
+  ui.board?.device.gatt.disconnect();
+});
+$("save-all").addEventListener("click", saveAll);
+
+$("identify").addEventListener("click", async () => {
+  const next = !ui.identifyOn;
+  /* The next status notification would correct a wrong guess within a couple of
+   * seconds, but an installer looking at the board deserves the button to be
+   * right the moment they press it. */
+  if (await control(CMD.IDENTIFY, [next ? 1 : 0])) {
+    ui.identifyOn = next;
+    $("identify").textContent = `Identify: ${next ? "on" : "off"}`;
+  }
+});
+
+$("commit").addEventListener("click", async () => {
+  const dirty = ui.rows.filter((row) => row.dirty);
+  if (dirty.length && !confirm(
+      `${dirty.length} unsaved change(s) will be lost. Commit anyway?`)) {
+    return;
+  }
+  await control(CMD.COMMIT, [],
+    "Committed. The board is marking itself commissioned and restarting into the " +
+    "new settings. It will not advertise again until the programming button is held.");
+});
+
+$("reboot").addEventListener("click", () =>
+  control(CMD.REBOOT, [], "Restarting. Nothing was marked."));
+
+$("end").addEventListener("click", () =>
+  control(CMD.END, [], "Programming mode ended: the board is silent again."));
+
+$("factory-reset").addEventListener("click", () => {
+  $("reset-confirm").value = "";
+  $("reset-go").disabled = true;
+  $("reset-dialog").showModal();
+});
+$("reset-confirm").addEventListener("input", (event) => {
+  $("reset-go").disabled = event.target.value.trim() !== "erase";
+});
+$("reset-cancel").addEventListener("click", () => $("reset-dialog").close());
+$("reset-go").addEventListener("click", async () => {
+  $("reset-dialog").close();
+  const magic = Array.from(new TextEncoder().encode(FACTORY_RESET_MAGIC));
+  await control(CMD.FACTORY_RESET, magic,
+    "Factory reset requested. Everything persisted is being erased, including " +
+    "this pairing — remove the bond from your operating system before pairing again.");
+});
+
+/* -- Feasibility check, before anything else --------------------------------
+   Two ways this page cannot work: the browser has no Web Bluetooth, or it has
+   it but the page is not in a secure context (opening the file directly, for
+   instance) — in which case navigator.bluetooth is simply absent, which is
+   confusing enough to be worth naming. */
+(function checkSupport() {
+  const problems = [];
+  if (!window.isSecureContext) {
+    problems.push(
+      `This page is not in a secure context (${location.protocol}//). Web Bluetooth ` +
+      `needs HTTPS or localhost — a file opened directly from disk cannot use it.`);
+  }
+  if (!navigator.bluetooth) {
+    problems.push("navigator.bluetooth is not available in this browser.");
+  }
+  if (problems.length === 0) {
+    navigator.bluetooth.getAvailability?.().then((available) => {
+      if (!available) banner("warn", "No Bluetooth adapter is available. Check that Bluetooth is switched on.");
+    });
+    return;
+  }
+  $("unsupported-why").textContent = problems.join(" ");
+  $("unsupported").classList.remove("hidden");
+  $("intro").classList.add("hidden");
+  $("connect").disabled = true;
+})();
+
+/* Offline: the service worker caches this page so a plant room with no signal
+   still has a commissioning tool. Registration is best-effort. */
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch((err) => console.warn("service worker:", err));
+  });
+}
+</script>
+</body>
+</html>

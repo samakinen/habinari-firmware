@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #include <stdio.h>
 #include "bme68x_esp.h"
 #include "bme68x.h"

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * @file test_device_secret.cpp
  * @brief Host tests for the portable half of the device root secret.
@@ -26,7 +29,7 @@
 #include <string>
 #include <vector>
 
-using namespace sensor_board;
+using namespace habinari;
 using secret::Digest;
 using secret::EntropyPool;
 using secret::EntropyQuality;

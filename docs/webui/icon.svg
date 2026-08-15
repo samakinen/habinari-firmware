@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Habinari commissioning">
+  <rect width="192" height="192" rx="40" fill="#0b6bcb"/>
+  <!-- The programming-mode LED, which is the whole mental model: a board with
+       its LED lit is the board that can be commissioned. -->
+  <circle cx="96" cy="58" r="15" fill="#ffffff"/>
+  <circle cx="96" cy="58" r="28" fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="6"/>
+  <!-- The Bluetooth rune, one stroke. -->
+  <path d="M74 112.4 L118 147.6 L96 167.4 L96 92.6 L118 112.4 L74 147.6"
+        fill="none" stroke="#ffffff" stroke-width="11"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

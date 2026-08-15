@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include <array>
@@ -38,7 +41,7 @@
  * ESP-side glue that feeds it lives in main/src/sensor_fusion_service.cpp.
  */
 
-namespace sensor_board {
+namespace habinari {
 namespace fusion {
 
 inline float clampf(float value, float lo, float hi)
@@ -794,4 +797,4 @@ private:
 };
 
 } // namespace fusion
-} // namespace sensor_board
+} // namespace habinari

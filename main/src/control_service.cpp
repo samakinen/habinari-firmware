@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /*
  * The control service: the device's one owner of state and time.
  *
@@ -25,7 +28,7 @@
 #include "protocol_adapter.h"
 #include "sensor_fusion_service.h"
 
-namespace sensor_board {
+namespace habinari {
 namespace control {
 
 namespace {
@@ -167,7 +170,7 @@ void serviceProgrammingMode()
     }
     if (expired) {
         ESP_LOGI(TAG, "Programming mode timed out after %d s",
-                 CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S);
+                 CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S);
     }
 
     if (protocol_adapters_own_programming_mode()) {
@@ -275,13 +278,13 @@ bool takeIdentifyToggleRequest()
 }
 
 }  // namespace control
-}  // namespace sensor_board
+}  // namespace habinari
 
 // ---------------------------------------------------------------------------
 // control_service.h — the C lifecycle API.
 // ---------------------------------------------------------------------------
 
-namespace ctrl = sensor_board::control;
+namespace ctrl = habinari::control;
 
 extern "C" esp_err_t control_service_start(void)
 {
@@ -374,10 +377,10 @@ extern "C" void control_service_set_identify_active(bool active)
         // no route into programming mode that leaves it open indefinitely.
         // Re-entering restarts the clock, which is what somebody pressing the
         // button again means.
-        if (active && CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S > 0) {
+        if (active && CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S > 0) {
             s.identifyDeadline =
                 xTaskGetTickCount()
-                + pdMS_TO_TICKS(CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S * 1000);
+                + pdMS_TO_TICKS(CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S * 1000);
             if (s.identifyDeadline == 0) {
                 s.identifyDeadline = 1;  // 0 is the "no deadline" sentinel
             }
@@ -502,7 +505,7 @@ extern "C" esp_err_t control_state_write(control_command_t command, float value)
         return ESP_ERR_INVALID_STATE;
     }
 
-    namespace hvac_ns = sensor_board::hvac;
+    namespace hvac_ns = habinari::hvac;
     const bool flag = value != 0.0f;
     ctrl::LockGuard lock(g.mutex);
     switch (command) {

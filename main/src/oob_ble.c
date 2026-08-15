@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /*
  * The out-of-band service channel, over BLE GATT.
  *
@@ -13,7 +16,7 @@
  */
 #include "oob_service.h"
 
-#if CONFIG_SENSOR_BOARD_OOB_BLE
+#if CONFIG_HABINARI_OOB_BLE
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -674,7 +677,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             s_ctx.status_subscribed = event->subscribe.cur_notify;
             if (s_ctx.status_subscribed) {
                 esp_timer_start_periodic(s_ctx.status_timer,
-                                         CONFIG_SENSOR_BOARD_OOB_BLE_STATUS_PERIOD_MS * 1000);
+                                         CONFIG_HABINARI_OOB_BLE_STATUS_PERIOD_MS * 1000);
             } else {
                 esp_timer_stop(s_ctx.status_timer);
             }
@@ -929,4 +932,4 @@ bool oob_service_client_connected(void)
     return s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE && s_ctx.authenticated;
 }
 
-#endif /* CONFIG_SENSOR_BOARD_OOB_BLE */
+#endif /* CONFIG_HABINARI_OOB_BLE */

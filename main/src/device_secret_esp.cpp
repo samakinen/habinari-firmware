@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * @file device_secret_esp.cpp
  * @brief eFuse-backed device root secret: provisioning and FDSK derivation.
@@ -6,7 +9,7 @@
  *
  * Provisioning is a once-per-chip, irreversible operation, so it is gated
  * three ways: the target block must be unused, the RNG sample must pass the
- * entropy gate, and CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN must be set. With
+ * entropy gate, and CONFIG_HABINARI_ROOT_SECRET_BURN must be set. With
  * that last one off (the default) the device runs the whole path and logs the
  * candidate secret, the FDSK it would produce and the resulting ETS
  * certificate, without touching a fuse — which is how the values get eyeballed
@@ -33,13 +36,13 @@
 #include <cinttypes>
 #include <cstring>
 
-namespace sensor_board::secret {
+namespace habinari::secret {
 
 namespace {
 
 constexpr const char *TAG = "device_secret";
 
-constexpr int kRootSecretBlockIndex = CONFIG_SENSOR_BOARD_ROOT_SECRET_EFUSE_BLOCK;
+constexpr int kRootSecretBlockIndex = CONFIG_HABINARI_ROOT_SECRET_EFUSE_BLOCK;
 static_assert(kRootSecretBlockIndex >= 0 && kRootSecretBlockIndex <= 5,
               "The HMAC peripheral can only use eFuse key blocks 0..5");
 
@@ -111,11 +114,11 @@ bool gatherRootSecret(RootSecret &out, EntropyQuality &quality)
     return pool.finish(out);
 }
 
-#if !CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN
+#if !CONFIG_HABINARI_ROOT_SECRET_BURN
 /// Log what a candidate root secret would produce, without burning anything.
 void logCandidate(const RootSecret &root, Serial serial, const Fdsk &fdsk)
 {
-#if CONFIG_SENSOR_BOARD_ROOT_SECRET_LOG_DRY_RUN_SECRET
+#if CONFIG_HABINARI_ROOT_SECRET_LOG_DRY_RUN_SECRET
     char rootHex[3 * kRootSecretBytes] = {};
     identity::toHex(std::span<const uint8_t>(root.data(), root.size()), ' ', rootHex,
                     sizeof(rootHex));
@@ -135,9 +138,9 @@ void logCandidate(const RootSecret &root, Serial serial, const Fdsk &fdsk)
     ESP_LOGW(TAG, "DRY RUN device certificate: %s", certificate);
     ESP_LOGW(TAG,
              "DRY RUN: no eFuse was written. This candidate is discarded; a different one is "
-             "generated on every boot until CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN is enabled.");
+             "generated on every boot until CONFIG_HABINARI_ROOT_SECRET_BURN is enabled.");
 }
-#endif // !CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN
+#endif // !CONFIG_HABINARI_ROOT_SECRET_BURN
 
 /// Derive through the HMAC peripheral, i.e. from the key the device actually
 /// holds. Never sees the root secret itself.
@@ -177,7 +180,7 @@ BlePasskeyResult resolveBlePasskey(Serial serial)
         ESP_LOGE(TAG,
                  "No device root secret in BLOCK_KEY%d — the BLE commissioning passkey falls back "
                  "to %06" PRIu32 ", which is identical on every unprovisioned board. Provision the "
-                 "root secret (CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN) before shipping.",
+                 "root secret (CONFIG_HABINARI_ROOT_SECRET_BURN) before shipping.",
                  kRootSecretBlockIndex, kDevelopmentPasskey);
         result.passkey = kDevelopmentPasskey;
         return result;
@@ -222,7 +225,7 @@ RootSecretResult resolveFdsk(Serial serial)
         ESP_LOGE(TAG,
                  "eFuse BLOCK_KEY%d is in use for purpose %d, not HMAC_UP — cannot provision a "
                  "device root secret there. Pick a free block with "
-                 "CONFIG_SENSOR_BOARD_ROOT_SECRET_EFUSE_BLOCK.",
+                 "CONFIG_HABINARI_ROOT_SECRET_EFUSE_BLOCK.",
                  kRootSecretBlockIndex, static_cast<int>(purpose));
         result.state = RootSecretState::BlockUnavailable;
         return result;
@@ -244,7 +247,7 @@ RootSecretResult resolveFdsk(Serial serial)
     Fdsk softwareFdsk{};
     const bool derived = deriveFdsk(root, serial, softwareFdsk);
 
-#if CONFIG_SENSOR_BOARD_ROOT_SECRET_BURN
+#if CONFIG_HABINARI_ROOT_SECRET_BURN
     // esp_efuse_write_key() sets the key purpose and then read- and
     // write-protects the block, so this is the last moment the secret exists
     // in a readable form anywhere.
@@ -287,7 +290,7 @@ RootSecretResult resolveFdsk(Serial serial)
 #endif
 }
 
-} // namespace sensor_board::secret
+} // namespace habinari::secret
 
 extern "C" esp_err_t device_secret_ble_passkey(uint32_t *out_passkey, bool *out_from_efuse)
 {
@@ -298,7 +301,7 @@ extern "C" esp_err_t device_secret_ble_passkey(uint32_t *out_passkey, bool *out_
     // The serial is the base MAC, the same six bytes the KNX device object
     // reports and the device certificate encodes. If it cannot be read the KDF
     // has no per-device input, so there is nothing better to do than say so.
-    uint8_t mac[sensor_board::secret::kSerialBytes] = {};
+    uint8_t mac[habinari::secret::kSerialBytes] = {};
     if (esp_read_mac(mac, ESP_MAC_BASE) != ESP_OK) {
         ESP_LOGE("device_secret",
                  "esp_read_mac failed; BLE passkey cannot be derived for this device");
@@ -309,8 +312,8 @@ extern "C" esp_err_t device_secret_ble_passkey(uint32_t *out_passkey, bool *out_
         return ESP_OK;
     }
 
-    const sensor_board::secret::BlePasskeyResult result = sensor_board::secret::resolveBlePasskey(
-        std::span<const uint8_t, sensor_board::secret::kSerialBytes>(mac, sizeof(mac)));
+    const habinari::secret::BlePasskeyResult result = habinari::secret::resolveBlePasskey(
+        std::span<const uint8_t, habinari::secret::kSerialBytes>(mac, sizeof(mac)));
     *out_passkey = result.passkey;
     if (out_from_efuse != nullptr) {
         *out_from_efuse = result.fromEfuse;

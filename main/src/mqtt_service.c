@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /*
  * Wi-Fi + MQTT personality.
  *
@@ -281,8 +284,8 @@ static esp_err_t wifi_start(const char *ssid, const char *password)
 
 /* --- Home Assistant discovery --------------------------------------------- */
 
-#if defined(CONFIG_SENSOR_BOARD_MQTT_DISCOVERY_PREFIX)
-#define DISCOVERY_PREFIX CONFIG_SENSOR_BOARD_MQTT_DISCOVERY_PREFIX
+#if defined(CONFIG_HABINARI_MQTT_DISCOVERY_PREFIX)
+#define DISCOVERY_PREFIX CONFIG_HABINARI_MQTT_DISCOVERY_PREFIX
 #else
 #define DISCOVERY_PREFIX ""
 #endif
@@ -475,7 +478,7 @@ static bool publish_state_if_due(mqtt_ctx_t *ctx, bool force)
     }
 
     const int64_t now = esp_timer_get_time();
-    const int64_t heartbeat_us = (int64_t)CONFIG_SENSOR_BOARD_MQTT_STATE_INTERVAL_S * 1000000;
+    const int64_t heartbeat_us = (int64_t)CONFIG_HABINARI_MQTT_STATE_INTERVAL_S * 1000000;
     const bool changed = strcmp(payload, ctx->last_payload) != 0;
     const bool heartbeat_due = (now - ctx->last_publish_us) >= heartbeat_us;
 
@@ -499,7 +502,7 @@ static void mqtt_task(void *arg)
      * wakes us every second so a change reaches the broker promptly, and
      * publish_state_if_due() decides whether it is worth a message. This bound
      * only matters if the control task stops notifying. */
-    const TickType_t max_wait = pdMS_TO_TICKS(CONFIG_SENSOR_BOARD_MQTT_STATE_INTERVAL_S * 1000);
+    const TickType_t max_wait = pdMS_TO_TICKS(CONFIG_HABINARI_MQTT_STATE_INTERVAL_S * 1000);
 
     for (;;) {
         /* Wake on a control tick, a command, or a connect — whichever comes
@@ -532,7 +535,7 @@ static void build_topics(mqtt_ctx_t *ctx)
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(ctx->device_id, sizeof(ctx->device_id), "%02x%02x%02x", mac[3], mac[4], mac[5]);
 
-    snprintf(ctx->base, sizeof(ctx->base), "%s/%s", CONFIG_SENSOR_BOARD_MQTT_BASE_TOPIC,
+    snprintf(ctx->base, sizeof(ctx->base), "%s/%s", CONFIG_HABINARI_MQTT_BASE_TOPIC,
              ctx->device_id);
     snprintf(ctx->topic_state, sizeof(ctx->topic_state), "%s/state", ctx->base);
     snprintf(ctx->topic_avail, sizeof(ctx->topic_avail), "%s/availability", ctx->base);

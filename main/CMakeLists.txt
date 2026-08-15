@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
+
 # The device, always: acquisition, fusion, the control core and the service
 # that owns it. This set builds and runs with no field-bus personality at all.
 set(app_srcs
@@ -27,15 +30,15 @@ set(app_srcs
 # this component references them, so the linker pulls no object out of their
 # archives. A KNX image still contains no radio code, which is the property that
 # actually matters — see the build-time guard in src/protocol_registry.c.
-if(CONFIG_SENSOR_BOARD_PROTOCOL_KNX)
+if(CONFIG_HABINARI_PROTOCOL_KNX)
     list(APPEND app_srcs "src/knx_service.cpp")
 endif()
 
-if(CONFIG_SENSOR_BOARD_PROTOCOL_MODBUS)
+if(CONFIG_HABINARI_PROTOCOL_MODBUS)
     list(APPEND app_srcs "src/mb_rtu_slave.c")
 endif()
 
-if(CONFIG_SENSOR_BOARD_PROTOCOL_MQTT)
+if(CONFIG_HABINARI_PROTOCOL_MQTT)
     list(APPEND app_srcs "src/mqtt_service.c" "src/mqtt_payload.c")
 endif()
 
@@ -43,7 +46,7 @@ endif()
 # it is conditional for the same reason they are: a KNX image must not link a
 # radio stack. The source guards itself as well, so this is belt and braces
 # rather than the only thing standing between KNX and the BLE controller.
-if(CONFIG_SENSOR_BOARD_OOB_BLE)
+if(CONFIG_HABINARI_OOB_BLE)
     list(APPEND app_srcs "src/oob_ble.c")
 endif()
 

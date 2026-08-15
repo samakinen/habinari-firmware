@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include <cstdint>
@@ -27,7 +30,7 @@
  * a stored parameter changes; see control_service.cpp for the migration hook.
  */
 
-namespace sensor_board {
+namespace habinari {
 namespace config {
 
 // ---------------------------------------------------------------------------
@@ -146,4 +149,4 @@ inline constexpr uint8_t kDefaultCo2OccupancyEnabled = 1;
 inline constexpr uint8_t kDefaultWindowDetectEnabled = 1;
 
 }  // namespace config
-}  // namespace sensor_board
+}  // namespace habinari

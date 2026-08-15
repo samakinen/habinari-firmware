@@ -1,7 +1,7 @@
-# Room HVAC Sensor/Controller TP1 — Commissioning and Integration Manual
+# Habinari — Room HVAC Sensor/Controller TP1: Commissioning and Integration Manual
 
-**Order number:** SBTP1 · **Application program:** number 21, version 4 ·
-**Manufacturer ID:** 0x00FA · **Medium:** KNX TP1 · **Group objects:** 61 (No. 0–60)
+**Order number:** HBTP1 · **Application program:** number 21, version 5 ·
+**Manufacturer ID:** 0x00FA (development placeholder — see THIRD-PARTY-NOTICES.md) · **Medium:** KNX TP1 · **Group objects:** 70 (No. 0–69)
 
 This manual describes the **KNX TP1 personality** of the board, which is the
 default firmware variant and the only one that runs on KNX bus power alone. The
@@ -152,7 +152,7 @@ and not a fault.
 
 The ETS catalogue entry is generated from the firmware, so it can never drift
 from what the device actually does. Each firmware build regenerates
-`ets_export/sensor_board_tp1_ets.knxprod.xml`. To obtain an importable
+`ets_export/habinari_tp1_ets.knxprod.xml`. To obtain an importable
 `.knxprod`, run that XML through OpenKNXproducer on a host that has it
 installed:
 

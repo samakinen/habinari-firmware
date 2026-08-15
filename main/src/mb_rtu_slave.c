@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #include "mb_rtu_slave.h"
 
 #include <inttypes.h>
@@ -32,7 +35,7 @@ static const char *TAG = "modbus_rtu_slave";
 // written setpoint feeling immediate, at negligible cost.
 #define MB_SERVICE_PERIOD_MS 200
 
-#define MB_DEVICE_NAME "Room HVAC Sensor/Controller"
+#define MB_DEVICE_NAME "Habinari Room HVAC Sensor/Controller"
 
 #define MB_REG_OFFSET(type, field) ((uint16_t)(offsetof(type, field) / 2))
 

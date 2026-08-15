@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * @file device_secret_core.cpp
  * @brief Portable half of the device root secret: entropy pooling and the KDF.
@@ -15,7 +18,7 @@
 #include <bit>
 #include <cstring>
 
-namespace sensor_board::secret {
+namespace habinari::secret {
 
 namespace {
 
@@ -302,4 +305,4 @@ bool deriveBlePasskey(const RootSecret &root, Serial serial, uint32_t &out)
     return true;
 }
 
-} // namespace sensor_board::secret
+} // namespace habinari::secret

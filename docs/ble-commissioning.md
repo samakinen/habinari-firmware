@@ -90,7 +90,7 @@ as it lasts. **A board with its LED lit is the board that can be commissioned**,
 whatever protocol you reach it with, and that is the whole mental model an
 installer needs.
 
-It lapses on its own after `CONFIG_SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S`
+It lapses on its own after `CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S`
 (default 900 s), because a device left selected is a device anybody within reach
 can re-address or pair with. The timeout is delivered as a synthetic button
 press, so a KNX build leaves programming mode through the same path ETS and the
@@ -118,7 +118,7 @@ pairing, which any passer-by can complete.
 The six-digit passkey is derived per device from the eFuse root secret:
 
 ```
-passkey = HMAC-SHA256(root, "sensorboard/BLE-passkey/v1" || serial[6])[0..3] mod 10^6
+passkey = HMAC-SHA256(root, "habinari/BLE-passkey/v1" || serial[6])[0..3] mod 10^6
 ```
 
 This is the same root the KNX FDSK comes from, under a different
@@ -234,7 +234,7 @@ whether a fat finger hit `0x04` instead of `0x03`.
 ### Status (`...0006`, read and notify)
 
 20 bytes of live readings, notified every
-`CONFIG_SENSOR_BOARD_OOB_BLE_STATUS_PERIOD_MS` (default 2 s) while a client is
+`CONFIG_HABINARI_OOB_BLE_STATUS_PERIOD_MS` (default 2 s) while a client is
 subscribed, and not at all otherwise.
 
 | Offset | Type | Field |
@@ -261,8 +261,50 @@ disagree about what an absent sensor looks like.
 
 ## 5. Using it
 
+There are two clients, speaking the same contract. `tools/ble_config.py` is the
+reference one; `docs/webui/` is the one an installer uses.
+
+### From a browser
+
+`docs/webui/index.html` is a single self-contained page that renders the same
+registry over Web Bluetooth — no Python, no `bleak`, nothing installed on the
+commissioning machine. It is served from GitHub Pages; see
+[webui/README.md](webui/README.md) for how, and for why it is published from a
+branch of its own rather than out of `docs/`.
+
+It builds its form out of the descriptors the device hands over, so a setting
+added to the registry appears there without the page changing. Three things
+about it belong here rather than in its own README, because they are properties
+of the channel rather than of the page:
+
+* **It cannot be opened from disk.** Web Bluetooth is only available in a secure
+  context, so the page has to come over HTTPS or from `localhost`.
+* **Chrome and Edge only, and no iOS at all.** Safari and Firefox have not
+  implemented Web Bluetooth, and every iOS browser uses Safari's engine. Android
+  is supported and is the mobile target; an iPhone commissions with the CLI from
+  a laptop.
+* **ATT error codes do not survive the browser.** Web Bluetooth collapses `0x13`,
+  `0x03` and `0x0D` into one generic `DOMException`, so the page validates
+  against the descriptor's own bounds before writing and treats the device's
+  refusal as the backstop. The device is still the authority — §2's rule that
+  values are refused and never clamped is unaffected — but the message the
+  installer reads is composed client-side.
+
+Offline works after one load: a service worker caches the page, and Chrome on
+Android will add it to a home screen.
+
+The page decodes §4 by hand at fixed offsets, and nothing in the build links the
+two, so `tools/check_webui_parity.py` compares them — offsets, accessor widths,
+opcodes, flag bits, the setting types and the service UUID. It runs with the
+host suite as `test_webui_parity` and needs no compiler or browser. A change to
+`oob_service.h` or `device_config.h` that the page has not followed fails there
+rather than on a bench.
+
+### From a terminal
+
 `tools/ble_config.py` is the reference client — small enough to read in one
-sitting, which is the point.
+sitting, which is the point. It is what to reach for on a bench, because it
+prints exactly what the device reports.
 
 ```bash
 pip install bleak
@@ -319,7 +361,7 @@ again.
 
 ## 6. Why a KNX image has none of this
 
-`CONFIG_SENSOR_BOARD_OOB_BLE` depends on `!SENSOR_BOARD_PROTOCOL_KNX`, and
+`CONFIG_HABINARI_OOB_BLE` depends on `!HABINARI_PROTOCOL_KNX`, and
 `main/src/protocol_registry.c` refuses to compile a KNX image with
 `CONFIG_BT_ENABLED` set by any other route. Three independent reasons, any one
 of which would be enough:
@@ -381,6 +423,13 @@ which is exact for every integer below 2²⁴ — three orders of magnitude more
 any address, port or percentage needs.
 
 ## 8. Adding a channel
+
+Adding a *client* is a different and much smaller thing: §4 is the whole
+contract, and `tools/ble_config.py` and `docs/webui/index.html` are two
+independent readings of it. Neither knows what any setting means. A third would
+want its own entry in `tools/check_webui_parity.py`, for the reason given
+there — a client that decodes offsets by hand has nothing else holding it to
+this file.
 
 `oob_service.h` is the contract: `start`, `set_programming_mode`, `advertising`,
 `client_connected`. Write a second implementation, guard it with

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * @file hvac_control.hpp
  * @brief Device-side room-control logic: mode/preset resolution, PI/two-point
@@ -11,7 +14,7 @@
  * Everything is pure and platform-free (no ESP-IDF, no clock, no allocation):
  * callers pass measurements and a dt, so the logic is host-testable. Enum
  * values below match the raw wire bytes documented next to the corresponding
- * `SensorBoardPort`/`SensorBoardParameter` entries in knx_product.hpp; the
+ * `HabinariPort`/`HabinariParameter` entries in knx_product.hpp; the
  * KNX binding layer (knx_service.cpp) is responsible for casting between
  * KNstaX DPT types (e.g. `Dpt20Mode`) and these plain enums.
  */
@@ -21,7 +24,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace sensor_board {
+namespace habinari {
 namespace hvac {
 
 inline float clampf(float value, float lo, float hi)
@@ -427,7 +430,7 @@ struct ThermostatInputs {
     float floorTemperatureC{0.0f};
     bool floorTemperatureValid{false};
 
-    // Mode/state inputs (all bus-writable; see SensorBoardPort comments).
+    // Mode/state inputs (all bus-writable; see HabinariPort comments).
     bool controllerEnable{true};
     OperatingPreset hvacOperatingMode{OperatingPreset::Comfort};  // bus/schedule request
     ControllerMode controllerMode{ControllerMode::Auto};
@@ -1197,7 +1200,7 @@ struct VentilationOutputs {
     bool sensorFault{false};
 };
 
-// IaqStatus bitset bits (SensorBoardPort::AirQualityStatus).
+// IaqStatus bitset bits (HabinariPort::AirQualityStatus).
 enum class IaqStatusBit : uint16_t {
     HumidityBoost = 1u << 0,
     Co2Boost = 1u << 1,
@@ -1299,4 +1302,4 @@ private:
 };
 
 } // namespace hvac
-} // namespace sensor_board
+} // namespace habinari

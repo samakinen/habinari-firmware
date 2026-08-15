@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #include "board.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"

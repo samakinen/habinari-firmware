@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
 # Build every field-bus personality.
 #
 # Each variant gets its own build directory AND its own sdkconfig. The second
@@ -53,17 +55,17 @@ for name in "${selected[@]}"; do
     idf.py -B "${build_dir}" \
            -DSDKCONFIG="${build_dir}/sdkconfig" \
            -DSDKCONFIG_DEFAULTS="${defaults}" \
-           -DSENSOR_BOARD_ETS_EXPORT="${ets_export}" \
+           -DHABINARI_ETS_EXPORT="${ets_export}" \
            build
 
-    grep -E "^CONFIG_SENSOR_BOARD_(PROTOCOL_[A-Z]+|OOB_BLE)=y" "${build_dir}/sdkconfig" \
+    grep -E "^CONFIG_HABINARI_(PROTOCOL_[A-Z]+|OOB_BLE)=y" "${build_dir}/sdkconfig" \
         || echo "  (no personality selected)"
 done
 
 echo
 echo "=== image sizes ============================================="
 for name in "${selected[@]}"; do
-    bin="build_${name}/sensor-board.bin"
+    bin="build_${name}/habinari.bin"
     if [ -f "${bin}" ]; then
         printf '%-8s %8s bytes\n' "${name}" "$(stat -c%s "${bin}")"
     fi

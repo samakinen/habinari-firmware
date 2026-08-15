@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include "control_core.hpp"
@@ -30,7 +33,7 @@
  *     never a half-updated mixture of this tick and the last.
  */
 
-namespace sensor_board {
+namespace habinari {
 namespace control {
 
 /// Everything the device shares between the control task and its adapters.
@@ -108,4 +111,4 @@ private:
 bool takeIdentifyToggleRequest();
 
 }  // namespace control
-}  // namespace sensor_board
+}  // namespace habinari

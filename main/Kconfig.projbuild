@@ -1,8 +1,11 @@
-menu "Sensor board protocols"
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
+
+menu "Habinari protocols"
 
     comment "Field-bus personalities. These are alternatives, not layers."
 
-    config SENSOR_BOARD_PROTOCOL_KNX
+    config HABINARI_PROTOCOL_KNX
         bool "KNX TP1"
         default y
         help
@@ -17,7 +20,7 @@ menu "Sensor board protocols"
             board — one microsecond of margin. A radio stack in the same image
             spends margin that is not there.
 
-    config SENSOR_BOARD_PROTOCOL_MODBUS
+    config HABINARI_PROTOCOL_MODBUS
         bool "Modbus RTU (RS-485)"
         default y
         help
@@ -34,10 +37,10 @@ menu "Sensor board protocols"
             to. Modbus standardises no addressing mechanism at all; see
             docs/modbus-register-map.md for why this is the shape it is.
 
-    config SENSOR_BOARD_PROTOCOL_MQTT
+    config HABINARI_PROTOCOL_MQTT
         bool "MQTT over Wi-Fi"
         default n
-        select SENSOR_BOARD_REQUIRES_AUX_POWER
+        select HABINARI_REQUIRES_AUX_POWER
         help
             Join a Wi-Fi network and publish the room-controller model as JSON
             over MQTT, with Home Assistant discovery so the device appears as a
@@ -47,7 +50,7 @@ menu "Sensor board protocols"
             what the KNX bus terminal can deliver. Cannot be combined with the
             KNX personality.
 
-    config SENSOR_BOARD_REQUIRES_AUX_POWER
+    config HABINARI_REQUIRES_AUX_POWER
         bool
         help
             Set automatically by any personality that cannot run on KNX bus
@@ -55,22 +58,22 @@ menu "Sensor board protocols"
             power reads as a configuration mistake rather than a dead board.
 
     menu "MQTT personality"
-        depends on SENSOR_BOARD_PROTOCOL_MQTT
+        depends on HABINARI_PROTOCOL_MQTT
 
-        config SENSOR_BOARD_MQTT_BASE_TOPIC
+        config HABINARI_MQTT_BASE_TOPIC
             string "Base topic prefix"
-            default "sensorboard"
+            default "habinari"
             help
                 Topics are <prefix>/<device-id>/... where <device-id> is derived
                 from the MAC address, so several boards coexist under one prefix.
 
-        config SENSOR_BOARD_MQTT_DISCOVERY_PREFIX
+        config HABINARI_MQTT_DISCOVERY_PREFIX
             string "Home Assistant discovery prefix"
             default "homeassistant"
             help
                 Set empty to publish no discovery configuration at all.
 
-        config SENSOR_BOARD_MQTT_STATE_INTERVAL_S
+        config HABINARI_MQTT_STATE_INTERVAL_S
             int "State heartbeat interval (seconds)"
             range 1 3600
             default 10
@@ -87,11 +90,11 @@ menu "Sensor board protocols"
 
 endmenu
 
-menu "Sensor board service channel"
+menu "Habinari service channel"
 
     comment "Out-of-band configuration. Not a field bus — see oob_service.h."
 
-    config SENSOR_BOARD_PROGRAMMING_MODE_TIMEOUT_S
+    config HABINARI_PROGRAMMING_MODE_TIMEOUT_S
         int "Programming mode timeout (seconds, 0 = never)"
         range 0 3600
         default 900
@@ -114,11 +117,11 @@ menu "Sensor board service channel"
             Set to 0 to keep the pre-timeout behaviour, where only a second
             button press or ETS leaves programming mode.
 
-    config SENSOR_BOARD_OOB_BLE
+    config HABINARI_OOB_BLE
         bool "BLE commissioning and diagnostics channel"
-        depends on !SENSOR_BOARD_PROTOCOL_KNX
+        depends on !HABINARI_PROTOCOL_KNX
         default n
-        select SENSOR_BOARD_REQUIRES_AUX_POWER
+        select HABINARI_REQUIRES_AUX_POWER
         help
             Expose the device_config registry over a BLE GATT service, so an
             installer with a phone or a laptop can write the settings that no
@@ -159,9 +162,9 @@ menu "Sensor board service channel"
             RAM.
 
     menu "BLE channel"
-        depends on SENSOR_BOARD_OOB_BLE
+        depends on HABINARI_OOB_BLE
 
-        config SENSOR_BOARD_OOB_BLE_STATUS_PERIOD_MS
+        config HABINARI_OOB_BLE_STATUS_PERIOD_MS
             int "Status notification period (ms)"
             range 250 60000
             default 2000
@@ -174,9 +177,9 @@ menu "Sensor board service channel"
 
 endmenu
 
-menu "Sensor board device secret"
+menu "Habinari device secret"
 
-    config SENSOR_BOARD_ROOT_SECRET_EFUSE_BLOCK
+    config HABINARI_ROOT_SECRET_EFUSE_BLOCK
         int "eFuse key block holding the device root secret (0-5 = BLOCK_KEY0..KEY5)"
         range 0 5
         default 5
@@ -189,7 +192,7 @@ menu "Sensor board device secret"
             index will eventually collide with them. The firmware refuses to
             provision a block that is already used for another purpose.
 
-    config SENSOR_BOARD_ROOT_SECRET_BURN
+    config HABINARI_ROOT_SECRET_BURN
         bool "Burn the device root secret into eFuse (IRREVERSIBLE)"
         default n
         help
@@ -208,9 +211,9 @@ menu "Sensor board device secret"
             get a different FDSK once this is enabled, and must be
             re-commissioned in ETS with the newly printed certificate.
 
-    config SENSOR_BOARD_ROOT_SECRET_LOG_DRY_RUN_SECRET
+    config HABINARI_ROOT_SECRET_LOG_DRY_RUN_SECRET
         bool "Log the candidate root secret during a dry run"
-        depends on !SENSOR_BOARD_ROOT_SECRET_BURN
+        depends on !HABINARI_ROOT_SECRET_BURN
         default y
         help
             Print the raw 32-byte candidate root secret over the console during

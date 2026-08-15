@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include <stdbool.h>
@@ -16,7 +19,7 @@ extern "C" {
  *
  * The board can speak KNX TP1, Modbus RTU or MQTT-over-Wi-Fi. They are
  * alternatives, not layers: which ones are compiled in is a build-time choice
- * (see Kconfig, menu "Sensor board protocols"), because the radio and the
+ * (see Kconfig, menu "Habinari protocols"), because the radio and the
  * bit-banged KNX TP1 driver cannot share a CPU — see the build-time guard in
  * protocol_registry.c for why that is enforced rather than documented.
  *

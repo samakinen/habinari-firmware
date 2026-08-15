@@ -1,6 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 Sami Mäkinen
+
 param(
-    [string]$InputXml = "ets_export/sensor_board_tp1_ets.knxprod.xml",
-    [string]$OutputKnxprod = "ets_export/sensor_board_tp1_ets.knxprod"
+    [string]$InputXml = "ets_export/habinari_tp1_ets.knxprod.xml",
+    [string]$OutputKnxprod = "ets_export/habinari_tp1_ets.knxprod"
 )
 
 $producer = Get-Command OpenKNXproducer -ErrorAction SilentlyContinue

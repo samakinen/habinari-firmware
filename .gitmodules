@@ -1,3 +1,3 @@
 [submodule "components/KNstaX"]
 	path = components/KNstaX
-	url = ssh://git@git.pilosa.fi:2222/smak/KNstaX.git
+	url = https://github.com/samakinen/KNstaX.git

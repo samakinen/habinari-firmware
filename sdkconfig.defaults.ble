@@ -3,11 +3,11 @@
 # An overlay, not a variant: it is layered on top of a personality's defaults
 # because it is not a personality itself (see main/include/oob_service.h). It
 # composes with the Modbus and MQTT defaults and with nothing else — a KNX image
-# cannot select CONFIG_SENSOR_BOARD_OOB_BLE at all, and Kconfig says why.
+# cannot select CONFIG_HABINARI_OOB_BLE at all, and Kconfig says why.
 #
 #   tools/build_variants.sh modbus-ble
 #   tools/build_variants.sh mqtt
-CONFIG_SENSOR_BOARD_OOB_BLE=y
+CONFIG_HABINARI_OOB_BLE=y
 
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y

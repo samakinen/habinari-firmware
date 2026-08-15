@@ -44,7 +44,7 @@ building talks to the room. See
 
 ## 2. Choosing one
 
-`menuconfig` → **Sensor board protocols**, or the ready-made defaults files:
+`menuconfig` → **Habinari protocols**, or the ready-made defaults files:
 
 ```bash
 tools/build_variants.sh          # all of them
@@ -68,9 +68,9 @@ idf.py -B build_mqtt \
 
 | Symbol | Default | Transport | Power |
 |---|---|---|---|
-| `SENSOR_BOARD_PROTOCOL_KNX` | y | STKNX, TP1, ETS-commissioned | KNX bus terminal, no aux supply |
-| `SENSOR_BOARD_PROTOCOL_MODBUS` | y | SP3485EN, RS-485 | either |
-| `SENSOR_BOARD_PROTOCOL_MQTT` | n | Wi-Fi station | **5–30 V auxiliary supply required** |
+| `HABINARI_PROTOCOL_KNX` | y | STKNX, TP1, ETS-commissioned | KNX bus terminal, no aux supply |
+| `HABINARI_PROTOCOL_MODBUS` | y | SP3485EN, RS-485 | either |
+| `HABINARI_PROTOCOL_MQTT` | n | Wi-Fi station | **5–30 V auxiliary supply required** |
 
 Personalities compose with the BLE service channel, which is an *overlay* rather
 than a variant of its own — it is not a personality, and
@@ -83,7 +83,7 @@ tools/build_variants.sh modbus-ble   # sdkconfig.defaults.modbus + .ble
 Measured image sizes against the 1920 kB OTA slot (`tools/build_variants.sh`,
 ESP-IDF v6.1, `-Os`):
 
-| Variant | `sensor-board.bin` | Slot used |
+| Variant | `habinari.bin` | Slot used |
 |---|---|---|
 | Modbus only | 349 216 B | 17 % |
 | Modbus + BLE | 776 496 B | 39 % |

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 /**
@@ -15,7 +18,7 @@
 #include <cstdint>
 #include <span>
 
-namespace sensor_board::identity {
+namespace habinari::identity {
 
 /// Characters in a formatted certificate, excluding the five separators.
 inline constexpr size_t kCertificateChars = 36;
@@ -55,4 +58,4 @@ void formatDeviceCertificate(std::span<const uint8_t, 6> serial,
                              char *out,
                              size_t outLen);
 
-} // namespace sensor_board::identity
+} // namespace habinari::identity

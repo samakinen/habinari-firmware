@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 #pragma once
 
 #include <stdbool.h>
@@ -70,7 +73,7 @@ typedef struct {
 typedef struct {
     bool fire_alarm;             ///< confirmed rapid rise / over-temperature (advisory, not EN 54)
     bool fire_pre_alarm;         ///< condition present, confirmation time not yet elapsed
-    uint8_t fire_reason_mask;    ///< sensor_board::fusion::FireReasonBit values
+    uint8_t fire_reason_mask;    ///< habinari::fusion::FireReasonBit values
     bool occupancy_detected;     ///< inferred from the CO2 signal
     uint8_t estimated_occupants; ///< order-of-magnitude only, never used for control
     float co2_baseline_ppm;      ///< tracked fresh-air level the excess is measured against

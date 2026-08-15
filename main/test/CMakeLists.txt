@@ -9,7 +9,7 @@
 cmake_minimum_required(VERSION 3.16)
 # C as well as C++: the protocol adapters and their wire formats are C, and
 # compiling them as C++ would mangle the symbols the tests link against.
-project(sensor_board_main_host_tests C CXX)
+project(habinari_main_host_tests C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -117,3 +117,19 @@ target_link_libraries(test_device_config PRIVATE unity)
 target_compile_options(test_device_config PRIVATE -Wall -Wextra)
 
 add_test(NAME test_device_config COMMAND test_device_config)
+
+# The browser commissioning client (docs/webui/index.html) decodes the same GATT
+# characteristics by hand, in JavaScript, at fixed offsets — and nothing in any
+# build links the two, so a field inserted into oob_status_t would leave it
+# reading the wrong bytes with no error anywhere. This compares the two sides.
+#
+# It is a Python script rather than a C++ test because the thing that has to be
+# read is the page, and it needs no compiler or browser to do it.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_webui_parity
+        COMMAND "${Python3_EXECUTABLE}" "${REPO_ROOT}/tools/check_webui_parity.py")
+else()
+    message(WARNING "Python 3 not found: skipping test_webui_parity, which is the "
+                    "only thing checking docs/webui/ against the firmware.")
+endif()

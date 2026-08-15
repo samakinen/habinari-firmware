@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025-2026 Sami Mäkinen
+
 /**
  * @file device_identity.cpp
  * @brief Hex / base32 / CRC-4 rendering of the device's KNX identity.
@@ -12,7 +15,7 @@
 #include <algorithm>
 #include <cstdio>
 
-namespace sensor_board::identity {
+namespace habinari::identity {
 
 void toHex(std::span<const uint8_t> bytes, char sep, char *out, size_t outLen)
 {
@@ -95,4 +98,4 @@ void formatDeviceCertificate(std::span<const uint8_t, 6> serial,
     }
 }
 
-} // namespace sensor_board::identity
+} // namespace habinari::identity

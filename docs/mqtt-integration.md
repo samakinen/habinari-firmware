@@ -71,7 +71,7 @@ the settings and reboots.
 ## 2. Topics
 
 `<base>` is `<prefix>/<device-id>`, where the prefix is
-`CONFIG_SENSOR_BOARD_MQTT_BASE_TOPIC` (default `sensorboard`) and the device id
+`CONFIG_HABINARI_MQTT_BASE_TOPIC` (default `habinari`) and the device id
 is the last three bytes of the Wi-Fi MAC in hex. Several boards therefore
 coexist under one prefix without configuration.
 
@@ -91,7 +91,7 @@ redelivery would only ever deliver a stale reading.
 Publishing is **send-on-change plus heartbeat**, the same model the KNX
 transmit policy uses. The device rebuilds the document on every control tick
 (1 Hz), compares it against the last one it sent, and publishes if anything
-differs. If nothing has differed for `CONFIG_SENSOR_BOARD_MQTT_STATE_INTERVAL_S`
+differs. If nothing has differed for `CONFIG_HABINARI_MQTT_STATE_INTERVAL_S`
 seconds (default 10) it publishes anyway, so a subscriber can tell a quiet room
 from a dead device. An accepted command always publishes immediately — a UI that
 has just sent a setpoint is waiting to see it take effect, including the clamped
@@ -170,9 +170,9 @@ classic silent integration failure.
 ### Worked example
 
 ```bash
-mosquitto_sub -h 10.0.0.5 -t 'sensorboard/+/state' -v
-mosquitto_pub -h 10.0.0.5 -t 'sensorboard/a4f2c8/cmd/setpoint' -m '21.5'
-mosquitto_pub -h 10.0.0.5 -t 'sensorboard/a4f2c8/cmd/preset'   -m 'eco'
+mosquitto_sub -h 10.0.0.5 -t 'habinari/+/state' -v
+mosquitto_pub -h 10.0.0.5 -t 'habinari/a4f2c8/cmd/setpoint' -m '21.5'
+mosquitto_pub -h 10.0.0.5 -t 'habinari/a4f2c8/cmd/preset'   -m 'eco'
 ```
 
 ---
@@ -180,7 +180,7 @@ mosquitto_pub -h 10.0.0.5 -t 'sensorboard/a4f2c8/cmd/preset'   -m 'eco'
 ## 5. Home Assistant
 
 Discovery configuration is published retained under
-`CONFIG_SENSOR_BOARD_MQTT_DISCOVERY_PREFIX` (default `homeassistant`) whenever
+`CONFIG_HABINARI_MQTT_DISCOVERY_PREFIX` (default `homeassistant`) whenever
 the broker session comes up:
 
 * `homeassistant/climate/<id>/thermostat/config` — the climate entity: current
