@@ -4,7 +4,7 @@
 # Builds and runs the portable parts of the firmware on the runner. No ESP-IDF
 # and no hardware, so it stays fast enough to gate every push.
 #
-# Once components/KNstaX is public, a target build is worth adding as a second
+# components/KNstaX is public now, so a target build is worth adding as a second
 # job:
 #
 #   firmware:
@@ -15,8 +15,8 @@
 #         with: { submodules: recursive }
 #       - run: . $IDF_PATH/export.sh && idf.py set-target esp32c6 build
 #
-# It needs the submodule to be publicly cloneable, which is why it is not
-# enabled here yet.
+# It is left out only because it is slower than the gate this file is meant to
+# be, not because anything blocks it.
 
 name: host tests
 
@@ -30,7 +30,18 @@ jobs:
   host-tests:
     runs-on: ubuntu-latest
     steps:
+      # components/KNstaX is needed even here: main/test builds against its
+      # minimal Unity header, so a checkout without it fails to compile.
       - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # mbedcrypto, for the device root secret KDF. Everything else the tests
+      # need is already on the image.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libmbedtls-dev
 
       - name: Configure
         run: cmake -S main/test -B build_host_tests
