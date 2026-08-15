@@ -83,7 +83,10 @@ typedef struct {
 /// Sensor package health, as bitmasks over sensor_source_t.
 typedef struct {
     uint8_t present_mask;  ///< has answered at least once since boot (i.e. is fitted)
-    uint8_t healthy_mask;  ///< currently delivering accepted readings
+    /// Every measurand this package has been seen to produce is being accepted
+    /// right now. Present but not healthy = fitted and degraded, which covers a
+    /// part that has lost one measurand while still delivering the others.
+    uint8_t healthy_mask;
     uint8_t suspect_mask;  ///< disagreeing with its peers on some measurand
     uint32_t sample_count; ///< sampling cycles completed
     uint32_t error_count;  ///< cycles in which at least one bus transaction failed

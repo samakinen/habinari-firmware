@@ -57,15 +57,22 @@ static volatile bool s_identify_active = false;
 // to see it. Adding a protocol does not add a line here.
 static void on_sensor_data(const sensor_data_t *data)
 {
+    // The provenance fields are on the line because without them a change of
+    // temperature source reads as an unexplained step: how many sources are live
+    // and which of them are disagreeing is what says whether that step was a
+    // sensor dying or the sensors merely arguing.
     ESP_LOGI(TAG,
-             "Room T=%.2f C (src%u%s) RH=%.1f %% CO2=%.0f ppm P=%.0f Pa IAQ=%.0f(acc%u) | "
-             "Probe T=%.2f C RH=%.1f %% | dT=%+.2f K/min health=0x%02x%s%s",
+             "Room T=%.2f C (src%u of %u%s%s) RH=%.1f %% CO2=%.0f ppm P=%.0f Pa IAQ=%.0f(acc%u) | "
+             "Probe T=%.2f C RH=%.1f %% | dT=%+.2f K/min health=0x%02x suspect=0x%02x%s%s",
              data->temperature.value, data->temperature.source,
-             data->temperature.fallback ? ",fallback" : "", data->humidity.value,
+             (unsigned)data->temperature.healthy_count,
+             data->temperature.fallback ? ",fallback" : "",
+             data->temperature.disagreement ? ",disputed" : "", data->humidity.value,
              data->co2.value, data->pressure.value, data->iaq.value,
              (unsigned)data->air_quality_accuracy, data->probe_temperature.value,
              data->probe_humidity.value, data->trends.temperature.per_minute,
-             data->health.healthy_mask, data->events.occupancy_detected ? " occupied" : "",
+             data->health.healthy_mask, data->health.suspect_mask,
+             data->events.occupancy_detected ? " occupied" : "",
              data->events.fire_alarm ? " FIRE" : "");
 
     control_service_update_sensor_data(data);

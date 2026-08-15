@@ -25,13 +25,20 @@ namespace fu = habinari::fusion;
 
 static const char *TAG = "sensor_fusion";
 
-// Priority order per measurand. Index 0 is the preferred part; the rest are
-// fallbacks used only when the ones above them stop delivering.
+// Priority order per measurand. Index 0 is the reference part and is published
+// whenever it is delivering; the rest keep the measurand alive if it dies and
+// cross-check it while it lives. Selection is strict priority, never a vote —
+// see the RedundantMeasurement contract in sensor_fusion.hpp for why.
 //
-// Room temperature/humidity: the HDC3020 is the reference part — it is the only
-// one of the three not sitting next to its own heat source. The BME688 comes
-// next (its BSEC output is heat-compensated), then the SCD4x, whose T/RH is a
-// by-product of its own compensation and the least trustworthy of the three.
+// Room temperature/humidity: the HDC3020 is the reference. It is fitted for
+// exactly this measurement and placed away from anything on the board that
+// dissipates power, and it is the only one of the three whose reading is not a
+// by-product of some other job. The BME688 runs a gas heater and the SCD4x an
+// optical source; both report part of their own self-heating as room
+// temperature, and both are humidity-compensating for their own sake rather
+// than reporting the room. So they rank below the HDC3020 — BME688 first, since
+// its BSEC output is at least heat-compensated — and they exist here as a
+// fallback and a drift witness, not as an equal vote.
 //
 // The SHT4x probe is deliberately NOT in this list. It measures a different
 // place (in-slab or remote), so promoting it to a room-air fallback would
@@ -73,7 +80,12 @@ struct FusionState {
     fu::OccupancyEstimator occupancy;
     fu::WindowDetector window;
 
-    uint8_t everSeenMask{0};
+    // BSEC reports its calibration status alongside the air-quality outputs, so
+    // it is only meaningful while those outputs are arriving. Latched here so a
+    // cycle that simply carried no new BSEC result does not read as "accuracy
+    // dropped to 0".
+    uint8_t airQualityAccuracy{0};
+
     uint32_t sampleCount{0};
     uint32_t errorCount{0};
 };
@@ -190,6 +202,33 @@ void exportChannel(const fu::FilteredChannel &channel,
                                   : static_cast<uint8_t>(SENSOR_SOURCE_NONE);
 }
 
+// Liveness of one physical package, accumulated over the channels it feeds.
+//
+// A package is healthy only when *every* measurand it has been seen to produce
+// is producing now — an OR across its channels would report a BME688 whose
+// temperature has gone stale as fully healthy on the strength of its pressure
+// reading, which is exactly the degraded state a health mask exists to expose.
+//
+// The bar is what the part has actually delivered, not a static list of what it
+// could deliver. Otherwise the BME688 would read unhealthy throughout the BSEC
+// warm-up, when nothing is wrong with it — "never calibrated" and "stopped
+// working" are different service calls.
+struct PackageHealth {
+    bool everSeen{false};
+    bool healthy{true};
+
+    void observe(const fu::FilteredChannel &channel)
+    {
+        if (!channel.everSeen()) {
+            return;
+        }
+        everSeen = true;
+        if (!channel.valid()) {
+            healthy = false;
+        }
+    }
+};
+
 sensor_trend_t exportTrend(float perMinute, bool ready, bool sourceValid)
 {
     sensor_trend_t trend{};
@@ -266,7 +305,7 @@ extern "C" void sensor_fusion_reset(void)
     g_state.occupancy.reset();
     g_state.window.reset();
     g_state.fire.acknowledge();
-    g_state.everSeenMask = 0;
+    g_state.airQualityAccuracy = 0;
     g_state.sampleCount = 0;
     g_state.errorCount = 0;
 }
@@ -345,7 +384,17 @@ extern "C" void sensor_fusion_update(const sensor_bus_results_t *bus,
     exportChannel(g_state.iaq, SENSOR_SOURCE_BME68X, &out->iaq);
     exportChannel(g_state.co2Equivalent, SENSOR_SOURCE_BME68X, &out->co2_equivalent);
     exportChannel(g_state.vocEquivalent, SENSOR_SOURCE_BME68X, &out->voc_equivalent);
-    out->air_quality_accuracy = haveBus ? bus->bme68x_iaq_accuracy : 0;
+    // Only sample the calibration status on a cycle that actually carried BSEC
+    // output, and drop it once the IAQ channel goes stale: consumers gate on
+    // `accuracy > 0`, so a value left over from a sensor that has stopped
+    // answering would keep an untrustworthy index looking trustworthy.
+    if (haveBus && has(SENSOR_BUS_BME68X_IAQ)) {
+        g_state.airQualityAccuracy = bus->bme68x_iaq_accuracy;
+    }
+    if (!g_state.iaq.valid()) {
+        g_state.airQualityAccuracy = 0;
+    }
+    out->air_quality_accuracy = g_state.airQualityAccuracy;
 
     // --- External probe ----------------------------------------------------
     const bool haveProbe = probe != nullptr;
@@ -410,30 +459,41 @@ extern "C" void sensor_fusion_update(const sensor_bus_results_t *bus,
     out->events.window_open_detected = config.window_detect_enabled && window.windowOpen;
 
     // --- Health ------------------------------------------------------------
-    uint8_t healthy = 0;
-    uint8_t suspect = out->temperature.suspect_mask | out->humidity.suspect_mask;
+    // Every channel is attributed to the package that produced it, so a part
+    // that has lost one of its measurands stops counting as healthy while still
+    // counting as present.
+    std::array<PackageHealth, SENSOR_SOURCE_COUNT> packages{};
     for (size_t i = 0; i < fu::kMaxSources; ++i) {
-        if (g_state.temperature.source(i).valid() || g_state.humidity.source(i).valid()) {
-            healthy |= SENSOR_SOURCE_BIT(kTemperatureSources[i]);
+        packages[kTemperatureSources[i]].observe(g_state.temperature.source(i));
+        packages[kHumiditySources[i]].observe(g_state.humidity.source(i));
+    }
+    packages[SENSOR_SOURCE_BME68X].observe(g_state.pressure);
+    packages[SENSOR_SOURCE_BME68X].observe(g_state.iaq);
+    packages[SENSOR_SOURCE_BME68X].observe(g_state.co2Equivalent);
+    packages[SENSOR_SOURCE_BME68X].observe(g_state.vocEquivalent);
+    packages[SENSOR_SOURCE_SCD4X].observe(g_state.co2);
+    packages[SENSOR_SOURCE_SHT4X].observe(g_state.probeTemperature);
+    packages[SENSOR_SOURCE_SHT4X].observe(g_state.probeHumidity);
+
+    uint8_t present = 0;
+    uint8_t healthy = 0;
+    for (size_t i = 0; i < static_cast<size_t>(SENSOR_SOURCE_COUNT); ++i) {
+        if (!packages[i].everSeen) {
+            continue;  // not fitted, or has never answered: neither present nor sick
+        }
+        present |= SENSOR_SOURCE_BIT(i);
+        if (packages[i].healthy) {
+            healthy |= SENSOR_SOURCE_BIT(i);
         }
     }
-    if (g_state.pressure.valid() || g_state.iaq.valid()) {
-        healthy |= SENSOR_SOURCE_BIT(SENSOR_SOURCE_BME68X);
-    }
-    if (g_state.co2.valid()) {
-        healthy |= SENSOR_SOURCE_BIT(SENSOR_SOURCE_SCD4X);
-    }
-    if (g_state.probeTemperature.valid() || g_state.probeHumidity.valid()) {
-        healthy |= SENSOR_SOURCE_BIT(SENSOR_SOURCE_SHT4X);
-    }
-    g_state.everSeenMask |= healthy;
+    const uint8_t suspect = out->temperature.suspect_mask | out->humidity.suspect_mask;
 
     ++g_state.sampleCount;
     if (haveBus && bus->error_count > 0) {
         ++g_state.errorCount;
     }
 
-    out->health.present_mask = g_state.everSeenMask;
+    out->health.present_mask = present;
     out->health.healthy_mask = healthy;
     out->health.suspect_mask = suspect;
     out->health.sample_count = g_state.sampleCount;

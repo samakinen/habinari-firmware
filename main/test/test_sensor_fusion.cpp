@@ -85,6 +85,35 @@ void test_channel_smooths_noise(void)
     TEST_ASSERT_FLOAT_WITHIN(0.15f, 21.0f, channel.value());
 }
 
+void test_channel_time_constant_does_not_depend_on_sample_cadence(void)
+{
+    // The filter is specified in seconds, so two sources given the same tau must
+    // converge alike whether they answer every cycle (HDC3020) or once per ten
+    // (SCD4x). Charging the caller's cycle period instead of the real gap made
+    // the slow one lag the fast one by minutes — enough for the two to fail a
+    // cross-check against each other while both were working perfectly.
+    ChannelConfig config = temperatureChannelConfig();
+    config.maxStepPerSecond = 0.0f;  // isolate smoothing from the spike gate
+    config.staleAfterSeconds = 600.0f;
+
+    FilteredChannel fast;
+    FilteredChannel slow;
+    fast.configure(config);
+    slow.configure(config);
+    fast.update(1.0f, 20.0f, true);
+    slow.update(1.0f, 20.0f, true);
+
+    // 30 s of a 10 K step: three time constants, so both land ~95 % of the way.
+    for (int i = 0; i < 30; ++i) {
+        fast.update(1.0f, 30.0f, true);
+        slow.update(1.0f, 30.0f, (i % 10) == 9);
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(4, slow.acceptedSamples());
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, fast.value(), slow.value());
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 29.5f, slow.value());
+}
+
 void test_channel_rejects_spike_then_resyncs(void)
 {
     FilteredChannel channel;
@@ -164,9 +193,35 @@ void test_fusion_prefers_primary_source(void)
     TEST_ASSERT_EQUAL_UINT8(3, out.healthyCount);
     TEST_ASSERT_FALSE(out.disagreement);
     TEST_ASSERT_EQUAL(static_cast<int>(FusionQuality::Validated), static_cast<int>(out.quality));
-    // With three agreeing sources the median is published; all three are within
-    // the tolerance of each other so the value is the middle one.
-    TEST_ASSERT_FLOAT_WITHIN(0.5f, 21.0f, out.value);
+    // The reference sensor is published even though it is neither the middle
+    // reading nor the majority: the other two are the ones sitting next to their
+    // own heaters, so there is nothing for them to correct.
+    TEST_ASSERT_EQUAL_UINT8(0, out.sourceIndex);
+    TEST_ASSERT_FALSE(out.usingFallback);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 21.0f, out.value);
+}
+
+void test_fusion_does_not_change_source_as_readings_cross(void)
+{
+    // The regression this rule exists for. Three healthy sources a few tenths
+    // apart, and the SCD4x drifting down through the HDC3020 — under a median
+    // vote that hands the published value to a different part mid-drift and
+    // steps the room temperature by the offset between them.
+    auto fusion = makeTemperatureFusion();
+    drive(fusion,
+          {SourceSample{21.0f, true}, SourceSample{20.7f, true}, SourceSample{21.3f, true}},
+          40);
+
+    for (int step = 0; step <= 8; ++step) {
+        const float scd = 21.3f - 0.1f * static_cast<float>(step);  // crosses 21.0 on the way
+        const auto out = drive(
+            fusion,
+            {SourceSample{21.0f, true}, SourceSample{20.7f, true}, SourceSample{scd, true}}, 20);
+
+        TEST_ASSERT_EQUAL_UINT8(0, out.sourceIndex);
+        TEST_ASSERT_FALSE(out.usingFallback);
+        TEST_ASSERT_FLOAT_WITHIN(0.05f, 21.0f, out.value);
+    }
 }
 
 void test_fusion_falls_back_when_primary_dies(void)
@@ -223,12 +278,13 @@ void test_fusion_flags_disagreement_between_two_sources(void)
     TEST_ASSERT_FLOAT_WITHIN(0.3f, 21.0f, out.value);
 }
 
-void test_fusion_outvotes_a_drifting_primary(void)
+void test_fusion_names_a_drifting_primary_without_demoting_it(void)
 {
     auto fusion = makeTemperatureFusion(1.5f);
-    // The HDC3020 has drifted 5 K high; the other two agree with each other.
-    // The median rule drops it out of the published value automatically and
-    // names it in suspectMask so the drift is actionable.
+    // The HDC3020 has drifted 5 K high; the other two agree with each other, so
+    // the consensus names the reference sensor as the outlier. It keeps being
+    // published all the same — a diagnosis is not a licence to control the room
+    // from two sensors that are known to read their own waste heat.
     const auto out = drive(fusion,
                            {SourceSample{26.0f, true},
                             SourceSample{21.2f, true},
@@ -237,10 +293,41 @@ void test_fusion_outvotes_a_drifting_primary(void)
 
     TEST_ASSERT_TRUE(out.valid);
     TEST_ASSERT_TRUE(out.disagreement);
-    TEST_ASSERT_TRUE(out.usingFallback);
-    TEST_ASSERT_FLOAT_WITHIN(0.4f, 21.2f, out.value);
+    TEST_ASSERT_EQUAL(static_cast<int>(FusionQuality::Disputed), static_cast<int>(out.quality));
+    TEST_ASSERT_FALSE(out.usingFallback);
+    TEST_ASSERT_EQUAL_UINT8(0, out.sourceIndex);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 26.0f, out.value);
     TEST_ASSERT_EQUAL_UINT8(0x01, out.suspectMask & 0x01);  // source 0 is the outlier
     TEST_ASSERT_EQUAL_UINT8(0, out.suspectMask & 0x06);     // the other two are fine
+}
+
+void test_fusion_names_a_drifting_fallback(void)
+{
+    auto fusion = makeTemperatureFusion(1.5f);
+    // Mirror image: the SCD4x is the one 5 K out. It is not published either
+    // way, so the only thing that must happen is that it gets named.
+    const auto out = drive(fusion,
+                           {SourceSample{21.0f, true},
+                            SourceSample{21.2f, true},
+                            SourceSample{26.0f, true}},
+                           60);
+
+    TEST_ASSERT_TRUE(out.disagreement);
+    TEST_ASSERT_EQUAL_UINT8(0, out.sourceIndex);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 21.0f, out.value);
+    TEST_ASSERT_EQUAL_UINT8(0x04, out.suspectMask);
+}
+
+void test_fusion_blames_nobody_when_only_two_sources_disagree(void)
+{
+    auto fusion = makeTemperatureFusion(1.5f);
+    // Two sources, 4 K apart, no majority to arbitrate with. Flagging either one
+    // would be a guess, so the disagreement is reported and the mask stays empty.
+    const auto out = drive(
+        fusion, {SourceSample{21.0f, true}, SourceSample{25.0f, true}, SourceSample{}}, 40);
+
+    TEST_ASSERT_TRUE(out.disagreement);
+    TEST_ASSERT_EQUAL_UINT8(0, out.suspectMask);
 }
 
 void test_fusion_applies_per_source_offsets(void)
@@ -595,14 +682,18 @@ int main(void)
     RUN_TEST(test_channel_adopts_first_sample_without_filtering);
     RUN_TEST(test_channel_rejects_out_of_range_readings);
     RUN_TEST(test_channel_smooths_noise);
+    RUN_TEST(test_channel_time_constant_does_not_depend_on_sample_cadence);
     RUN_TEST(test_channel_rejects_spike_then_resyncs);
     RUN_TEST(test_channel_goes_stale_without_samples);
 
     RUN_TEST(test_fusion_prefers_primary_source);
+    RUN_TEST(test_fusion_does_not_change_source_as_readings_cross);
     RUN_TEST(test_fusion_falls_back_when_primary_dies);
     RUN_TEST(test_fusion_reports_no_data_when_all_sources_fail);
     RUN_TEST(test_fusion_flags_disagreement_between_two_sources);
-    RUN_TEST(test_fusion_outvotes_a_drifting_primary);
+    RUN_TEST(test_fusion_names_a_drifting_primary_without_demoting_it);
+    RUN_TEST(test_fusion_names_a_drifting_fallback);
+    RUN_TEST(test_fusion_blames_nobody_when_only_two_sources_disagree);
     RUN_TEST(test_fusion_applies_per_source_offsets);
 
     RUN_TEST(test_trend_measures_a_linear_rise);

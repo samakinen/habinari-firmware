@@ -149,6 +149,16 @@ private:
             return false;
         }
 
+        // Time this sample actually covers: the gap since the last accepted one,
+        // not the caller's cycle period. Sources answer at very different rates
+        // (the HDC3020 every sampling cycle, the SCD4x once per ~30 s) while
+        // update() is called at the cycle rate for all of them, so charging the
+        // cycle dt would make the realised time constant depend on how often a
+        // part happens to reply — a 30 s tau on a 30 s source comes out at about
+        // three and a half minutes. Two sources configured identically would
+        // then lag each other by enough to fail their own cross-check.
+        const float elapsed = ageSeconds_ > dtSeconds ? ageSeconds_ : dtSeconds;
+
         // Once the gate has rejected its quota in a row, the sensor is telling
         // us the same "impossible" thing repeatedly and is more likely right
         // than the filter is. Believe it AND drop the smoothing history: a
@@ -158,9 +168,8 @@ private:
                             && consecutiveRejects_ >= config_.maxConsecutiveRejects;
         const bool spikeGateArmed = valid_ && config_.maxStepPerSecond > 0.0f && !resync;
         if (spikeGateArmed) {
-            // Age, not dt: after a stale gap the allowance has to cover the
-            // whole gap, otherwise every resumed source looks like a spike.
-            const float elapsed = ageSeconds_ > dtSeconds ? ageSeconds_ : dtSeconds;
+            // After a stale gap the allowance has to cover the whole gap,
+            // otherwise every resumed source looks like a spike.
             const float allowance = config_.maxStepPerSecond * (elapsed > 0.0f ? elapsed : 1.0f);
             if (std::fabs(raw - filtered_) > allowance) {
                 return false;
@@ -168,10 +177,14 @@ private:
         }
 
         lastRaw_ = raw;
-        if (!valid_ || resync || config_.filterTauSeconds <= 0.0f || dtSeconds <= 0.0f) {
+        if (!valid_ || resync || config_.filterTauSeconds <= 0.0f || elapsed <= 0.0f) {
             filtered_ = raw;  // first sample, or filtering disabled: adopt it
         } else {
-            const float alpha = dtSeconds / (config_.filterTauSeconds + dtSeconds);
+            // Exact zero-order-hold discretisation rather than the usual
+            // elapsed/(tau+elapsed) approximation, which only holds while the
+            // gap is small against tau — at elapsed == tau it is out by a third,
+            // and the whole point here is that the gap varies per source.
+            const float alpha = 1.0f - std::exp(-elapsed / config_.filterTauSeconds);
             filtered_ += alpha * (raw - filtered_);
         }
         valid_ = true;
@@ -239,18 +252,27 @@ struct FusedValue {
 /**
  * A measurand backed by up to kMaxSources physical sensors in priority order.
  *
- * Selection rules, in order:
- *   - no healthy source            -> invalid, last value held for reference
- *   - one healthy source           -> use it (nothing to validate against)
- *   - two healthy sources          -> use the preferred one; if they disagree
- *                                     say so, because with two sensors there is
- *                                     no way to tell which one is lying
- *   - three healthy sources        -> use the median, which drops an outlier
- *                                     automatically, and name the outlier
+ * Selection is strict priority:
+ *   - no healthy source     -> invalid, last value held for reference
+ *   - preferred healthy     -> publish it, whatever the other sources say
+ *   - preferred unhealthy   -> the next healthy source in priority order
  *
- * The median rule is what makes the third source worth having: with an odd
- * number of sensors a single drifting part stops affecting the output at all
- * instead of being averaged into it.
+ * Deliberately NOT a median vote. A median arbitrates fairly only between
+ * interchangeable sensors, and these are not interchangeable: index 0 is a part
+ * chosen and placed on the board for this measurement, while the fallbacks
+ * produce it as a by-product of doing something else, sitting next to their own
+ * heat sources. Letting two self-heating parts outvote the reference means
+ * publishing a known bias. And because the sources normally sit only a few
+ * tenths apart, a median also hands the published value to whichever part
+ * happens to be in the middle this cycle — so an ordinary drift re-selects the
+ * source and steps the output, in a signal the control loops integrate.
+ *
+ * Disagreement is therefore reported, never acted on. While several sources are
+ * alive the suspect mask names whichever of them sits outside the largest group
+ * that agrees with itself — the preferred source included, since a drifting
+ * reference is precisely the fault worth catching. Keeping that diagnosis out of
+ * the selection path is what stops a miscalibrated fallback from moving the room
+ * temperature on its own.
  */
 class RedundantMeasurement {
 public:
@@ -291,38 +313,55 @@ public:
             return out;
         }
 
-        // Cross-comparison first: the decision below depends on who agrees.
+        // Cross-comparison. Pure diagnosis: nothing below reads its result, so a
+        // fallback that has drifted can raise the alarm without also becoming
+        // the value the room is controlled from.
         const float tolerance = config_.crossCheckTolerance;
         if (tolerance > 0.0f && healthyCount >= 2) {
+            // How many other live sources each one agrees with. The largest such
+            // count is the consensus, and anything below it is the odd one out.
+            // Measuring drift against the published value instead would be
+            // self-fulfilling — the reference sensor could never be named.
+            std::array<uint8_t, kMaxSources> agreements{};
             for (size_t a = 0; a < healthyCount; ++a) {
-                for (size_t b = a + 1; b < healthyCount; ++b) {
+                for (size_t b = 0; b < healthyCount; ++b) {
+                    if (a == b) {
+                        continue;
+                    }
                     const float delta = std::fabs(channels_[healthy[a]].value()
                                                   - channels_[healthy[b]].value());
-                    if (delta > tolerance) {
+                    if (delta <= tolerance) {
+                        ++agreements[a];
+                    } else {
                         out.disagreement = true;
                     }
                 }
             }
-        }
 
-        size_t chosen = healthy[0];
-        if (healthyCount >= 3) {
-            chosen = middleOfThree(healthy[0], healthy[1], healthy[2]);
-        }
-
-        out.value = channels_[chosen].value();
-        out.valid = true;
-        out.sourceIndex = static_cast<uint8_t>(chosen);
-        out.usingFallback = (chosen != 0) || !channels_[0].valid();
-
-        if (tolerance > 0.0f && healthyCount >= 2) {
+            uint8_t consensus = 0;
             for (size_t i = 0; i < healthyCount; ++i) {
-                const size_t index = healthy[i];
-                if (std::fabs(channels_[index].value() - out.value) > tolerance) {
-                    out.suspectMask |= static_cast<uint8_t>(1u << index);
+                if (agreements[i] > consensus) {
+                    consensus = agreements[i];
+                }
+            }
+            // With exactly two sources in dispute both agree with nobody, so
+            // neither is flagged: there is no majority and no way to tell which
+            // one is lying. `disagreement` is the whole report in that case.
+            for (size_t i = 0; i < healthyCount; ++i) {
+                if (agreements[i] < consensus) {
+                    out.suspectMask |= static_cast<uint8_t>(1u << healthy[i]);
                 }
             }
         }
+
+        const size_t chosen = healthy[0];
+        out.value = channels_[chosen].value();
+        out.valid = true;
+        out.sourceIndex = static_cast<uint8_t>(chosen);
+        // Running on a fallback means the preferred part is not delivering —
+        // which, under strict priority, is also the only way `chosen` can be
+        // anything but 0.
+        out.usingFallback = !channels_[0].valid();
 
         out.quality = healthyCount == 1 ? FusionQuality::Single
                       : out.disagreement ? FusionQuality::Disputed
@@ -340,18 +379,6 @@ public:
     }
 
 private:
-    // kMaxSources is 3, so an explicit middle-of-three is clearer and cheaper
-    // than sorting. Ties resolve towards the higher-priority source.
-    size_t middleOfThree(size_t a, size_t b, size_t c) const
-    {
-        const float va = channels_[a].value();
-        const float vb = channels_[b].value();
-        const float vc = channels_[c].value();
-        if ((va <= vb && vb <= vc) || (vc <= vb && vb <= va)) return b;
-        if ((vb <= va && va <= vc) || (vc <= va && va <= vb)) return a;
-        return c;
-    }
-
     std::array<FilteredChannel, kMaxSources> channels_{};
     RedundancyConfig config_{};
     FusedValue last_{};

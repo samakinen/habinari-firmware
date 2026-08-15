@@ -68,8 +68,8 @@ static void sensor_service_retry_probe(sensor_service_handle_t service_handle)
 static void sensor_service_task(void *param)
 {
     sensor_service_handle_t service_handle = (sensor_service_handle_t)param;
-    sensor_bus_results_t bus_results;
-    ext_probe_results_t probe_results;
+    sensor_bus_results_t bus_results = {0};
+    ext_probe_results_t probe_results = {0};
     sensor_data_t sensor_data = {0};
     TickType_t last_wake = xTaskGetTickCount();
     int64_t last_sample_us = esp_timer_get_time();

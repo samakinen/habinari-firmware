@@ -663,10 +663,11 @@ inline constexpr auto kHabinariProduct =
                                 "Air Quality Sensor Status (DPT 21.001)",
                                 application::dptids::StatusGen,
                                 false>,
-            // Which physical packages are currently delivering, one bit each
-            // (HDC3020, BME688, SCD4x, SHT4x). The StatusGen octets above say
-            // whether a *measurement* is healthy; this says which *part* is,
-            // which is what a service visit needs to know.
+            // Which physical packages are fully delivering, one bit each
+            // (HDC3020, BME688, SCD4x, SHT4x) — a part that has lost one of its
+            // measurands while still producing the rest reads as degraded here.
+            // The StatusGen octets above say whether a *measurement* is healthy;
+            // this says which *part* is, which is what a service visit needs.
             endpoint::StatePort<HabinariPort::SensorHealthMask,
                                 uint8_t,
                                 "sensor_health_mask",

@@ -71,10 +71,11 @@ combines, in one device on one bus connection:
 
 **Redundancy and inference (what the overlapping sensors buy)**
 
-* Three sensors measure room temperature and three measure humidity. A failed
-  sensor is replaced automatically; three healthy ones outvote a drifting one;
-  and sensors that stop agreeing raise a cross-check alarm — a fault no
-  single-sensor device can see. See [4.4](#44-redundancy-and-derived-events).
+* Three sensors measure room temperature and three measure humidity. The
+  dedicated HDC3020 is published while it answers and a failed sensor is
+  replaced automatically; sensors that stop agreeing raise a cross-check alarm
+  and the drifting part is named — a fault no single-sensor device can see. See
+  [4.4](#44-redundancy-and-derived-events).
 * Advisory rapid-temperature-rise / over-temperature detection, optionally
   corroborated by the gas sensor. **Not a certified fire detector** — read
   [5.11](#511-derived-events) before using it.
@@ -298,9 +299,9 @@ for the objects:
 
 | Behaviour | What it does | What it costs |
 |---|---|---|
+| **Reference sensor** | The HDC3020 is published whenever it is answering, whatever the other two say | Nothing. It is the only one of the three fitted for this measurement and sited away from the board's heat |
 | **Fallback** | A failed sensor is replaced by the next healthy one, silently, within the staleness window | Nothing. The room keeps its measurement; object 61 shows what died |
-| **Voting** | With three healthy sources the median is published, so a drifting part cannot pull the value | Nothing |
-| **Cross-check** | Sources that stop agreeing raise object 62 | A tolerance set too tight nags on healthy parts |
+| **Cross-check** | Sources that stop agreeing raise object 62, and object 61's suspect bits name the one that drifted | A tolerance set too tight nags on healthy parts |
 
 The same readings, sampled fast enough to have a slope, also support three
 inferences (objects 63–68):
@@ -468,15 +469,25 @@ The board carries **three sensors that measure room temperature** (HDC3020,
 BME688, SCD4x) and three that measure humidity. Objects 0 and 1 report the fused
 result:
 
+* **Reference sensor.** The **HDC3020 is always published while it is
+  answering** — the other two never outvote it. It is on the board for this one
+  job and placed away from anything that dissipates power, whereas the BME688
+  runs a gas heater and the SCD4x an optical source, and both report part of
+  their own self-heating as room temperature. A vote between them would publish
+  that bias, and, because the three readings normally sit only a few tenths
+  apart, would also hand the value to a different part whenever one of them
+  drifted past another — stepping a measurement the control loops integrate.
 * **Fallback.** If the HDC3020 stops answering, the BME688 takes over, then the
   SCD4x. The room keeps its measurement and its control loop; object 61 shows
-  which parts are alive.
-* **Voting.** With three healthy sources the **median** is published, so a
-  single drifting part stops affecting the value at all rather than being
-  averaged into it.
+  which parts are alive. Apply the offset parameters if you rely on this: the
+  fallbacks read high by design.
 * **Cross-check.** Sources differing by more than the configured limit raise
-  object 62. With two sources there is no way to tell which one is lying, so the
-  preferred one is kept and the disagreement is reported.
+  object 62. With three alive, the suspect bits in object 61 name whichever one
+  sits outside the pair that still agrees — the HDC3020 included, so a drifting
+  reference is reported rather than trusted blindly. With only two alive there
+  is no way to tell which is lying, so nothing is named and only object 62
+  raises. Either way the published value does not change: a cross-check is a
+  service call, not a reason to control the room from a heat-biased part.
 
 The external probe is deliberately **not** a room-air fallback: it measures a
 different place, and using the slab temperature to control the room would be a

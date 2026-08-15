@@ -29,10 +29,12 @@ to reach it, not the thing that owns it.
 - **SHT4x** — optional external I²C probe (temperature, humidity), e.g. floor or
   duct
 
-Three sensors measure room temperature and three measure humidity. The fusion
-layer uses that overlap for fallback (a dead sensor is replaced silently),
-voting (three sources publish the median, so a drifting part cannot pull the
-value) and cross-validation (sources that stop agreeing raise an alarm). The
+Three sensors measure room temperature and three measure humidity, but they are
+not equals: the HDC3020 is fitted for that job and sited away from the board's
+heat, while the other two report part of their own self-heating. So the fusion
+layer publishes the HDC3020 whenever it is answering, and uses the overlap for
+fallback (a dead sensor is replaced silently) and cross-validation (sources that
+stop agreeing raise an alarm and name the part that drifted). The
 same readings, sampled fast enough to have a slope, drive advisory
 rapid-temperature-rise detection, CO₂-derived occupancy and open-window
 detection.

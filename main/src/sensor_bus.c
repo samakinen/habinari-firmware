@@ -10,6 +10,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <string.h>
+
 static const char *TAG = "sensor_bus";
 
 esp_err_t sensor_bus_init(sensor_bus_handle_t sensor_bus)
@@ -204,8 +206,12 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
     {
         return ESP_ERR_INVALID_ARG;
     }
-    results->updated_mask = 0;
-    results->error_count = 0;
+    // Clear the whole record, not just the mask. Several fields are written
+    // only under a condition — the BSEC air-quality block needs accuracy > 0 —
+    // so anything less leaves a consumer reading whatever was in the caller's
+    // memory, and a consumer that reads a value without checking its mask bit
+    // gets stack garbage rather than a zero it can recognise.
+    memset(results, 0, sizeof(*results));
 
     ret = hdc302x_start_measurement(sensor_bus_handle->hdc302x_device_handle);
     if (ret != ESP_OK)
