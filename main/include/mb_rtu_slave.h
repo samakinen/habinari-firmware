@@ -1,61 +1,69 @@
 #pragma once
 
-#include "board.h"
-#include "mbcontroller.h"
-#include "sensor_service.h"
+#include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "modbus_registers.h"
+#include "sensor_data.h"
 
-#pragma pack(push, 1)
-typedef struct
-{
-    uint8_t led_on; // 000001
-    
-} coil_reg_params_t;
-#pragma pack(pop)
+#ifdef __cplusplus
+extern "C" {
+#endif
 
+/**
+ * @file mb_rtu_slave.h
+ * @brief Modbus RTU slave: the second protocol adapter onto the same device
+ *        model the KNX side exposes.
+ *
+ * The slave owns a task that keeps its register images in step with
+ * control_state.h — publishing the device's state into the read areas and
+ * turning master writes into control_state_write() commands. It therefore
+ * carries the whole room-controller model, not just measurements, and a Modbus
+ * master can drive the device exactly as far as a KNX installation can.
+ *
+ * Line settings (address and baud rate) are held in NVS and are themselves
+ * writable over Modbus, so a device can be re-addressed in the field without
+ * reflashing. See docs/modbus-register-map.md for the wire-level map.
+ */
 
-#pragma pack(push, 1)
-typedef struct
-{
-    uint8_t service_running:1; // 100001
-    uint8_t error_flag:1; // 100002
-    uint8_t probe_present:1; // 100003
-
-} discrete_reg_params_t;
-#pragma pack(pop)
-
-
-#pragma pack(push, 1)
-typedef struct
-{
-    float temperature; // 300001
-    float humidity; // 300003
-    float pressure; // 300005
-    float probe_temperature; // 300007
-    float probe_humidity; // 300009
-    uint16_t co2_ppm; // 300011
-} input_reg_params_t;
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-typedef struct
-{
-    uint16_t slave_address; // 400001
-    uint16_t knx_test_data; // 400002
-    uint16_t knx_lenght; // 400003
-} holding_reg_params_t;
-#pragma pack(pop)
-
-#define MB_SLAVE_NAME_MAX_LEN 32 // Max length of device name
 typedef struct {
-    void *mbc_slave_handle; // Modbus controller handle
-    holding_reg_params_t holding_reg_params;
-    input_reg_params_t input_reg_params;
-    coil_reg_params_t coil_reg_params;
-    discrete_reg_params_t discrete_reg_params;
+    void *mbc_slave_handle;
+    TaskHandle_t task_handle;
+    volatile bool stop_requested;
+
+    // Register images the Modbus stack serves directly. The layouts are in
+    // modbus_registers.h, which is also what the documentation is generated
+    // from, so wire and docs cannot drift.
+    mb_input_registers_t input_regs;
+    mb_holding_registers_t holding_regs;
+    uint8_t discrete_bits[MB_DISCRETE_BYTES];
+    uint8_t coil_bits[MB_COIL_BYTES];
+
+    // Last values this task itself wrote, so a master's write is told apart
+    // from the device's own read-back.
+    mb_holding_registers_t applied_holding;
+    uint8_t applied_coils[MB_COIL_BYTES];
+
+    uint8_t slave_address;
+    uint16_t baud_code;
 } mb_rtu_slave_t;
 
-typedef mb_rtu_slave_t *mb_rtu_slave_handle_t; // Modbus RTU slave handle type
+typedef mb_rtu_slave_t *mb_rtu_slave_handle_t;
 
-esp_err_t mb_rtu_slave_set_sensor_data(mb_rtu_slave_t *mb_rtu_slave, const sensor_data_t *sensor_data);
-esp_err_t mb_rtu_slave_init(mb_rtu_slave_t *mb_rtu_slave, uint8_t slave_address);
-esp_err_t mb_rtu_slave_deinit(mb_rtu_slave_t *mb_rtu_slave);
+/// Load the persisted line settings, bring the stack up and start the task that
+/// keeps the registers in step with control_state.
+esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave);
+
+/// Stop the task and release the Modbus controller.
+esp_err_t mb_rtu_slave_stop(mb_rtu_slave_t *slave);
+
+/// Publish a fresh measurement record. Called from the sensor task; the rest of
+/// the register image is refreshed by the slave's own task from control_state.
+esp_err_t mb_rtu_slave_publish(mb_rtu_slave_t *slave, const sensor_data_t *data);
+
+/// Whether a master has asked for the identify LED.
+bool mb_rtu_slave_led_requested(const mb_rtu_slave_t *slave);
+
+#ifdef __cplusplus
+}
+#endif

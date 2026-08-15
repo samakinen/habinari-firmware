@@ -45,7 +45,7 @@ static inline esp_err_t sensor_bus_reg_disable(void)
     return gpio_set_level(PIN_2V8_EN, 0);
 }
 
-esp_err_t init_bme68x(sensor_bus_handle_t sensor_bus_handle)
+static esp_err_t init_bme68x(sensor_bus_handle_t sensor_bus_handle)
 {
     esp_err_t ret;
     ret = bme68x_device_create_i2c(&sensor_bus_handle->bme68x_dev, sensor_bus_handle->bus_handle, BME68X_I2C_ADDR_LOW, SENSOR_BUS_SPEED);
@@ -193,7 +193,6 @@ esp_err_t sensor_bus_disable(sensor_bus_handle_t sensor_bus_handle)
 esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_results_t *results)
 {
     esp_err_t ret;
-    results->updated_mask = 0;
     struct bme68x_data data;
     uint8_t n_data;
     int8_t rslt;
@@ -202,10 +201,14 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
     {
         return ESP_ERR_INVALID_ARG;
     }
+    results->updated_mask = 0;
+    results->error_count = 0;
+
     ret = hdc302x_start_measurement(sensor_bus_handle->hdc302x_device_handle);
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to start HDC302x measurement: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Failed to start HDC302x measurement: %s", esp_err_to_name(ret));
+        results->error_count++;
     }
     vTaskDelay(pdMS_TO_TICKS(25)); // wait for measurement to complete
     ret = hdc302x_read_measurement(
@@ -214,7 +217,12 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
             &results->hdc302x_humidity);
     if (ret == ESP_OK)
     {
-        results->updated_mask |= SENSOR_HDC302X_TEMPERATURE | SENSOR_HDC302X_HUMIDITY;
+        results->updated_mask |= SENSOR_BUS_HDC302X_TEMPERATURE | SENSOR_BUS_HDC302X_HUMIDITY;
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Failed to read HDC302x: %s", esp_err_to_name(ret));
+        results->error_count++;
     }
     if (bsec_integration_available())
     {
@@ -226,7 +234,8 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
             results->bme68x_temperature = aq.comp_temperature;
             results->bme68x_humidity = aq.comp_humidity;
             results->bme68x_pressure = aq.pressure;
-            results->updated_mask |= SENSOR_BME68X_TEMPERATURE | SENSOR_BME68X_HUMIDITY | SENSOR_BME68X_PRESSURE;
+            results->updated_mask |= SENSOR_BUS_BME68X_TEMPERATURE | SENSOR_BUS_BME68X_HUMIDITY
+                                     | SENSOR_BUS_BME68X_PRESSURE;
             // Only surface air quality once BSEC has started calibrating
             // (accuracy 0 = unreliable warm-up).
             if (aq.iaq_accuracy > 0)
@@ -235,7 +244,8 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
                 results->bme68x_iaq_accuracy = aq.iaq_accuracy;
                 results->bme68x_co2_equivalent = aq.co2_equivalent;
                 results->bme68x_voc_equivalent = aq.voc_equivalent;
-                results->updated_mask |= SENSOR_BME68X_IAQ | SENSOR_BME68X_CO2_EQUIVALENT | SENSOR_BME68X_VOC_EQUIVALENT;
+                results->updated_mask |= SENSOR_BUS_BME68X_IAQ | SENSOR_BUS_BME68X_CO2_EQUIVALENT
+                                         | SENSOR_BUS_BME68X_VOC_EQUIVALENT;
             }
         }
     }
@@ -248,33 +258,41 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
         rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &sensor_bus_handle->bme68x_dev);
         if (rslt != BME68X_OK)
         {
-            ESP_LOGE(TAG, "Failed to set BME68x op mode: %d", rslt);
+            ESP_LOGW(TAG, "Failed to set BME68x op mode: %d", rslt);
+            results->error_count++;
         }
         vTaskDelay(pdMS_TO_TICKS(sensor_bus_handle->bme68x_wait_time + 10)); // wait for measurement to complete
         rslt = bme68x_get_data(BME68X_FORCED_MODE, &data, &n_data, &sensor_bus_handle->bme68x_dev);
         xSemaphoreGive(sensor_bus_handle->bme68x_mutex);
         if (rslt != BME68X_OK && rslt != BME68X_W_NO_NEW_DATA)
         {
-            ESP_LOGE(TAG, "Failed to get BME68x data: %d", rslt);
+            ESP_LOGW(TAG, "Failed to get BME68x data: %d", rslt);
+            results->error_count++;
         }
         if (n_data > 0 && rslt == BME68X_OK)
         {
             results->bme68x_temperature = data.temperature / 100.0f;
             results->bme68x_humidity = data.humidity / 1000.0f;
             results->bme68x_pressure = data.pressure;
-            results->updated_mask |= SENSOR_BME68X_TEMPERATURE | SENSOR_BME68X_HUMIDITY | SENSOR_BME68X_PRESSURE;
+            results->updated_mask |= SENSOR_BUS_BME68X_TEMPERATURE | SENSOR_BUS_BME68X_HUMIDITY
+                                     | SENSOR_BUS_BME68X_PRESSURE;
         }
     }
 
-    if (results->updated_mask & SENSOR_BME68X_PRESSURE)
+    if (results->updated_mask & SENSOR_BUS_BME68X_PRESSURE)
     {
         ret = scd4x_set_ambient_pressure(sensor_bus_handle->scd4x_device_handle,
                 (uint16_t)((float)results->bme68x_pressure / 100.0f));
         if (ret != ESP_OK)
         {
-            ESP_LOGE(TAG, "Failed to set SCD4x ambient pressure: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "Failed to set SCD4x ambient pressure: %s", esp_err_to_name(ret));
+            results->error_count++;
         }
     }
+    // The SCD4x runs its own low-power periodic cadence (~30 s), so most cycles
+    // legitimately find no new sample. That is not an error and must not be
+    // counted as one — the fusion layer's staleness window is what decides when
+    // the CO2 reading has actually gone quiet.
     if (scd4x_data_ready_status(sensor_bus_handle->scd4x_device_handle))
     {
         ret = scd4x_read_measurement(
@@ -282,13 +300,21 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
                 &results->scd4x_co2,
                 &results->scd4x_temperature,
                 &results->scd4x_humidity);
-        if (ret != ESP_OK)
+        if (ret == ESP_OK)
         {
-            return ret;
+            results->updated_mask |= SENSOR_BUS_SCD4X_TEMPERATURE | SENSOR_BUS_SCD4X_HUMIDITY
+                                     | SENSOR_BUS_SCD4X_CO2;
         }
-        results->updated_mask |= SENSOR_SCD4X_TEMPERATURE | SENSOR_SCD4X_HUMIDITY | SENSOR_SCD4X_CO2;
+        else
+        {
+            // A failed read here used to abort the whole cycle, throwing away
+            // the HDC3020 and BME688 readings already collected above.
+            ESP_LOGW(TAG, "Failed to read SCD4x: %s", esp_err_to_name(ret));
+            results->error_count++;
+        }
     }
-    return ESP_OK;
+
+    return results->updated_mask != 0 ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t sensor_bus_deinit(sensor_bus_handle_t sensor_bus_handle)

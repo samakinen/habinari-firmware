@@ -2,7 +2,7 @@
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 
-const char *TAG = "board common";
+static const char *TAG = "board";
 
 // PIN_RS485_TX / PIN_RS485_RX / PIN_RS485_TEN are deliberately absent here.
 // mb_rtu_slave_init() routes all three to the UART peripheral via
@@ -35,7 +35,7 @@ esp_err_t init_pins(void)
     esp_err_t ret = gpio_config(&io_conf);
     if (ret != ESP_OK)
     {
-        ESP_LOGE("init_pins", "Error configuring pins: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Error configuring pins: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -54,7 +54,7 @@ esp_err_t init_pins(void)
     ret = gpio_config(&io_conf);
     if (ret != ESP_OK)
     {
-        ESP_LOGE("init_pins", "Error configuring pins: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Error configuring pins: %s", esp_err_to_name(ret));
         return ret;
     }
     return ret;
@@ -82,7 +82,6 @@ esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, uint8_t sda_io, uint
         .flags.enable_internal_pullup = false,
     };
 
-    //ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &bus_handle));
     ret = i2c_new_master_bus(&i2c_bus_config, bus_handle);
     if (ret != ESP_OK)
     {

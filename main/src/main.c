@@ -1,136 +1,130 @@
-/* Blink Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY Kind, either express or implied.
-*/
-#include <stdio.h>
-#include <inttypes.h>
+/*
+ * Room HVAC sensor/controller board — application entry point.
+ *
+ * The work is done by three services, each owning its own task:
+ *
+ *   sensor_service   samples the sensor package and runs the fusion layer
+ *   knx_service      owns the room-control model and speaks KNX TP1
+ *   mb_rtu_slave     exposes the same model on Modbus RTU
+ *
+ * What remains here is the board's own user interface: the programming button
+ * and the LED. Everything else is a service start-up call.
+ */
 #include <stdbool.h>
+#include <stdint.h>
+
+#include "driver/gpio.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/gpio.h"
-#include "driver/i2c_master.h"
-#include "esp_log.h"
-#include "esp_system.h"
 #include "sdkconfig.h"
-#include "sensor_service.h"
-#include <string.h>
-#include "mb_rtu_slave.h"
-#include "knx_service.h"
+
 #include "board.h"
+#include "control_state.h"
+#include "knx_service.h"
+#include "mb_rtu_slave.h"
+#include "sensor_service.h"
 
-static const char *TAG = "example";
+static const char *TAG = "app";
 
-int count = 0;
-sensor_service_t sensor_service;
-static volatile bool g_programming_mode_enabled = false;
+static sensor_service_t s_sensor_service;
+static mb_rtu_slave_t s_modbus_slave;
+static volatile bool s_programming_mode_enabled = false;
 
-mb_rtu_slave_t mb_rtu_slave = {0};
-uint8_t slave_address = 0x01; // Modbus slave address
-
-void update_sensor_data(const sensor_data_t *data)
+// Called from the sensor task once per sampling cycle. Both protocol adapters
+// get the same record; neither can see a measurement the other cannot.
+static void on_sensor_data(const sensor_data_t *data)
 {
-    ESP_LOGI(TAG, "Air (T=%.2f °C RH=%.2f %% P=%.2f Pa IAQ=%.0f(acc%u) CO2eq=%.0f VOC=%.2f CO\u2082=%d ppm) Ground (T=%.2f °C RH=%.2f %%), Updated: %s%s%s%s%s%s%s",
-             data->temperature, data->humidity, data->pressure, data->iaq, (unsigned)data->air_quality_accuracy,
-             data->co2_equivalent, data->voc_equivalent, data->co2, data->ext_probe_temperature, data->ext_probe_humidity,
-             (data->updated_mask & SENSOR_TEMPERATURE) ? "T" : "",
-             (data->updated_mask & SENSOR_HUMIDITY) ? "H" : "",
-             (data->updated_mask & SENSOR_PRESSURE) ? "P" : "",
-             (data->updated_mask & SENSOR_IAQ) ? "A" : "",
-             (data->updated_mask & SENSOR_CO2) ? "C" : "",
-             (data->updated_mask & SENSOR_EXT_PROBE_TEMPERATURE) ? "t" : "",
-             (data->updated_mask & SENSOR_EXT_PROBE_HUMIDITY) ? "h" : "");
-    mb_rtu_slave_set_sensor_data(&mb_rtu_slave, data); // Update Modbus registers with new sensor data
+    ESP_LOGI(TAG,
+             "Room T=%.2f C (src%u%s) RH=%.1f %% CO2=%.0f ppm P=%.0f Pa IAQ=%.0f(acc%u) | "
+             "Probe T=%.2f C RH=%.1f %% | dT=%+.2f K/min health=0x%02x%s%s",
+             data->temperature.value, data->temperature.source,
+             data->temperature.fallback ? ",fallback" : "", data->humidity.value,
+             data->co2.value, data->pressure.value, data->iaq.value,
+             (unsigned)data->air_quality_accuracy, data->probe_temperature.value,
+             data->probe_humidity.value, data->trends.temperature.per_minute,
+             data->health.healthy_mask, data->events.occupancy_detected ? " occupied" : "",
+             data->events.fire_alarm ? " FIRE" : "");
+
+    mb_rtu_slave_publish(&s_modbus_slave, data);
     knx_service_update_sensor_data(data);
 }
 
-static void programming_mode_changed_callback(bool enabled)
+static void on_programming_mode_changed(bool enabled)
 {
-    g_programming_mode_enabled = enabled;
+    s_programming_mode_enabled = enabled;
 }
 
-void toggle_server(sensor_service_t *service)
+// --- Programming button ----------------------------------------------------
+// Active low. One press does two different things depending on how long it is
+// held, and each action fires once per press rather than repeating while held.
+#define BUTTON_POLL_PERIOD_MS 50
+#define BUTTON_LONG_PRESS_MS 1000  // toggle KNX programming mode
+#define BUTTON_RESET_PRESS_MS 5000 // erase NVM and reboot
+
+typedef enum {
+    BUTTON_ACTION_NONE = 0,
+    BUTTON_ACTION_PROGRAMMING_MODE,
+    BUTTON_ACTION_NVM_RESET,
+} button_action_t;
+
+static void handle_programming_button(void)
 {
-    if (service->task_handle != NULL)
-    {
-        sensor_service_stop(service);
-        service->task_handle = NULL;
+    static bool was_pressed = false;
+    static TickType_t pressed_at = 0;
+    static button_action_t handled = BUTTON_ACTION_NONE;
+
+    const bool pressed = (gpio_get_level(PIN_PROG_BTN) == 0);
+    if (pressed && !was_pressed) {
+        pressed_at = xTaskGetTickCount();
+        handled = BUTTON_ACTION_NONE;
+    } else if (!pressed) {
+        handled = BUTTON_ACTION_NONE;
+    } else {
+        const TickType_t held = xTaskGetTickCount() - pressed_at;
+        if (handled < BUTTON_ACTION_PROGRAMMING_MODE && held >= pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS)) {
+            ESP_LOGI(TAG, "Programming button long-press: toggling programming mode");
+            knx_service_toggle_programming_mode();
+            handled = BUTTON_ACTION_PROGRAMMING_MODE;
+        } else if (handled < BUTTON_ACTION_NVM_RESET && held >= pdMS_TO_TICKS(BUTTON_RESET_PRESS_MS)) {
+            ESP_LOGW(TAG, "Programming button held %d ms: resetting NVM", BUTTON_RESET_PRESS_MS);
+            knx_service_reset_nvm();  // does not return: reboots
+            handled = BUTTON_ACTION_NVM_RESET;
+        }
     }
-    else
-    {
-        sensor_service_start(service);
-    }
+    was_pressed = pressed;
 }
 
-static const TickType_t kMainLoopPeriodTicks = pdMS_TO_TICKS(50);
-static const TickType_t kProgButtonLongPressTicks = pdMS_TO_TICKS(1000);
-static const TickType_t kProgButtonNvmResetTicks = pdMS_TO_TICKS(5000);
+// KNX programming mode owns the LED while it is active — that is what an
+// installer looks for. Outside it the LED follows the Modbus coil.
+static void update_led(void)
+{
+    const bool on = s_programming_mode_enabled || mb_rtu_slave_led_requested(&s_modbus_slave);
+    gpio_set_level(PIN_LED, on ? 1 : 0);
+}
 
 void app_main(void)
 {
-    uint8_t requested_slave_address = slave_address;
-    bool progBtnPressedLast = false;
-    int progActionsHandled = 0;
-    TickType_t progBtnPressedAt = 0;
+    ESP_ERROR_CHECK(init_pins());
 
-    init_pins();
-    mb_rtu_slave_init(&mb_rtu_slave, slave_address); // Initialize Modbus RTU slave with address 0x01
+    // KNX first: it initialises NVS, which the Modbus slave then reads its
+    // persisted address and baud rate from.
+    knx_service_set_programming_mode_callback(on_programming_mode_changed);
+    ESP_ERROR_CHECK(knx_service_start());
 
-    sensor_service_init(&sensor_service, update_sensor_data);
-    sensor_service_start(&sensor_service);
+    esp_err_t err = mb_rtu_slave_start(&s_modbus_slave);
+    if (err != ESP_OK) {
+        // A Modbus failure must not take the KNX side down with it: the board's
+        // primary field bus is KNX and it is perfectly usable without RS-485.
+        ESP_LOGE(TAG, "Modbus RTU slave failed to start: %s", esp_err_to_name(err));
+    }
 
-    knx_service_set_programming_mode_callback(programming_mode_changed_callback);
-    knx_service_start();
-    int count = 0;
-    while (1) {
-        requested_slave_address = mb_rtu_slave.holding_reg_params.slave_address;
-        if (requested_slave_address != slave_address) {
-            slave_address = requested_slave_address;
-            sensor_service_stop(&sensor_service); // Stop sensor service if running
-            mb_rtu_slave_deinit(&mb_rtu_slave); // Deinitialize Modbus RTU slave
-            mb_rtu_slave_init(&mb_rtu_slave, requested_slave_address); // Reinitialize with new address
-            sensor_service_init(&sensor_service, update_sensor_data);
-            sensor_service_start(&sensor_service); // Reinitialize sensor service
-            ESP_LOGI(TAG, "Slave address changed to %d", requested_slave_address);
-        }
+    ESP_ERROR_CHECK(sensor_service_init(&s_sensor_service, on_sensor_data));
+    ESP_ERROR_CHECK(sensor_service_start(&s_sensor_service));
 
-        // Active-low button: long press enters/exits KNX programming mode.
-        const bool progBtnPressed = (gpio_get_level(PIN_PROG_BTN) == 0);
-        if (progBtnPressed && !progBtnPressedLast) {
-            progBtnPressedAt = xTaskGetTickCount();
-            progActionsHandled = 0;
-        } else if (!progBtnPressed) {
-            progActionsHandled = 0;
-        } else  {
-            const TickType_t heldTicks = xTaskGetTickCount() - progBtnPressedAt;
-            if (progActionsHandled < 1 && heldTicks >= kProgButtonLongPressTicks) {
-                ESP_LOGI(TAG, "Programming button long-press detected");
-                knx_service_toggle_programming_mode();
-                progActionsHandled = 1;
-            } else if (progActionsHandled < 2 && heldTicks >= kProgButtonNvmResetTicks) {
-                ESP_LOGI(TAG, "Programming button 5s press detected: resetting NVM");
-                knx_service_reset_nvm();
-                progActionsHandled = 2;
-            }
-        }
-        progBtnPressedLast = progBtnPressed;
-
-        // Keep LED on while KNX programming mode is active; otherwise allow Modbus coil control.
-        const bool ledOn = g_programming_mode_enabled || mb_rtu_slave.coil_reg_params.led_on;
-        gpio_set_level(PIN_LED, ledOn ? 1 : 0);
-        count++;
-        //gpio_set_level(PIN_PROBE_EN, (count/100 % 2) ? 0 : 1);
-
-        // Performance monitoring moved to interface layer
-        // Basic status check only
-
-        // Drain any received bytes (demo printing raw stream)
-        // Ring buffer monitoring moved to interface layer
-        
-        vTaskDelay(kMainLoopPeriodTicks);
-
+    for (;;) {
+        handle_programming_button();
+        update_led();
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_PERIOD_MS));
     }
 }

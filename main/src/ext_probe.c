@@ -6,12 +6,13 @@
 
 static const char *TAG = "ext_probe";
 
-const int PROBE_BUS_SPEED = 100000;
-const int DEVICE_WAIT_TIME = 200;
+#define PROBE_BUS_SPEED 100000
+#define PROBE_DEVICE_WAIT_TIME_MS 200
 #define PROBE_MEASUREMENT_DELAY_MS 150
 
-int probe_fail_count = 0;
-uint16_t probe_i2c_addr[] = {SHT4X_I2C_ADDR_0, SHT4X_I2C_ADDR_1, SHT4X_I2C_ADDR_2};
+// Address order matters: the probe is auto-detected, and the highest address is
+// tried first because that is what the current probe hardware straps.
+static const uint8_t kProbeAddresses[] = {SHT4X_I2C_ADDR_2, SHT4X_I2C_ADDR_1, SHT4X_I2C_ADDR_0};
 
 static ext_probe_status_t ext_probe_reg_disable()
 {
@@ -64,8 +65,11 @@ esp_err_t ext_probe_deinit(ext_probe_handle_t probe_handle)
         }
         probe_handle->bus_handle = NULL;
     }
-    ret = ext_probe_reg_disable();
-    if (ret != EXT_PROBE_POWER_OFF)
+    // reg_disable reports an ext_probe_status_t, not an esp_err_t; comparing it
+    // against ESP_OK (which this used to do through an esp_err_t variable) was
+    // a type confusion that happened to look like it worked.
+    const ext_probe_status_t power_status = ext_probe_reg_disable();
+    if (power_status != EXT_PROBE_POWER_OFF)
     {
         ESP_LOGE(TAG, "Failed to disable probe power supply");
     }
@@ -77,7 +81,6 @@ esp_err_t ext_probe_init(ext_probe_handle_t probe_handle)
 {
     ext_probe_status_t status;
     esp_err_t ret;
-    uint8_t device_addresses[] = {SHT4X_I2C_ADDR_2, SHT4X_I2C_ADDR_1, SHT4X_I2C_ADDR_0};
 
     ESP_LOGI(TAG, "Initializing external probe...");
     if (probe_handle == NULL)
@@ -106,18 +109,18 @@ esp_err_t ext_probe_init(ext_probe_handle_t probe_handle)
         return ret;
     }
     // Initialize the SHT4x device
-    size_t num_addresses = sizeof(device_addresses) / sizeof(device_addresses[0]);
-    for (int i = 0; i < num_addresses; i++)
+    for (size_t i = 0; i < sizeof(kProbeAddresses) / sizeof(kProbeAddresses[0]); i++)
     {
-        uint8_t address = device_addresses[i];
-        ret = i2c_master_probe(probe_handle->bus_handle, address, DEVICE_WAIT_TIME);
+        const uint8_t address = kProbeAddresses[i];
+        ret = i2c_master_probe(probe_handle->bus_handle, address, PROBE_DEVICE_WAIT_TIME_MS);
         if (ret == ESP_OK)
         {
             ESP_LOGI(TAG, "Probe found at address 0x%02x", address);
-            probe_handle->sht4x_device_handle = sht4x_device_create(probe_handle->bus_handle, address, PROBE_BUS_SPEED);
+            probe_handle->sht4x_device_handle =
+                sht4x_device_create(probe_handle->bus_handle, address, PROBE_BUS_SPEED);
             break;
         }
-        ESP_LOGI(TAG, "Probe not found at address 0x%02x", address);
+        ESP_LOGD(TAG, "Probe not found at address 0x%02x", address);
     }
     if (probe_handle->sht4x_device_handle == NULL)
     {
@@ -144,19 +147,19 @@ esp_err_t ext_probe_read(ext_probe_handle_t probe_handle, ext_probe_results_t *r
         ESP_LOGE(TAG, "Probe not operational");
         return ESP_ERR_INVALID_STATE;
     }
-    ret = sht4x_start_measurement(probe_handle->sht4x_device_handle, SHT4X_CMD_READ_MEASUREMENT_HIGH);
+    ret = sht4x_start_measurement(probe_handle->sht4x_device_handle,
+                                  SHT4X_CMD_READ_MEASUREMENT_HIGH);
     if (ret != ESP_OK)
     {
-        probe_fail_count++;
-        ESP_LOGE(TAG, "Failed to start measurement");
+        ESP_LOGW(TAG, "Failed to start probe measurement: %s", esp_err_to_name(ret));
         return ret;
     }
     vTaskDelay(pdMS_TO_TICKS(PROBE_MEASUREMENT_DELAY_MS));
-    ret = sht4x_read_measurement(probe_handle->sht4x_device_handle, &results->temperature, &results->humidity);
+    ret = sht4x_read_measurement(probe_handle->sht4x_device_handle, &results->temperature,
+                                 &results->humidity);
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to read measurement");
-        return ret;
+        ESP_LOGW(TAG, "Failed to read probe measurement: %s", esp_err_to_name(ret));
     }
     return ret;
 }

@@ -19,10 +19,40 @@ This repository contains the firmware for the room air quality sensor based on t
 
 ## Documentation
 
-[docs/hvac-controller-manual.md](docs/hvac-controller-manual.md) is the
-commissioning and integration manual: what the device does, every KNX parameter
-and group object explained for the integrator, worked control examples, and
-troubleshooting.
+* [docs/hvac-controller-manual.md](docs/hvac-controller-manual.md) — the
+  commissioning and integration manual: what the device does, every KNX
+  parameter and group object explained for the integrator, worked control
+  examples, and troubleshooting.
+* [docs/modbus-register-map.md](docs/modbus-register-map.md) — the Modbus RTU
+  register map, scaling conventions and worked master transactions.
+
+## Architecture
+
+```
+sensor_bus / ext_probe   raw I2C acquisition, one cycle every 5 s
+        │
+sensor_fusion(.hpp)      conditioning, redundancy, cross-validation, trends,
+        │                event detection  (platform-free, host-tested)
+        ▼
+   sensor_data_t          one measurement record; every value carries its validity
+        │
+        ├────────────► knx_service   room-control model + KNX TP1  (owns control_state)
+        └────────────► mb_rtu_slave  the same model on Modbus RTU
+```
+
+`control_state.h` is the protocol-neutral contract between the two field buses:
+`knx_service` owns the state and implements it, and both adapters map the same
+struct and the same commands onto their wire formats. A setpoint written over
+Modbus therefore takes the identical path a KNX telegram takes, ETS limits
+included.
+
+The board carries three sensors measuring room temperature and three measuring
+humidity. The fusion layer uses that overlap for fallback (a dead sensor is
+replaced silently), voting (three sources publish the median, so a drifting part
+cannot pull the value) and cross-validation (sources that stop agreeing raise an
+alarm). The same readings, sampled fast enough to have a slope, drive advisory
+rapid-temperature-rise detection, CO₂-derived occupancy and open-window
+detection.
 
 ## ETS product export
 
@@ -92,3 +122,8 @@ covered by host tests:
 ```
 tools/run_main_host_tests.sh
 ```
+
+That suite also covers the portable application logic: the room-control loops
+and psychrometrics (`test_hvac_control`), the sensor conditioning, redundancy
+and event detectors (`test_sensor_fusion`), and the Modbus register map's
+scaling and addresses (`test_modbus_registers`).

@@ -48,3 +48,22 @@ target_link_libraries(test_hvac_control PRIVATE unity)
 target_compile_options(test_hvac_control PRIVATE -Wall -Wextra)
 
 add_test(NAME test_hvac_control COMMAND test_hvac_control)
+
+# Sensor conditioning, redundancy/cross-validation and the event detectors
+# (fire, occupancy, open window). Header-only and platform-free, and driven at
+# simulated time so the multi-minute behaviours run in milliseconds here.
+add_executable(test_sensor_fusion test_sensor_fusion.cpp)
+target_include_directories(test_sensor_fusion PRIVATE "${MAIN_DIR}/include")
+target_link_libraries(test_sensor_fusion PRIVATE unity)
+target_compile_options(test_sensor_fusion PRIVATE -Wall -Wextra)
+
+add_test(NAME test_sensor_fusion COMMAND test_sensor_fusion)
+
+# Modbus register map: scaling, "no reading" sentinels and the register
+# addresses that docs/modbus-register-map.md publishes as the wire contract.
+add_executable(test_modbus_registers test_modbus_registers.cpp)
+target_include_directories(test_modbus_registers PRIVATE "${MAIN_DIR}/include")
+target_link_libraries(test_modbus_registers PRIVATE unity)
+target_compile_options(test_modbus_registers PRIVATE -Wall -Wextra)
+
+add_test(NAME test_modbus_registers COMMAND test_modbus_registers)

@@ -56,7 +56,7 @@ using namespace knx::product;
 // fully settable by the integrator (DPT 9 parameters render as decimal editors).
 // ---------------------------------------------------------------------------
 
-inline constexpr uint16_t kParameterLayoutVersion = 4;
+inline constexpr uint16_t kParameterLayoutVersion = 5;
 
 // --- Measurement publishing ------------------------------------------------
 inline constexpr uint16_t kDefaultMeasurementHeartbeatSeconds = 900;  // KNX FB default
@@ -148,6 +148,20 @@ inline constexpr uint16_t kDefaultVocBandIndex = 150;
 inline constexpr uint8_t kDefaultVentilationBaseDemandPercent = 0;
 inline constexpr uint8_t kDefaultVentilationManualDemandPercent = 50;
 
+// --- Sensor fusion and derived events --------------------------------------
+// The board has three sensors measuring room temperature and three measuring
+// humidity. These parameters govern how those are combined, and what is
+// inferred from how the combined signal moves. See sensor_fusion.hpp.
+inline constexpr uint16_t kDefaultSensorFilterSeconds = 30;
+inline constexpr float kDefaultTemperatureCrossCheckK = 1.5f;
+inline constexpr float kDefaultHumidityCrossCheckPct = 6.0f;
+inline constexpr float kDefaultFireRateOfRiseKPerMin = 4.0f;
+inline constexpr float kDefaultFireAbsoluteTemperatureC = 55.0f;  // 0 disables
+inline constexpr uint16_t kDefaultFireConfirmSeconds = 30;
+inline constexpr uint8_t kDefaultFireRequireAirQuality = 0;
+inline constexpr uint8_t kDefaultCo2OccupancyEnabled = 1;
+inline constexpr uint8_t kDefaultWindowDetectEnabled = 1;
+
 // ---------------------------------------------------------------------------
 // KNX group-object (logical port) identity.
 // ---------------------------------------------------------------------------
@@ -233,6 +247,21 @@ enum class SensorBoardPort : uint16_t {
     RoomSensorStatus = 58,        // HDC3020 StatusGO, DPT 21.001
     FloorProbeStatus = 59,        // SHT4x StatusGO, DPT 21.001
     AirQualitySensorStatus = 60,  // SCD4x + BME688 StatusGO, DPT 21.001
+    SensorHealthMask = 61,        // bit per sensor package, see sensor_source_t
+    SensorDisagreementAlarm = 62, // DPT 1.005 — sources measuring the same
+                                  // quantity no longer agree (drift/failure)
+
+    // --- Derived events (see sensor_fusion.hpp) ------------------------------
+    // These are inferences from the measurements, not measurements. Each says
+    // so in its object name, because an integrator binding them to real
+    // building functions needs to know they can be wrong.
+    FireAlarm = 63,               // DPT 1.005 — confirmed rapid rise / over-temp
+    FirePreAlarm = 64,            // DPT 1.005 — condition present, unconfirmed
+    TemperatureTrend = 65,        // DPT 9.002, K/h
+    OccupancyDetected = 66,       // DPT 1.018 — inferred from the CO2 signal
+    EstimatedOccupants = 67,      // DPT 5.010 — indication only
+    WindowOpenDetected = 68,      // DPT 1.019 — inferred from a ventilating fall
+    AlarmAcknowledge = 69,        // DPT 1.016 in — clears the latched fire alarm
 };
 
 // ---------------------------------------------------------------------------
@@ -334,6 +363,17 @@ enum class SensorBoardParameter : uint16_t {
     VocBoostBand = 70,
     VentilationBaseDemandPercent = 71,
     VentilationManualDemandPercent = 72,
+
+    // Sensor fusion and derived events
+    SensorFilterSeconds = 73,
+    TemperatureCrossCheck = 74,
+    HumidityCrossCheck = 75,
+    FireRateOfRise = 76,
+    FireAbsoluteTemperature = 77,
+    FireConfirmSeconds = 78,
+    FireRequireAirQuality = 79,
+    Co2OccupancyEnabled = 80,
+    WindowDetectEnabled = 81,
 };
 
 // Shorthand for the visibility conditions below: ETS hides a parameter unless
@@ -354,6 +394,7 @@ inline constexpr std::string_view kGroupFloor = "Floor temperature";
 inline constexpr std::string_view kGroupDewPoint = "Condensation protection";
 inline constexpr std::string_view kGroupMoisture = "Slab moisture detection";
 inline constexpr std::string_view kGroupVentilation = "Ventilation and air quality";
+inline constexpr std::string_view kGroupFusion = "Sensor fusion and detection";
 inline constexpr std::string_view kGroupDevice = "Device";
 
 inline constexpr auto kSensorBoardProduct =
@@ -716,14 +757,66 @@ inline constexpr auto kSensorBoardProduct =
                                 "air_quality_sensor_status",
                                 "Air Quality Sensor Status (DPT 21.001)",
                                 application::dptids::StatusGen,
-                                false>>(
+                                false>,
+            // Which physical packages are currently delivering, one bit each
+            // (HDC3020, BME688, SCD4x, SHT4x). The StatusGen octets above say
+            // whether a *measurement* is healthy; this says which *part* is,
+            // which is what a service visit needs to know.
+            endpoint::StatePort<SensorBoardPort::SensorHealthMask,
+                                uint8_t,
+                                "sensor_health_mask",
+                                "Sensor Package Health (bitmask)",
+                                application::dptids::Level,
+                                false>,
+            // The board carries three sensors that measure room temperature and
+            // three that measure humidity. When they stop agreeing, one of them
+            // has drifted — a fault that is invisible to any single-sensor
+            // device and that silently controls the room to the wrong value.
+            endpoint::semantics::AlarmState<SensorBoardPort::SensorDisagreementAlarm,
+                                            "sensor_disagreement_alarm",
+                                            "Sensor Cross-Check Alarm",
+                                            false>,
+
+            // ---- Derived events -------------------------------------------------
+            endpoint::semantics::AlarmState<SensorBoardPort::FireAlarm,
+                                            "fire_alarm",
+                                            "Rapid Temperature Rise / Fire Alarm (advisory)",
+                                            false>,
+            endpoint::semantics::AlarmState<SensorBoardPort::FirePreAlarm,
+                                            "fire_pre_alarm",
+                                            "Rapid Temperature Rise Pre-Alarm",
+                                            false>,
+            endpoint::StatePort<SensorBoardPort::TemperatureTrend,
+                                float,
+                                "temperature_trend",
+                                "Room Temperature Trend (K/h)",
+                                application::dptids::TemperatureDelta,
+                                false>,
+            endpoint::semantics::OccupancyState<SensorBoardPort::OccupancyDetected,
+                                                "occupancy_detected",
+                                                "Occupancy Detected (from CO2)",
+                                                false>,
+            endpoint::StatePort<SensorBoardPort::EstimatedOccupants,
+                                uint8_t,
+                                "estimated_occupants",
+                                "Estimated Occupants (indication only)",
+                                application::dptids::Level,
+                                false>,
+            endpoint::semantics::WindowDoorState<SensorBoardPort::WindowOpenDetected,
+                                                 "window_open_detected",
+                                                 "Open Window Detected (from air change)",
+                                                 false>,
+            endpoint::semantics::AlarmAckCommand<SensorBoardPort::AlarmAcknowledge,
+                                                 "alarm_acknowledge",
+                                                 "Alarm Acknowledge",
+                                                 false>>(
             ProductIdentity{
                 .productKey = "sensor_board_tp1",
                 .productDisplayName = "Room HVAC Sensor/Controller TP1",
                 .manufacturerId = ManufacturerId(0x00FA),
                 .medium = endpoint::Medium::TP1,
                 .applicationNumber = 21,
-                .applicationVersion = 4,
+                .applicationVersion = 5,
                 .firmwareRevision = 1,
                 .maxApduLength = 254,
                 // Feeds both the device's PID_HARDWARE_TYPE / PID_VERSION /
@@ -1417,6 +1510,88 @@ inline constexpr auto kSensorBoardProduct =
                 .minValue = 0,
                 .maxValue = 100,
                 .unit = "%",
-                .group = kGroupVentilation}));
+                .group = kGroupVentilation},
+
+            // ---- Sensor fusion and detection ---------------------------------
+            ParameterDescriptor<SensorBoardParameter::SensorFilterSeconds, uint16_t>{
+                .key = "sensor_filter_seconds",
+                .displayName = "Measurement smoothing time constant",
+                .defaultValue = kDefaultSensorFilterSeconds,
+                .minValue = 0,
+                .maxValue = 600,
+                .unit = "s",
+                .group = kGroupFusion},
+            // The board measures room temperature three times over (HDC3020,
+            // BME688, SCD4x). Beyond this difference they are not measuring the
+            // same thing any more, which means one of them has drifted: with
+            // three sources the outlier is voted out of the published value,
+            // with two it is only reported.
+            ParameterDescriptor<SensorBoardParameter::TemperatureCrossCheck, Dpt9Float>{
+                .key = "temperature_cross_check",
+                .displayName = "Temperature sensor disagreement limit (0 = off)",
+                .defaultValue = Dpt9Float{kDefaultTemperatureCrossCheckK},
+                .minValue = 0,
+                .maxValue = 20,
+                .unit = "K",
+                .group = kGroupFusion},
+            ParameterDescriptor<SensorBoardParameter::HumidityCrossCheck, Dpt9Float>{
+                .key = "humidity_cross_check",
+                .displayName = "Humidity sensor disagreement limit (0 = off)",
+                .defaultValue = Dpt9Float{kDefaultHumidityCrossCheckPct},
+                .minValue = 0,
+                .maxValue = 50,
+                .unit = "%",
+                .group = kGroupFusion},
+            // Advisory heat detection. Not a substitute for a certified fire
+            // detector — see the FireAlarm object's description and the manual.
+            ParameterDescriptor<SensorBoardParameter::FireRateOfRise, Dpt9Float>{
+                .key = "fire_rate_of_rise",
+                .displayName = "Rapid rise alarm threshold (0 = off)",
+                .defaultValue = Dpt9Float{kDefaultFireRateOfRiseKPerMin},
+                .minValue = 0,
+                .maxValue = 30,
+                .unit = "K/min",
+                .group = kGroupFusion},
+            ParameterDescriptor<SensorBoardParameter::FireAbsoluteTemperature, Dpt9Float>{
+                .key = "fire_absolute_temperature",
+                .displayName = "Over-temperature alarm threshold (0 = off)",
+                .defaultValue = Dpt9Float{kDefaultFireAbsoluteTemperatureC},
+                .minValue = 0,
+                .maxValue = 120,
+                .unit = "C",
+                .group = kGroupFusion},
+            ParameterDescriptor<SensorBoardParameter::FireConfirmSeconds, uint16_t>{
+                .key = "fire_confirm_seconds",
+                .displayName = "Rapid rise confirmation time",
+                .defaultValue = kDefaultFireConfirmSeconds,
+                .minValue = 5,
+                .maxValue = 600,
+                .unit = "s",
+                .group = kGroupFusion},
+            // A fan heater raises the temperature fast and burns nothing. Only
+            // combustion also drives the BME688 gas signal, so requiring both
+            // is the strongest false-alarm defence available here — at the cost
+            // of needing a calibrated BSEC, which takes hours after a cold boot.
+            ParameterDescriptor<SensorBoardParameter::FireRequireAirQuality, uint8_t>{
+                .key = "fire_require_air_quality",
+                .displayName = "Also require rising air pollution",
+                .defaultValue = kDefaultFireRequireAirQuality,
+                .options = parameterOptions(ParameterOption{0, "No - temperature alone"},
+                                            ParameterOption{1, "Yes - fewer false alarms"}),
+                .group = kGroupFusion},
+            ParameterDescriptor<SensorBoardParameter::Co2OccupancyEnabled, uint8_t>{
+                .key = "co2_occupancy_enabled",
+                .displayName = "Derive occupancy from CO2",
+                .defaultValue = kDefaultCo2OccupancyEnabled,
+                .options = parameterOptions(ParameterOption{0, "Disabled"},
+                                            ParameterOption{1, "Enabled"}),
+                .group = kGroupFusion},
+            ParameterDescriptor<SensorBoardParameter::WindowDetectEnabled, uint8_t>{
+                .key = "window_detect_enabled",
+                .displayName = "Detect open windows from air change",
+                .defaultValue = kDefaultWindowDetectEnabled,
+                .options = parameterOptions(ParameterOption{0, "Disabled"},
+                                            ParameterOption{1, "Enabled"}),
+                .group = kGroupFusion}));
 
 } // namespace sensor_board_knx

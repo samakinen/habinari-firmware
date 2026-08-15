@@ -79,8 +79,15 @@ i2c_master_dev_handle_t scd4x_device_create(i2c_master_bus_handle_t bus_handle, 
         .device_address = dev_addr,
         .scl_speed_hz = dev_speed,
     };
-    i2c_master_dev_handle_t dev_handle;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
+    i2c_master_dev_handle_t dev_handle = NULL;
+    // Return NULL rather than aborting: the caller already checks for it, and a
+    // sensor that will not attach is a degraded board, not a reason to panic
+    // the whole device — the fusion layer runs on whatever else is alive.
+    esp_err_t ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add SCD4x at 0x%02x: %s", dev_addr, esp_err_to_name(ret));
+        return NULL;
+    }
     return dev_handle;
 }
 

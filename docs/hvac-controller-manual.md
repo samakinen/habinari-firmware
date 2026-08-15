@@ -61,6 +61,18 @@ combines, in one device on one bus connection:
 * Diagnostics: per-sensor status octets, a roll-up device fault, and the
   standard DPT 22.101 room-controller status word.
 
+**Redundancy and inference (what the overlapping sensors buy)**
+
+* Three sensors measure room temperature and three measure humidity. A failed
+  sensor is replaced automatically; three healthy ones outvote a drifting one;
+  and sensors that stop agreeing raise a cross-check alarm — a fault no
+  single-sensor device can see. See [4.4](#44-redundancy-and-derived-events).
+* Advisory rapid-temperature-rise / over-temperature detection, optionally
+  corroborated by the gas sensor. **Not a certified fire detector** — read
+  [5.11](#511-derived-events) before using it.
+* Occupancy from CO₂ and open-window detection from air change, each used as the
+  controller's presence/window input only where no real contact is linked.
+
 In KNX terms the device implements the S-Mode HVAC Functional Blocks of KNX
 Volume 7/19/20: **RTS** (room temperature sensor), **RRHS** (room humidity),
 **RAQS** (air quality), **FTS** (floor temperature), **DPS** (dew point status),
@@ -69,8 +81,11 @@ local HMI — every input is a group object, so scheduling, presence, window
 contacts and setpoint adjustment come from wherever your project puts them.
 
 **Other interfaces.** The board also runs a Modbus RTU slave on RS-485 (default
-address 1, 9600 baud) exposing the same measurements. It is independent of KNX
-and needs no ETS configuration; ignore it if you do not use it.
+address 1, 19200 baud 8N1) exposing the **same device model**: the same
+measurements, derived values and controller outputs, and the same writable
+setpoints, modes and inputs. Both protocols drive one shared control state, so
+neither is a second implementation. It needs no ETS configuration — ignore it if
+you do not use it. Wire-level details: [modbus-register-map.md](modbus-register-map.md).
 
 ---
 
@@ -197,10 +212,10 @@ This is the fastest way to tell "deliberately unused" from "forgotten link".
 
 ```
   HDC3020  ─┐                                  ┌─► Room T / RH / dew point / abs. humidity
-  SCD4x    ─┤  sample every 30 s               ├─► CO₂, IAQ, CO₂-eq, VOC-eq, pressure
-  BME688   ─┤   → offsets applied once →       │
-  SHT4x    ─┘   (correction parameters)        ├─► Floor T / RH / abs. humidity, moisture alarm
-                        │                      │
+  SCD4x    ─┤  sample every 5 s                ├─► CO₂, IAQ, CO₂-eq, VOC-eq, pressure
+  BME688   ─┤   → fusion: filter, redundancy,  │
+  SHT4x    ─┘     cross-check, trends →        ├─► Floor T / RH / abs. humidity, moisture alarm
+                        │      → offsets →     ├─► Fire / occupancy / open-window events
                         ▼                      │
    bus inputs ──►  ┌─────────────────────┐     │
    (mode, presence,│  control tick, 1 Hz │─────┤
@@ -218,8 +233,16 @@ This is the fastest way to tell "deliberately unused" from "forgotten link".
               transmit policy (COV / min. interval / heartbeat) ──► bus
 ```
 
-* **Sensors are sampled every 30 s.** The control loops run **once per second**
-  on the most recent readings.
+* **Sensors are sampled every 5 s.** The control loops run **once per second**
+  on the most recent readings. Sampling fast costs I2C traffic and nothing on
+  the bus: what reaches KNX is decided much later by the transmit policy
+  ([4.2](#42-when-the-device-sends-the-transmit-model)). It is what makes
+  averaging, rate-of-change and fault detection work at all.
+* **Readings are conditioned before anything sees them** — plausibility window,
+  spike rejection, and exponential smoothing over the *measurement smoothing
+  time constant*. This is the oversampling: noise is averaged out here rather
+  than by publishing raw values less often, so a 0.2 K send-on-change threshold
+  responds to the room instead of to sensor noise.
 * Correction offsets are applied **once**, at the source, so the controller, the
   derived values and the published measurements all use the same number.
 * ETS parameter changes take effect within one control tick — no restart needed.
@@ -258,6 +281,34 @@ a scheduler with cyclic sending, a visualisation that re-sends on reconnect, or
 sending devices (window contacts, presence detectors, weather station)
 configured to transmit cyclically. The device does **not** issue read requests of
 its own at startup.
+
+### 4.4 Redundancy and derived events
+
+Three of the four sensors measure room temperature and humidity. The device uses
+that overlap in three ways — see [5.12](#512-redundancy-and-cross-validation)
+for the objects:
+
+| Behaviour | What it does | What it costs |
+|---|---|---|
+| **Fallback** | A failed sensor is replaced by the next healthy one, silently, within the staleness window | Nothing. The room keeps its measurement; object 61 shows what died |
+| **Voting** | With three healthy sources the median is published, so a drifting part cannot pull the value | Nothing |
+| **Cross-check** | Sources that stop agreeing raise object 62 | A tolerance set too tight nags on healthy parts |
+
+The same readings, sampled fast enough to have a slope, also support three
+inferences (objects 63–68):
+
+* **Rapid temperature rise** — advisory heat detection, confirmed over time and
+  optionally corroborated by the BME688 gas signal. Read the warning in
+  [5.11](#511-derived-events) before binding it to anything.
+* **Occupancy from CO₂** — people are the only meaningful indoor CO₂ source. If
+  no presence detector is linked, this drives the controller's presence input;
+  a linked PIR always wins.
+* **Open window from air change** — a temperature fall corroborated by CO₂
+  falling too. If no window contact is linked, this drives the window input;
+  a linked contact always wins.
+
+Both inferences defer to a real bus object the moment one arrives, because an
+installation that paid for contacts should get the contacts' answer.
 
 ---
 
@@ -376,6 +427,52 @@ Flags shown as ETS uses them: **C** communication, **R** read, **W** write,
 | 58 | Room Sensor Status | 21.001 | C R T | DPT_StatusGen octet for the HDC3020 package. |
 | 59 | Floor Probe Status | 21.001 | C R T | StatusGen for the external probe. Bit 0 (out of service) = probe not fitted; bit 1 (fault) = fitted but not reading; bit 3 (in alarm) = slab moisture alarm. |
 | 60 | Air Quality Sensor Status | 21.001 | C R T | StatusGen for the SCD4x/BME688 package. |
+| 61 | Sensor Package Health (bitmask) | 5.010 | C R T | One bit per physical sensor currently delivering readings: bit 0 HDC3020, bit 1 BME688, bit 2 SCD4x, bit 3 SHT4x probe. The StatusGen objects say whether a *measurement* is healthy; this says which *part* is, which is what a service visit needs. |
+| 62 | Sensor Cross-Check Alarm | 1.005 | C R T | 1 = sensors measuring the same quantity no longer agree, so one of them has drifted. See [5.12](#512-redundancy-and-cross-validation). |
+
+### 5.11 Derived events
+
+These are **inferences from the measurements, not measurements**. Each can be
+wrong, so each says so in its name. Bind them where a wrong answer is
+recoverable, and read [4.4](#44-redundancy-and-derived-events) first.
+
+| No. | Object | DPT | Flags | Description |
+|---|---|---|---|---|
+| 63 | Rapid Temperature Rise / Fire Alarm (advisory) | 1.005 | C R T | 1 = a confirmed rapid temperature rise or over-temperature. **Advisory only — not a certified fire detector** (see below). Latched; cleared by object 69 or after the *auto-clear* period. |
+| 64 | Rapid Temperature Rise Pre-Alarm | 1.005 | C R T | 1 = the condition is present but the confirmation time has not yet elapsed. Useful for logging and for tuning the thresholds; not worth waking anyone. |
+| 65 | Room Temperature Trend (K/h) | 9.002 | C R T | Least-squares slope of the room temperature. Negative = falling. A heating loop that cannot move this is oversized, undersized or fighting an open window. |
+| 66 | Occupancy Detected (from CO₂) | 1.018 | C R T | 1 = the CO₂ signal says the room is occupied. Unlike a PIR this does not miss someone sitting still. |
+| 67 | Estimated Occupants (indication only) | 5.010 | C R T | Rough headcount from the CO₂ excess. Never used for control; for visualisation. |
+| 68 | Open Window Detected (from air change) | 1.019 | C R T | 1 = a ventilating temperature fall, corroborated by CO₂ falling at the same time. |
+| 69 | Alarm Acknowledge | 1.016 | C W | Write 1 to clear the latched fire alarm. |
+
+> **The fire alarm is advisory.** An air-quality board in a room corner is in
+> the wrong place and has the wrong response time for life safety, and nothing
+> here is certified to EN 54. What it is worth is an early, corroborated hint on
+> a bus that is already wired — a runaway heater, a hob left on, a fault in the
+> underfloor circuit this board controls — minutes before anyone smells it. Do
+> not let it replace a smoke detector, and do not bind it to anything that would
+> be dangerous if it fired spuriously.
+
+### 5.12 Redundancy and cross-validation
+
+The board carries **three sensors that measure room temperature** (HDC3020,
+BME688, SCD4x) and three that measure humidity. Objects 0 and 1 report the fused
+result:
+
+* **Fallback.** If the HDC3020 stops answering, the BME688 takes over, then the
+  SCD4x. The room keeps its measurement and its control loop; object 61 shows
+  which parts are alive.
+* **Voting.** With three healthy sources the **median** is published, so a
+  single drifting part stops affecting the value at all rather than being
+  averaged into it.
+* **Cross-check.** Sources differing by more than the configured limit raise
+  object 62. With two sources there is no way to tell which one is lying, so the
+  preferred one is kept and the disagreement is reported.
+
+The external probe is deliberately **not** a room-air fallback: it measures a
+different place, and using the slab temperature to control the room would be a
+plausible-looking number of the wrong quantity.
 
 ---
 
@@ -534,6 +631,20 @@ Two independent detectors, because they catch different failures.
 
 The three channels run in parallel and **the worst one wins** — any single
 pollutant above its setpoint justifies air change.
+
+### 6.11 Sensor fusion and detection
+
+| Parameter | Default | Range | What it does |
+|---|---|---|---|
+| Measurement smoothing time constant | 30 s | 0–600 | Exponential filter on the room air measurements. This is the oversampling knob: the board samples every 5 s and averages here. Raise it on a draughty installation where the temperature flickers; lower it if a fast-reacting emitter needs the controller to see changes sooner. 0 = no smoothing. |
+| Temperature sensor disagreement limit | 1.5 K | 0–20 | How far the three temperature sensors may differ before object 62 is raised. With three healthy sources the outlier is also voted out of object 0. 0 = no cross-checking. |
+| Humidity sensor disagreement limit | 6 % | 0–50 | The same for the humidity sensors. Wider because humidity sensors legitimately disagree more. |
+| Rapid rise alarm threshold | 4 K/min | 0–30 | Rate of temperature rise that raises the advisory fire alarm, once sustained for the confirmation time. 0 = the rate path is off. Only armed above 28 °C, so a morning warm-up cannot trigger it. |
+| Over-temperature alarm threshold | 55 °C | 0–120 | Fixed-temperature path, independent of the rate. 0 = off. |
+| Rapid rise confirmation time | 30 s | 5–600 | How long the condition must persist. This is what a hairdryer or a sunbeam crossing the sensor fails to survive. |
+| Also require rising air pollution | No | No / Yes | When Yes, a rate-of-rise alarm additionally needs the BME688 gas signal to be climbing. Combustion produces volatiles; a fan heater does not. The strongest false-alarm defence here — but it needs a calibrated BSEC, which takes hours after a cold boot, so leave it off until air quality accuracy (object 8) is reading 2 or 3. |
+| Derive occupancy from CO₂ | Enabled | Enabled / Disabled | Produces objects 66 and 67, and drives the presence input when no presence detector is linked. |
+| Detect open windows from air change | Enabled | Enabled / Disabled | Produces object 68, and drives the window input when no window contact is linked. Disable it in a room with a permanently open interior door where the CO₂ corroboration cannot work. |
 
 ---
 
