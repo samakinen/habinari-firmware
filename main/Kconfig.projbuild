@@ -122,6 +122,15 @@ menu "Habinari service channel"
         depends on !HABINARI_PROTOCOL_KNX
         default n
         select HABINARI_REQUIRES_AUX_POWER
+        # Only forces the host stack on; it cannot pick NimBLE over Bluedroid
+        # for you, because "select" has no effect on choice symbols such as
+        # BT_HOST's members (verified against this IDF's kconfiglib — it warns
+        # and silently no-ops). The NimBLE choice, and everything else this
+        # channel actually needs (bonding, MTU, connection limits, LE Secure
+        # Connections), comes from sdkconfig.defaults.ble, applied by
+        # tools/build_variants.sh. This select is only a safety net so
+        # CONFIG_BT_ENABLED can never be left off by accident.
+        select BT_ENABLED
         help
             Expose the device_config registry over a BLE GATT service, so an
             installer with a phone or a laptop can write the settings that no
