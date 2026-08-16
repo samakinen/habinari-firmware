@@ -19,6 +19,7 @@
 
 #include "control_state.h"
 #include "device_config.h"
+#include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -591,6 +592,15 @@ static esp_err_t mqtt_adapter_start(void)
 
     const esp_mqtt_client_config_t config = {
         .broker.address.uri = s_ctx.broker_uri,
+        /* Only exercised for mqtts:// and wss:// URIs — plain mqtt:// ignores
+         * it — but esp-tls refuses to open *any* TLS connection without a
+         * verification option set, so a broker configured as wss:// with no
+         * cert_bundle_attach fails with ESP_ERR_MBEDTLS_SSL_SETUP_FAILED
+         * before it ever reaches the network. Mozilla's root set (enabled via
+         * CONFIG_MBEDTLS_CERTIFICATE_BUNDLE) covers any broker with a
+         * publicly-trusted certificate; a broker on a private CA needs
+         * .broker.verification.certificate with the CA's PEM instead. */
+        .broker.verification.crt_bundle_attach = esp_crt_bundle_attach,
         .credentials.username = s_ctx.mqtt_user[0] ? s_ctx.mqtt_user : NULL,
         .credentials.authentication.password = s_ctx.mqtt_pass[0] ? s_ctx.mqtt_pass : NULL,
         .credentials.client_id = s_ctx.device_id,

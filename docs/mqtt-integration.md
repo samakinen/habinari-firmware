@@ -27,7 +27,7 @@ the NVS namespace `netcfg`, and the adapter refuses to start without them
 |---|---|---|
 | `ssid` | str | Wi-Fi SSID |
 | `pass` | str | Wi-Fi passphrase (empty for an open network) |
-| `broker` | str | Broker URI, e.g. `mqtt://10.0.0.5:1883` or `mqtts://broker.example:8883` |
+| `broker` | str | Broker URI, e.g. `mqtt://10.0.0.5:1883`, `mqtts://broker.example:8883` or `wss://broker.example:443` |
 | `mq_user` | str | MQTT username (optional) |
 | `mq_pass` | str | MQTT password (optional) |
 
@@ -199,7 +199,17 @@ not Home Assistant.
 
 ---
 
-## 6. Behaviour worth knowing
+## 6. TLS brokers
+
+`mqtts://` and `wss://` are verified against the certificate bundle built into
+the firmware (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE`, Mozilla's root set), which
+covers any broker with a certificate from a publicly-trusted CA — Let's
+Encrypt included. There is currently no NVS key for pinning a private CA, so a
+broker on a self-signed or internal-CA certificate cannot be reached over TLS
+yet; put it behind `mqtt://` on the local network instead, or terminate TLS
+with a public-CA certificate in front of it.
+
+## 7. Behaviour worth knowing
 
 * **Wi-Fi reconnects forever**, not after N attempts. This is a wall-mounted
   device with no UI; an access point down for an hour must not leave it
