@@ -295,8 +295,8 @@ static esp_err_t wifi_start(const char *ssid, const char *password)
 static int append_device_block(char *buf, size_t len, const mqtt_ctx_t *ctx)
 {
     return snprintf(buf, len,
-                    "\"dev\":{\"ids\":[\"%s\"],\"name\":\"Room sensor %s\","
-                    "\"mf\":\"flou.io\",\"mdl\":\"ESP32-C6 room HVAC sensor\"},"
+                    "\"dev\":{\"ids\":[\"%s\"],\"name\":\"HVAC Controller %s\","
+                    "\"mf\":\"Pilosa\",\"mdl\":\"Habinari HVAC controller\"},"
                     "\"avty_t\":\"%s\"",
                     ctx->device_id, ctx->device_id, ctx->topic_avail);
 }
