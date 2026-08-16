@@ -620,9 +620,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_ctx.advertising = false;
         s_ctx.selected = 0;
         ESP_LOGI(TAG, "Client connected; awaiting pairing");
-        /* Ask for encryption rather than waiting to be asked: the client would
-         * otherwise have to fail a read first to discover it needs to pair. */
-        ble_gap_security_initiate(event->connect.conn_handle);
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
@@ -638,6 +635,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE: {
+        if (event->enc_change.status != 0) {
+            ESP_LOGE(TAG, "Encryption change failed: status 0x%04x", (unsigned)event->enc_change.status);
+            return 0;
+        }
         struct ble_gap_conn_desc desc;
         if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
             s_ctx.authenticated = desc.sec_state.encrypted && desc.sec_state.authenticated;
