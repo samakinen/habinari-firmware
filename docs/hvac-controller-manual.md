@@ -1,5 +1,7 @@
 # Habinari — Room HVAC Sensor/Controller TP1: Commissioning and Integration Manual
 
+<img src="images/habinari-rendering.png" alt="Rendering of the Habinari board" align="right" width="280">
+
 **Order number:** HBTP1 · **Application program:** number 21, version 5 ·
 **Manufacturer ID:** 0x00FA (development placeholder — see THIRD-PARTY-NOTICES.md) · **Medium:** KNX TP1 · **Group objects:** 70 (No. 0–69)
 

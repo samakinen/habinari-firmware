@@ -1,10 +1,17 @@
 # Habinari
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/habinari-logo-dark.svg">
+    <img src="docs/images/habinari-logo.svg" alt="Habinari logo" width="160">
+  </picture>
+</p>
+
 **A room climate sensor and HVAC room controller for the ESP32-C6, speaking KNX
 TP1, Modbus RTU or MQTT — one device model, three field buses, chosen at build
 time.**
 
-*Habinari* — from *habitat* and *naris*: sensing the air of a building.
+*Habinari* — from *habitat* and *naris*: sensing indoor air.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
@@ -14,6 +21,8 @@ time.**
 > are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What it is
+
+<img src="docs/images/habinari-rendering.png" alt="Rendering of the Habinari board, showing the KNX TP1, RS-485 and probe connectors, the ESP32-C6 module and the sensor placement" align="right" width="360">
 
 A board that measures the air in a room and controls the room's heating and
 cooling, rather than only reporting on it. The control loops, the setpoints and
