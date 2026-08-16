@@ -25,6 +25,7 @@
 #include "control_service.h"
 #include "control_state.h"
 #include "device_config.h"
+#include "device_default_name.h"
 #include "device_secret.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -776,8 +777,10 @@ static void host_task(void *param)
 static void build_device_name(void)
 {
     /* A configured name wins, because in a corridor of identical boards the one
-     * the commissioner labelled is the one they are looking for. Otherwise the
-     * last three MAC bytes, which is what is printed on the device. */
+     * the commissioner labelled is the one they are looking for. Otherwise
+     * device_default_name() — the same fallback mqtt_service.c uses, so a
+     * board's BLE advertisement and its Home Assistant device card agree on a
+     * name until somebody sets one. */
     const device_config_item_t *item = device_config_find("dev.name");
     if (item != NULL) {
         char configured[DEVICE_CONFIG_STRING_MAX + 16];
@@ -791,11 +794,10 @@ static void build_device_name(void)
             return;
         }
         if (written >= (int)sizeof(s_ctx.device_name)) {
-            ESP_LOGW(TAG, "Configured device name is too long to advertise; using the serial");
+            ESP_LOGW(TAG, "Configured device name is too long to advertise; using the fallback");
         }
     }
-    snprintf(s_ctx.device_name, sizeof(s_ctx.device_name), "SB-%02X%02X%02X", s_ctx.serial[3],
-             s_ctx.serial[4], s_ctx.serial[5]);
+    device_default_name(&s_ctx.serial[3], s_ctx.device_name, sizeof(s_ctx.device_name));
 }
 
 esp_err_t oob_service_start(void)

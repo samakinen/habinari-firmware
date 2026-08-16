@@ -3,6 +3,20 @@
 # the build silently falls back to the plain ESP32 default.
 CONFIG_IDF_TARGET="esp32c6"
 
+# Shared across every variant on purpose (see main/Kconfig.projbuild): the BLE
+# advertisement and the Home Assistant device card both fall back to this when
+# nobody has set an install name yet, so a modbus-ble image and an mqtt image
+# should agree on it.
+#
+# CAUTION: this string shares the 24-byte BLE advertisement buffer with a
+# space and six hex digits — 24 chars is already one past what fits alongside
+# them, so every unconfigured board advertises the same truncated name
+# ("Habinari HVAC Controlle") until it is given a real one, instead of a name
+# that tells them apart. Shorten it (default was "HVAC Controller", 16 chars,
+# which fits with 7 to spare) if that BLE window matters for commissioning a
+# room full of boards at once.
+CONFIG_HABINARI_DEVICE_NAME_PREFIX="Habinari"
+
 # The board's KNX physical layer is the STKNX transceiver driven by the
 # bit-banging backend, not a TPUART. The KNX_TP1_PHYSICAL choice defaults to
 # KNX_TP1_TPUART, so this has to be stated: without it every

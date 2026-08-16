@@ -1,6 +1,30 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 Sami Mäkinen
 
+menu "Habinari device identity"
+
+    config HABINARI_DEVICE_NAME_PREFIX
+        string "Default device name prefix"
+        default "Habinari"
+        help
+            What this board calls itself before anyone gives it a name of its
+            own: on the BLE advertisement and the Home Assistant device card,
+            rendered as "<prefix> <last three MAC bytes>" (see
+            device_default_name.c). Every such channel prefers the
+            installer-configured name instead — the BLE "Device name" setting,
+            device_config key dev.name — and only falls back to this.
+
+            Not personality-specific on purpose: a Modbus-plus-BLE image needs
+            it just as much as an MQTT one, so it lives here rather than under
+            either personality's menu.
+
+            Keep it short. The BLE advertisement buffer is 24 bytes and this
+            string shares it with a space and six hex digits — "HVAC
+            Controller" already uses all of it; a longer prefix truncates the
+            hex suffix instead of the words.
+
+endmenu
+
 menu "Habinari protocols"
 
     comment "Field-bus personalities. These are alternatives, not layers."
@@ -72,6 +96,14 @@ menu "Habinari protocols"
             default "homeassistant"
             help
                 Set empty to publish no discovery configuration at all.
+
+        config HABINARI_MQTT_MANUFACTURER
+            string "Home Assistant manufacturer name"
+            default "Pilosa"
+
+        config HABINARI_MQTT_MODEL
+            string "Home Assistant model name"
+            default "Habinari HVAC controller"
 
         config HABINARI_MQTT_STATE_INTERVAL_S
             int "State heartbeat interval (seconds)"

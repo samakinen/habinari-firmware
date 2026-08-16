@@ -19,6 +19,7 @@
 
 #include "control_state.h"
 #include "device_config.h"
+#include "device_default_name.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -57,6 +58,7 @@ static const char *TAG = "mqtt";
 #define BASE_MAX 96
 #define TOPIC_MAX 160
 #define DEVICE_ID_MAX 16
+#define DEVICE_NAME_MAX 64
 
 typedef struct {
     esp_mqtt_client_handle_t client;
@@ -65,6 +67,7 @@ typedef struct {
     TaskHandle_t task;
 
     char device_id[DEVICE_ID_MAX];
+    char device_name[DEVICE_NAME_MAX]; /* HA display name; see build_device_name() */
     char base[BASE_MAX];       /* "<prefix>/<device-id>" */
     char topic_state[TOPIC_MAX];
     char topic_avail[TOPIC_MAX];
@@ -296,10 +299,12 @@ static esp_err_t wifi_start(const char *ssid, const char *password)
 static int append_device_block(char *buf, size_t len, const mqtt_ctx_t *ctx)
 {
     return snprintf(buf, len,
-                    "\"dev\":{\"ids\":[\"%s\"],\"name\":\"HVAC Controller %s\","
-                    "\"mf\":\"Pilosa\",\"mdl\":\"Habinari HVAC controller\"},"
+                    "\"dev\":{\"ids\":[\"%s\"],\"name\":\"%s\","
+                    "\"mf\":\"%s\",\"mdl\":\"%s\"},"
                     "\"avty_t\":\"%s\"",
-                    ctx->device_id, ctx->device_id, ctx->topic_avail);
+                    ctx->device_id, ctx->device_name,
+                    CONFIG_HABINARI_MQTT_MANUFACTURER, CONFIG_HABINARI_MQTT_MODEL,
+                    ctx->topic_avail);
 }
 
 static void publish_discovery_sensor(mqtt_ctx_t *ctx, const char *object_id, const char *name,
@@ -530,11 +535,29 @@ static void mqtt_task(void *arg)
 
 /* --- Adapter -------------------------------------------------------------- */
 
+static void build_device_name(mqtt_ctx_t *ctx, const uint8_t mac_tail[3])
+{
+    const device_config_item_t *item = device_config_find("dev.name");
+    if (item != NULL) {
+        char configured[DEVICE_CONFIG_STRING_MAX];
+        const int written = device_config_get_text(item, configured, sizeof(configured));
+        if (written > 0 && (size_t)written < sizeof(ctx->device_name)) {
+            memcpy(ctx->device_name, configured, (size_t)written + 1u);
+            return;
+        }
+        if (written >= (int)sizeof(ctx->device_name)) {
+            ESP_LOGW(TAG, "Configured device name is too long; using the fallback");
+        }
+    }
+    device_default_name(mac_tail, ctx->device_name, sizeof(ctx->device_name));
+}
+
 static void build_topics(mqtt_ctx_t *ctx)
 {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(ctx->device_id, sizeof(ctx->device_id), "%02x%02x%02x", mac[3], mac[4], mac[5]);
+    build_device_name(ctx, &mac[3]);
 
     snprintf(ctx->base, sizeof(ctx->base), "%s/%s", CONFIG_HABINARI_MQTT_BASE_TOPIC,
              ctx->device_id);

@@ -205,8 +205,9 @@ correct behaviour, not a fault.
 scan response rather than the advertisement, because a name and a 128-bit UUID
 do not both fit in 31 bytes. Chrome scans actively and merges the two, but if a
 platform does not, the filtered chooser will be empty. The *Board not in the
-list?* link reopens the chooser unfiltered; pick the board by name (`SB-XXXXXX`,
-or whatever `dev.name` was set to).
+list?* link reopens the chooser unfiltered; pick the board by name (`<prefix>
+XXYYZZ` — `CONFIG_HABINARI_DEVICE_NAME_PREFIX` plus the last three MAC bytes,
+`HVAC Controller XXYYZZ` by default — or whatever `dev.name` was set to).
 
 **Nothing is found on Android.** Android requires location services to be
 switched on for BLE scanning, and Chrome needs the *Nearby devices* permission.

@@ -13,6 +13,7 @@ set(app_srcs
     "src/control_service.cpp"
     "src/protocol_registry.c"
     "src/device_config.c"
+    "src/device_default_name.c"
     "src/device_identity.cpp"
     "src/device_secret_core.cpp"
     "src/device_secret_esp.cpp"
