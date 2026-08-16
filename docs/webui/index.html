@@ -591,7 +591,11 @@ function validate(item, text) {
       /* The device counts bytes, not code units: an accented SSID is longer than
        * it looks. */
       const bytes = new TextEncoder().encode(text).length;
-      return bytes <= limit ? null : `Too long: ${bytes} bytes, the limit is ${limit}.`;
+      if (bytes > limit) return `Too long: ${bytes} bytes, the limit is ${limit}.`;
+      if (item.key === "net.broker" && text !== "" && !/^(mqtts?|wss?):\/\/./i.test(text)) {
+        return "Needs a scheme, e.g. mqtt://192.168.0.1:1883 or mqtts://host.";
+      }
+      return null;
     }
 
     default:
@@ -1092,8 +1096,21 @@ $("commit").addEventListener("click", async () => {
     "new settings. It will not advertise again until the programming button is held.");
 });
 
-$("reboot").addEventListener("click", () =>
-  control(CMD.REBOOT, [], "Restarting. Nothing was marked."));
+$("reboot").addEventListener("click", () => {
+  /* The commit bar's "Commit & restart" is the button that actually finishes
+   * setup; this one sits right next to Save all changes and looks like the
+   * obvious next click after saving. On a board that isn't commissioned yet,
+   * that reflex silently throws the whole session away — it restarts straight
+   * back into programming mode with nothing marked. Ask first. */
+  const provisioned = ((ui.info?.flags ?? 0) & INFO_FLAG.PROVISIONED) !== 0;
+  if (!provisioned && !confirm(
+      "This board has not been commissioned yet. Restarting now will not save " +
+      "that — it comes back up in programming mode with nothing committed. Use " +
+      "\"Commit & restart\" below if you are finished. Restart anyway?")) {
+    return;
+  }
+  control(CMD.REBOOT, [], "Restarting. Nothing was marked.");
+});
 
 $("end").addEventListener("click", () =>
   control(CMD.END, [], "Programming mode ended: the board is silent again."));
