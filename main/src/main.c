@@ -50,7 +50,7 @@
 static const char *TAG = "app";
 
 static sensor_service_t s_sensor_service;
-static volatile bool s_identify_active = false;
+static volatile bool s_programming_mode_active = false;
 
 // Called from the sensor task once per sampling cycle. One call, one owner: the
 // control service stores the record and fans it out to whichever adapters asked
@@ -82,9 +82,9 @@ static void on_sensor_data(const sensor_data_t *data)
 // state; this routes it to the LED and to the service channel, which advertises
 // exactly while it is set. On an image with no channel the second call is an
 // inline no-op, so this file still does not know which one it has.
-static void on_identify_changed(bool active)
+static void on_programming_mode_changed(bool active)
 {
-    s_identify_active = active;
+    s_programming_mode_active = active;
     oob_service_set_programming_mode(active);
 }
 
@@ -107,7 +107,7 @@ static void on_identify_changed(bool active)
 
 typedef enum {
     BUTTON_ACTION_NONE = 0,
-    BUTTON_ACTION_IDENTIFY,
+    BUTTON_ACTION_PROGRAMMING_MODE,
     BUTTON_ACTION_FACTORY_RESET,
 } button_action_t;
 
@@ -125,10 +125,11 @@ static void handle_programming_button(void)
         handled = BUTTON_ACTION_NONE;
     } else {
         const TickType_t held = xTaskGetTickCount() - pressed_at;
-        if (handled < BUTTON_ACTION_IDENTIFY && held >= pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS)) {
+        if (handled < BUTTON_ACTION_PROGRAMMING_MODE
+            && held >= pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS)) {
             ESP_LOGI(TAG, "Programming button long-press: toggling programming mode");
-            control_service_request_identify_toggle();
-            handled = BUTTON_ACTION_IDENTIFY;
+            control_service_request_programming_mode_toggle();
+            handled = BUTTON_ACTION_PROGRAMMING_MODE;
         } else if (handled < BUTTON_ACTION_FACTORY_RESET
                    && held >= pdMS_TO_TICKS(BUTTON_RESET_PRESS_MS)) {
             ESP_LOGW(TAG, "Programming button held %d ms: factory reset", BUTTON_RESET_PRESS_MS);
@@ -146,9 +147,21 @@ static void handle_programming_button(void)
 // One state, one indication: because programming mode is now also what gates the
 // service channel and Modbus addressing, a lit LED means exactly "this is the
 // device that can be commissioned right now".
+//
+// An OOB BLE client is necessarily inside programming mode already — that is
+// how it got connected — so the LED is already steady-on for the whole
+// session; ORing a second "on" into that would be invisible. The OOB identify
+// request therefore overrides with an actual blink instead, which is the only
+// thing that can stand out against a steady LED and is what tells an installer
+// apart which physical unit they are holding a link to.
+#define OOB_IDENTIFY_BLINK_PERIOD_MS 400
 static void update_led(void)
 {
-    const bool on = s_identify_active || protocol_adapters_identify_active();
+    bool on = s_programming_mode_active || protocol_adapters_identify_active();
+    if (oob_service_identify_active()) {
+        const TickType_t half_period = pdMS_TO_TICKS(OOB_IDENTIFY_BLINK_PERIOD_MS) / 2;
+        on = (xTaskGetTickCount() / half_period) % 2 == 0;
+    }
     gpio_set_level(PIN_LED, on ? 1 : 0);
 }
 
@@ -172,7 +185,7 @@ void app_main(void)
 
     // First: the device itself. This initialises NVS, which several adapters
     // read their configuration from, and starts the control tick.
-    control_service_set_identify_callback(on_identify_changed);
+    control_service_set_programming_mode_callback(on_programming_mode_changed);
     ESP_ERROR_CHECK(control_service_start());
 
     log_enabled_protocols();

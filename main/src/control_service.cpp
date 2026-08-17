@@ -160,11 +160,12 @@ void serviceProgrammingMode()
 
     {
         LockGuard lock(g_state.mutex);
-        if (!g_state.identifyActive) {
-            g_state.identifyDeadline = 0;
-        } else if (g_state.identifyDeadline != 0 && tickReached(now, g_state.identifyDeadline)) {
-            g_state.identifyDeadline = 0;
-            g_state.toggleIdentifyRequested = true;
+        if (!g_state.programmingModeActive) {
+            g_state.programmingModeDeadline = 0;
+        } else if (g_state.programmingModeDeadline != 0
+                   && tickReached(now, g_state.programmingModeDeadline)) {
+            g_state.programmingModeDeadline = 0;
+            g_state.programmingModeToggleRequested = true;
             expired = true;
         }
     }
@@ -176,13 +177,13 @@ void serviceProgrammingMode()
     if (protocol_adapters_own_programming_mode()) {
         return;  // the owner consumes the request on its own task
     }
-    if (takeIdentifyToggleRequest()) {
+    if (takeProgrammingModeToggleRequest()) {
         bool active = false;
         {
             LockGuard lock(g_state.mutex);
-            active = g_state.identifyActive;
+            active = g_state.programmingModeActive;
         }
-        control_service_set_identify_active(!active);
+        control_service_set_programming_mode(!active);
     }
 }
 
@@ -266,14 +267,14 @@ ServiceState &state()
     return g_state;
 }
 
-bool takeIdentifyToggleRequest()
+bool takeProgrammingModeToggleRequest()
 {
     if (g_state.mutex == nullptr) {
         return false;
     }
     LockGuard lock(g_state.mutex);
-    const bool requested = g_state.toggleIdentifyRequested;
-    g_state.toggleIdentifyRequested = false;
+    const bool requested = g_state.programmingModeToggleRequested;
+    g_state.programmingModeToggleRequested = false;
     return requested;
 }
 
@@ -354,40 +355,40 @@ extern "C" void control_service_update_sensor_data(const sensor_data_t *data)
     protocol_adapters_notify_sensor_data(data);
 }
 
-extern "C" void control_service_request_identify_toggle(void)
+extern "C" void control_service_request_programming_mode_toggle(void)
 {
     auto &s = ctrl::state();
     if (s.mutex == nullptr) {
         return;
     }
     ctrl::LockGuard lock(s.mutex);
-    s.toggleIdentifyRequested = true;
+    s.programmingModeToggleRequested = true;
 }
 
-extern "C" void control_service_set_identify_active(bool active)
+extern "C" void control_service_set_programming_mode(bool active)
 {
     auto &s = ctrl::state();
-    control_identify_callback_t callback = nullptr;
+    control_programming_mode_callback_t callback = nullptr;
     bool changed = false;
     {
         ctrl::LockGuard lock(s.mutex);
-        changed = (s.identifyActive != active);
-        s.identifyActive = active;
+        changed = (s.programmingModeActive != active);
+        s.programmingModeActive = active;
         // Armed on every entry, including one ETS made over the bus, so there is
         // no route into programming mode that leaves it open indefinitely.
         // Re-entering restarts the clock, which is what somebody pressing the
         // button again means.
         if (active && CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S > 0) {
-            s.identifyDeadline =
+            s.programmingModeDeadline =
                 xTaskGetTickCount()
                 + pdMS_TO_TICKS(CONFIG_HABINARI_PROGRAMMING_MODE_TIMEOUT_S * 1000);
-            if (s.identifyDeadline == 0) {
-                s.identifyDeadline = 1;  // 0 is the "no deadline" sentinel
+            if (s.programmingModeDeadline == 0) {
+                s.programmingModeDeadline = 1;  // 0 is the "no deadline" sentinel
             }
         } else {
-            s.identifyDeadline = 0;
+            s.programmingModeDeadline = 0;
         }
-        callback = s.identifyCallback;
+        callback = s.programmingModeCallback;
     }
     // Called outside the lock: the callback drives board GPIO and has no reason
     // to be serialised against the control tick.
@@ -396,11 +397,12 @@ extern "C" void control_service_set_identify_active(bool active)
     }
 }
 
-extern "C" void control_service_set_identify_callback(control_identify_callback_t callback)
+extern "C" void control_service_set_programming_mode_callback(
+    control_programming_mode_callback_t callback)
 {
     auto &s = ctrl::state();
     ctrl::LockGuard lock(s.mutex);
-    s.identifyCallback = callback;
+    s.programmingModeCallback = callback;
 }
 
 extern "C" uint32_t control_service_generation(void)
@@ -495,7 +497,7 @@ extern "C" void control_state_get(control_state_t *out)
     out->ventilation_mode = static_cast<uint8_t>(i.ventilationMode);
     out->window_open = i.windowOpen;
     out->presence = i.presence;
-    out->programming_mode = g.identifyActive;
+    out->programming_mode = g.programmingModeActive;
 }
 
 extern "C" esp_err_t control_state_write(control_command_t command, float value)

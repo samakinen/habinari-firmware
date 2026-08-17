@@ -1365,7 +1365,7 @@ void knxServiceTask(void *arg)
             // ETS can enter programming mode over the bus, not only via the
             // button, so the service hears about it either way and the board LED
             // has one thing to follow.
-            control_service_set_identify_active(enabled);
+            control_service_set_programming_mode(enabled);
         })
         .onLifecycleChanged([](DeviceLifecycleState state) {
             KNX_LOGI(TAG,
@@ -1749,11 +1749,11 @@ void knxServiceTask(void *arg)
                 startupDelayLogged = true;
             }
             // A programming-mode toggle (button) must still be honoured promptly.
-            if (control::takeIdentifyToggleRequest()) {
+            if (control::takeProgrammingModeToggleRequest()) {
                 app.toggleProgrammingMode();
             }
         } else if (app.lifecycleState() == DeviceLifecycleState::Operational) {
-            if (control::takeIdentifyToggleRequest()) {
+            if (control::takeProgrammingModeToggleRequest()) {
                 app.toggleProgrammingMode();
             }
             const PublishSnapshot snapshot = takePublishSnapshot();
@@ -1763,7 +1763,7 @@ void knxServiceTask(void *arg)
                 publishAllState(app, snapshot);
                 controlTickDue = false;
             }
-        } else if (control::takeIdentifyToggleRequest()) {
+        } else if (control::takeProgrammingModeToggleRequest()) {
             app.toggleProgrammingMode();
         }
 
@@ -1839,7 +1839,7 @@ bool knxAdapterIdentifyActive()
         return false;
     }
     LockGuard lock(g_state.mutex);
-    return g_state.identifyActive;
+    return g_state.programmingModeActive;
 }
 
 }  // namespace
@@ -1858,7 +1858,7 @@ extern "C" const protocol_adapter_t knx_protocol_adapter = {
     // only safe to touch from the KNX task — so the control service must not
     // toggle it behind the stack's back. This adapter consumes the button
     // request on its own task and reports the result back through
-    // control_service_set_identify_active().
+    // control_service_set_programming_mode().
     .owns_programming_mode = true,
     // Required: on a board wired to a TP1 bus, a device that silently fails to
     // join it is worse than one that refuses to boot and says why.

@@ -107,6 +107,10 @@ typedef struct {
     volatile bool advertising;
     /// Mirrors the board's programming mode; advertising follows it exactly.
     volatile bool programming_mode;
+    /// The OOB_CMD_IDENTIFY blink, independent of programming_mode — see
+    /// oob_service_identify_active(). Cleared on disconnect so a fresh session
+    /// never inherits the previous client's blink.
+    volatile bool identify_blink;
 
     /* Everything a GATT write asks for happens on a timer rather than in the
      * access callback. Two reasons, and they are both real: the callback runs on
@@ -230,7 +234,7 @@ static void build_status(oob_status_t *out)
     if (state.has_sensor_data) {
         out->flags |= OOB_STATUS_FLAG_HAS_SENSOR_DATA;
     }
-    if (state.programming_mode) {
+    if (s_ctx.identify_blink) {
         out->flags |= OOB_STATUS_FLAG_IDENTIFY;
     }
     if (state.device_fault) {
@@ -377,7 +381,9 @@ static int handle_control(const uint8_t *payload, uint16_t len)
         if (len < 2u) {
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
-        control_service_set_identify_active(payload[1] != 0u);
+        /* Flashes the LED so an installer can tell which unit they are holding
+         * a link to. */
+        s_ctx.identify_blink = (payload[1] != 0u);
         return 0;
 
     case OOB_CMD_FACTORY_RESET:
@@ -599,9 +605,9 @@ static void leave_timer_cb(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "Ending commissioning at the client's request");
     /* Not a private "stop advertising": programming mode is the state, so this
-     * goes out the front door and comes back through main.c's identify
+     * goes out the front door and comes back through main.c's programming-mode
      * callback, taking the LED and the Modbus commissioning address with it. */
-    control_service_set_identify_active(false);
+    control_service_set_programming_mode(false);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -628,6 +634,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_ctx.conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_ctx.authenticated = false;
         s_ctx.status_subscribed = false;
+        s_ctx.identify_blink = false;
         esp_timer_stop(s_ctx.status_timer);
         /* Still selected? Then advertise again: a dropped link during
          * commissioning must not mean a walk back to the button. Programming
@@ -888,7 +895,7 @@ esp_err_t oob_service_start(void)
          * is the same state by definition. It lapses on the programming-mode
          * timeout like any other selection. */
         ESP_LOGW(TAG, "Device has never been commissioned — entering programming mode");
-        control_service_set_identify_active(true);
+        control_service_set_programming_mode(true);
     }
 
     nimble_port_freertos_init(host_task);
@@ -933,6 +940,11 @@ bool oob_service_advertising(void)
 bool oob_service_client_connected(void)
 {
     return s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE && s_ctx.authenticated;
+}
+
+bool oob_service_identify_active(void)
+{
+    return s_ctx.identify_blink;
 }
 
 #endif /* CONFIG_HABINARI_OOB_BLE */

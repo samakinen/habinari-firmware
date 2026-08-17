@@ -223,7 +223,7 @@ One opcode byte, plus a payload where noted.
 |---|---|
 | `0x01` | commit: mark commissioned, leave programming mode, restart |
 | `0x02` | restart, marking nothing |
-| `0x03` | identify — payload `u8`, non-zero lights the LED |
+| `0x03` | identify blink — payload `u8`, non-zero lights the LED. Local to this link and does not affect programming mode: it stays connected either way, so it is safe to flip off without ending the session (use `0x05` for that). |
 | `0x04` | factory reset — payload must be the four bytes `RST!` |
 | `0x05` | leave programming mode now |
 
@@ -240,7 +240,7 @@ subscribed, and not at all otherwise.
 | Offset | Type | Field |
 |---|---|---|
 | 0 | u8 | wire version |
-| 1 | u8 | flags: `0x01` readings valid, `0x02` identify, `0x04` fault, `0x08` restart pending |
+| 1 | u8 | flags: `0x01` readings valid, `0x02` identify blink (opcode `0x03`, not programming mode — a connected client is in programming mode by definition), `0x04` fault, `0x08` restart pending |
 | 2 | i16 | temperature, °C × 100 |
 | 4 | i16 | humidity, %RH × 100 |
 | 6 | i16 | CO₂, ppm |

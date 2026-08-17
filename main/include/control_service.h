@@ -47,14 +47,16 @@ esp_err_t control_service_start(void);
 /// caller's context. Safe from any task.
 void control_service_update_sensor_data(const sensor_data_t *data);
 
-/// Ask for identify/programming mode to be toggled — what the PROG button does.
+/// Ask for programming mode to be toggled — what the PROG button does.
 /// Protocol-neutral on purpose: on a KNX build the KNX adapter turns this into
 /// programming mode, and on a build without KNX it still blinks the LED.
-void control_service_request_identify_toggle(void);
+void control_service_request_programming_mode_toggle(void);
 
-/// Report identify/programming state back (the KNX adapter calls this when ETS
-/// changes it, so the LED and control_state_t follow either route in).
-void control_service_set_identify_active(bool active);
+/// Set programming mode directly (the KNX adapter calls this when ETS changes
+/// it, so the LED and control_state_t follow either route in). This is the
+/// board's one commissioning gate — KNX individual addressing, BLE pairing and
+/// Modbus re-addressing all wait on it.
+void control_service_set_programming_mode(bool active);
 
 /// Erase all persisted state and reboot. Does not return.
 void control_service_factory_reset(void);
@@ -63,9 +65,9 @@ void control_service_factory_reset(void);
 /// the same number in on_control_tick().
 uint32_t control_service_generation(void);
 
-/// Notification callback for identify-mode changes (drives the board LED).
-typedef void (*control_identify_callback_t)(bool active);
-void control_service_set_identify_callback(control_identify_callback_t callback);
+/// Notification callback for programming-mode changes (drives the board LED).
+typedef void (*control_programming_mode_callback_t)(bool active);
+void control_service_set_programming_mode_callback(control_programming_mode_callback_t callback);
 
 #ifdef __cplusplus
 }

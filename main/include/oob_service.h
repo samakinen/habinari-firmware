@@ -164,6 +164,9 @@ bool oob_service_advertising(void);
 /// True while an authenticated client is connected.
 bool oob_service_client_connected(void);
 
+/// True while a connected client has asked for the identify blink
+bool oob_service_identify_active(void);
+
 #else /* !CONFIG_HABINARI_OOB_BLE */
 
 /* No channel in this image. Inline no-ops rather than #ifdefs at every call
@@ -173,6 +176,7 @@ static inline esp_err_t oob_service_start(void) { return ESP_OK; }
 static inline void oob_service_set_programming_mode(bool active) { (void)active; }
 static inline bool oob_service_advertising(void) { return false; }
 static inline bool oob_service_client_connected(void) { return false; }
+static inline bool oob_service_identify_active(void) { return false; }
 
 #endif /* CONFIG_HABINARI_OOB_BLE */
 

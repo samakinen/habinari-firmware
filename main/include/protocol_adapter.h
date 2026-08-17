@@ -67,8 +67,8 @@ typedef struct protocol_adapter {
      * part of the device object, ETS can set it over the bus, and the stack is
      * only safe to touch from the KNX task — so the service must not toggle the
      * flag behind its back. An adapter that sets this consumes
-     * takeIdentifyToggleRequest() on its own task and reports the result back
-     * through control_service_set_identify_active().
+     * takeProgrammingModeToggleRequest() on its own task and reports the result
+     * back through control_service_set_programming_mode().
      *
      * At most one adapter may claim it; with none, the service does the work,
      * which is why a Modbus-only build blinks its LED at all.

@@ -58,20 +58,20 @@ struct ServiceState {
     bool fusionConfigDirty{true};
     bool acknowledgeAlarmsRequested{false};
 
-    // --- Identify / programming mode ----------------------------------------
+    // --- Programming mode -----------------------------------------------------
     // The board's one "this device is selected" state, and the only gate any
     // commissioning path has: KNX individual addressing, BLE pairing and Modbus
     // re-addressing all wait on it. The PROG button raises the request; the KNX
     // adapter claims it if present (its stack owns the flag and only its task
     // may touch it), and otherwise the control task acts on it directly — which
     // is why a Modbus-only build blinks at all.
-    bool identifyActive{false};
-    bool toggleIdentifyRequested{false};
+    bool programmingModeActive{false};
+    bool programmingModeToggleRequested{false};
     /// Tick count at which programming mode lapses, or 0 for no deadline. A
     /// device left selected is a device anybody can re-address or pair with, so
     /// it is not left selected.
-    TickType_t identifyDeadline{0};
-    control_identify_callback_t identifyCallback{nullptr};
+    TickType_t programmingModeDeadline{0};
+    control_programming_mode_callback_t programmingModeCallback{nullptr};
 
     /// Incremented once per completed control tick.
     uint32_t generation{0};
@@ -106,9 +106,10 @@ private:
     SemaphoreHandle_t mutex_;
 };
 
-/// Consume a pending identify-toggle request, if any. Adapters call this from
-/// their own loop; it clears the flag, so exactly one adapter acts on a press.
-bool takeIdentifyToggleRequest();
+/// Consume a pending programming-mode toggle request, if any. Adapters call
+/// this from their own loop; it clears the flag, so exactly one adapter acts
+/// on a press.
+bool takeProgrammingModeToggleRequest();
 
 }  // namespace control
 }  // namespace habinari
