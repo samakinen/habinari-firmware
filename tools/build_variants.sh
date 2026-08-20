@@ -22,6 +22,7 @@ cd "${repo_root}"
 # deliberately no knx-ble — Kconfig refuses it, and oob_service.h says why.
 declare -A variants=(
     [knx]=""
+    [knxip]="sdkconfig.defaults.knxip;sdkconfig.defaults.ble"
     [modbus]="sdkconfig.defaults.modbus"
     [modbus-ble]="sdkconfig.defaults.modbus;sdkconfig.defaults.ble"
     [mqtt]="sdkconfig.defaults.mqtt;sdkconfig.defaults.ble"
@@ -29,7 +30,7 @@ declare -A variants=(
 
 selected=("$@")
 if [ ${#selected[@]} -eq 0 ]; then
-    selected=(knx modbus modbus-ble mqtt)
+    selected=(knx knxip modbus modbus-ble mqtt)
 fi
 
 for name in "${selected[@]}"; do
@@ -46,11 +47,13 @@ for name in "${selected[@]}"; do
 
     echo "=== ${name} -> ${build_dir} ==============================="
     # The ETS export only means anything for a KNX image, and regenerating it
-    # from a build that has no KNX application would be misleading.
-    ets_export=ON
-    if [ "${name}" != "knx" ]; then
-        ets_export=OFF
-    fi
+    # from a build that has no KNX application would be misleading. Both KNX
+    # variants export: they are two catalogue entries for one device model, and
+    # each build refreshes its own.
+    ets_export=OFF
+    case "${name}" in
+        knx|knxip) ets_export=ON ;;
+    esac
 
     idf.py -B "${build_dir}" \
            -DSDKCONFIG="${build_dir}/sdkconfig" \
@@ -58,7 +61,7 @@ for name in "${selected[@]}"; do
            -DHABINARI_ETS_EXPORT="${ets_export}" \
            build
 
-    grep -E "^CONFIG_HABINARI_(PROTOCOL_[A-Z]+|OOB_BLE)=y" "${build_dir}/sdkconfig" \
+    grep -E "^CONFIG_HABINARI_(PROTOCOL_[A-Z]+|KNX_MEDIUM_[A-Z0-9]+|OOB_BLE)=y" "${build_dir}/sdkconfig" \
         || echo "  (no personality selected)"
 done
 

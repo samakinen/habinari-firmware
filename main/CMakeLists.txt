@@ -35,12 +35,25 @@ if(CONFIG_HABINARI_PROTOCOL_KNX)
     list(APPEND app_srcs "src/knx_service.cpp")
 endif()
 
+# Address parsing for the KNXnet/IP routing group. Portable C with no ESP-IDF
+# behind it, so the validation the config registry gates writes on is covered
+# by main/test rather than only on hardware.
+if(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    list(APPEND app_srcs "src/knx_ip_addr.c")
+endif()
+
 if(CONFIG_HABINARI_PROTOCOL_MODBUS)
     list(APPEND app_srcs "src/mb_rtu_slave.c")
 endif()
 
 if(CONFIG_HABINARI_PROTOCOL_MQTT)
     list(APPEND app_srcs "src/mqtt_service.c" "src/mqtt_payload.c")
+endif()
+
+# Station-mode Wi-Fi, shared by the personalities that need a network rather
+# than owned by any one of them. Compiled in whenever one of them is.
+if(CONFIG_HABINARI_PROTOCOL_MQTT OR CONFIG_HABINARI_KNX_MEDIUM_IP)
+    list(APPEND app_srcs "src/wifi_service.c")
 endif()
 
 # The out-of-band service channel is not a personality (see oob_service.h), but

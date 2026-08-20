@@ -27,14 +27,13 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "mqtt_client.h"
 #include "mqtt_payload.h"
 #include "nvs.h"
 #include "protocol_adapter.h"
+#include "wifi_service.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "mqtt";
@@ -48,9 +47,6 @@ static const char *TAG = "mqtt";
 #define NETCFG_KEY_MQTT_USER "mq_user"
 #define NETCFG_KEY_MQTT_PASS "mq_pass"
 
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_RECONNECT_DELAY_MS 2000
-
 /* The base is bounded well below TOPIC_MAX so that every derived topic
  * provably fits: the longest suffix appended below is "/availability" at 13
  * characters, and 96 + 13 < 160. Sizing both the same would be a truncation
@@ -62,8 +58,6 @@ static const char *TAG = "mqtt";
 
 typedef struct {
     esp_mqtt_client_handle_t client;
-    EventGroupHandle_t wifi_events;
-    esp_timer_handle_t reconnect_timer;
     TaskHandle_t task;
 
     char device_id[DEVICE_ID_MAX];
@@ -158,30 +152,11 @@ static esp_err_t netcfg_cfg_set(const device_config_item_t *item,
     return err;
 }
 
-/* Wi-Fi limits, not ours: a 32-character SSID and a 63-character passphrase are
- * what 802.11 allows, and refusing a 64th character is more useful than storing
- * one the radio will not accept. */
+/* The broker settings only. The SSID and passphrase moved to wifi_service.c
+ * when KNXnet/IP started needing the same network: they are the device's
+ * connection to a network, not this adapter's connection to a broker, and a
+ * KNX IP image should not offer settings for a broker it does not have. */
 static const device_config_item_t netcfg_config_items[] = {
-    {
-        .key = "net.ssid",
-        .label = "Wi-Fi SSID",
-        .type = DEVICE_CONFIG_TYPE_STRING,
-        .flags = DEVICE_CONFIG_FLAG_REBOOT,
-        .max = 32.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
-        .ctx = (void *)NETCFG_KEY_SSID,
-    },
-    {
-        .key = "net.pass",
-        .label = "Wi-Fi passphrase",
-        .type = DEVICE_CONFIG_TYPE_STRING,
-        .flags = DEVICE_CONFIG_FLAG_SECRET | DEVICE_CONFIG_FLAG_REBOOT,
-        .max = 63.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
-        .ctx = (void *)NETCFG_KEY_PASSWORD,
-    },
     {
         .key = "net.broker",
         .label = "MQTT broker URI",
@@ -213,78 +188,6 @@ static const device_config_item_t netcfg_config_items[] = {
         .ctx = (void *)NETCFG_KEY_MQTT_PASS,
     },
 };
-
-/* --- Wi-Fi ---------------------------------------------------------------- */
-
-static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    (void)arg;
-    (void)data;
-
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-        return;
-    }
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(s_ctx.wifi_events, WIFI_CONNECTED_BIT);
-        /* Reconnect forever rather than after N tries: this is a wall-mounted
-         * device with no UI, and an AP that is down for an hour must not leave
-         * it permanently offline. The control loops keep running regardless.
-         *
-         * Backed off through a one-shot timer rather than a vTaskDelay here:
-         * this runs on the shared default event loop, and sleeping on it would
-         * hold up every other event registered there. Without any backoff a
-         * wrong passphrase would spin. */
-        ESP_LOGW(TAG, "Wi-Fi disconnected, retrying in %d ms", WIFI_RECONNECT_DELAY_MS);
-        if (s_ctx.reconnect_timer != NULL) {
-            esp_timer_start_once(s_ctx.reconnect_timer, WIFI_RECONNECT_DELAY_MS * 1000);
-        }
-        return;
-    }
-    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)data;
-        ESP_LOGI(TAG, "Wi-Fi up, IP " IPSTR, IP2STR(&event->ip_info.ip));
-        xEventGroupSetBits(s_ctx.wifi_events, WIFI_CONNECTED_BIT);
-    }
-}
-
-static void wifi_reconnect_timer_cb(void *arg)
-{
-    (void)arg;
-    esp_wifi_connect();
-}
-
-static esp_err_t wifi_start(const char *ssid, const char *password)
-{
-    const esp_timer_create_args_t timer_args = {
-        .callback = wifi_reconnect_timer_cb,
-        .name = "wifi_reconnect",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_ctx.reconnect_timer));
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&init));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                        wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                        wifi_event_handler, NULL, NULL));
-
-    wifi_config_t config = {0};
-    strncpy((char *)config.sta.ssid, ssid, sizeof(config.sta.ssid) - 1);
-    strncpy((char *)config.sta.password, password, sizeof(config.sta.password) - 1);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
-    /* The board is mains/aux powered and must answer a broker promptly, so no
-     * modem sleep: the latency it saves is not worth the power it costs here. */
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    return esp_wifi_start();
-}
 
 /* --- Home Assistant discovery --------------------------------------------- */
 
@@ -568,16 +471,17 @@ static void build_topics(mqtt_ctx_t *ctx)
 
 static esp_err_t mqtt_adapter_start(void)
 {
-    char ssid[33] = {0};
-    char password[65] = {0};
-
     /* First, before anything can fail. An unprovisioned device returns from
      * this function two branches down, and the whole point of the service
      * channel is that it can still be provisioned afterwards. */
+    const esp_err_t wifi_cfg = wifi_service_register_config();
+    if (wifi_cfg != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi settings not exposed out of band: %s", esp_err_to_name(wifi_cfg));
+    }
     const esp_err_t cfg = device_config_register(
         netcfg_config_items, sizeof(netcfg_config_items) / sizeof(*netcfg_config_items));
     if (cfg != ESP_OK) {
-        ESP_LOGW(TAG, "Network settings not exposed out of band: %s", esp_err_to_name(cfg));
+        ESP_LOGW(TAG, "Broker settings not exposed out of band: %s", esp_err_to_name(cfg));
     }
 
     nvs_handle_t handle;
@@ -588,26 +492,19 @@ static esp_err_t mqtt_adapter_start(void)
                       "`idf.py nvs-partition-gen`)", NETCFG_NAMESPACE);
         return ESP_ERR_NOT_FOUND;
     }
-    nvs_get_string(handle, NETCFG_KEY_SSID, ssid, sizeof(ssid));
-    nvs_get_string(handle, NETCFG_KEY_PASSWORD, password, sizeof(password));
     nvs_get_string(handle, NETCFG_KEY_BROKER, s_ctx.broker_uri, sizeof(s_ctx.broker_uri));
     nvs_get_string(handle, NETCFG_KEY_MQTT_USER, s_ctx.mqtt_user, sizeof(s_ctx.mqtt_user));
     nvs_get_string(handle, NETCFG_KEY_MQTT_PASS, s_ctx.mqtt_pass, sizeof(s_ctx.mqtt_pass));
     nvs_close(handle);
 
-    if (ssid[0] == '\0' || s_ctx.broker_uri[0] == '\0') {
-        ESP_LOGE(TAG, "Wi-Fi SSID or broker URI not provisioned");
+    if (s_ctx.broker_uri[0] == '\0') {
+        ESP_LOGE(TAG, "MQTT broker URI not provisioned");
         return ESP_ERR_INVALID_STATE;
-    }
-
-    s_ctx.wifi_events = xEventGroupCreate();
-    if (s_ctx.wifi_events == NULL) {
-        return ESP_ERR_NO_MEM;
     }
 
     build_topics(&s_ctx);
 
-    err = wifi_start(ssid, password);
+    err = wifi_service_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi start failed: %s", esp_err_to_name(err));
         return err;
@@ -671,6 +568,10 @@ bool mqtt_service_connected(void)
 
 esp_err_t mqtt_service_provision(const char *ssid, const char *password, const char *broker_uri)
 {
+    /* Still writes the Wi-Fi pair even though wifi_service.c owns them now:
+     * they share the "netcfg" namespace, and this is the one call a console
+     * user makes to bring an unprovisioned board onto a network and a broker in
+     * a single step. Splitting it would trade one obvious entry point for two. */
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NETCFG_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {

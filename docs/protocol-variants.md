@@ -68,9 +68,23 @@ idf.py -B build_mqtt \
 
 | Symbol | Default | Transport | Power |
 |---|---|---|---|
-| `HABINARI_PROTOCOL_KNX` | y | STKNX, TP1, ETS-commissioned | KNX bus terminal, no aux supply |
+| `HABINARI_PROTOCOL_KNX` | y | KNX, ETS-commissioned — medium chosen below | see below |
 | `HABINARI_PROTOCOL_MODBUS` | y | SP3485EN, RS-485 | either |
 | `HABINARI_PROTOCOL_MQTT` | n | Wi-Fi station | **5–30 V auxiliary supply required** |
+
+KNX is one personality on a choice of two media, because it is one protocol on a
+choice of two media. The device model, the application program and every ETS
+parameter are shared; the medium decides the wire, the power budget, and — since
+ETS derives a topology from it — the catalogue entry:
+
+| Symbol | Default | Transport | Power |
+|---|---|---|---|
+| `HABINARI_KNX_MEDIUM_TP1` | y | STKNX, twisted pair | KNX bus terminal, no aux supply |
+| `HABINARI_KNX_MEDIUM_IP` | n | KNXnet/IP routing over Wi-Fi | **5–30 V auxiliary supply required** |
+
+[docs/knxnet-ip.md](knxnet-ip.md) covers the IP medium: commissioning from ETS6
+over the network, the topology rule it places on the installation, and what is
+deliberately not implemented.
 
 Personalities compose with the BLE service channel, which is an *overlay* rather
 than a variant of its own — it is not a personality, and
@@ -101,10 +115,10 @@ subsystem — which is a real constraint on the Matter option in §5.
 
 ---
 
-## 3. Why KNX and the radio cannot share an image
+## 3. Why KNX TP1 and the radio cannot share an image
 
 Selecting both is a **compile error**, raised by `main/src/protocol_registry.c`,
-which refuses a KNX image with `CONFIG_BT_ENABLED` set as well — the BLE service
+which refuses a TP1 image with `CONFIG_BT_ENABLED` set as well — the BLE service
 channel is not a personality but it is a radio, and the argument below does not
 care about the distinction. Two independent reasons, either of which would be
 sufficient:
@@ -118,15 +132,23 @@ cache-safe and pinned to LEVEL3. The Wi-Fi, BLE and 802.15.4 stacks install
 their own high-priority interrupts, take long critical sections, and have hard
 MAC deadlines of their own. They will spend margin that is not there.
 
-**Power.** KNX is the bus-powered personality: the device runs entirely off the
+**Power.** TP1 is the bus-powered personality: the device runs entirely off the
 TP1 terminal, within a bus current budget of roughly 10 mA at 29 V. Wi-Fi
 transmit peaks past 300 mA. The radio personalities need the auxiliary supply on
 the secondary connector, which is the same connector the RS-485 installation
 already uses.
 
-Making it a build-time error rather than a runtime check is deliberate: a KNX
+Making it a build-time error rather than a runtime check is deliberate: a TP1
 image does not link the radio stacks at all, so the timing guarantee is a
 property of the binary rather than of a flag somebody could get wrong.
+
+Both guards name `CONFIG_HABINARI_KNX_MEDIUM_TP1`, not
+`CONFIG_HABINARI_PROTOCOL_KNX`, and the distinction is load-bearing rather than
+pedantic: neither argument applies to KNX on the KNXnet/IP medium. That variant
+has no bit cell to protect and no bus terminal to run from — it is already a
+radio personality on the auxiliary supply — so it composes with Modbus and the
+BLE channel freely, and *wants* the BLE channel, because the Wi-Fi credentials
+ETS arrives over are exactly what that channel is there to write.
 
 > **Note on `REQUIRES`.** `main/CMakeLists.txt` lists the protocol components
 > unconditionally even though the sources are conditional.

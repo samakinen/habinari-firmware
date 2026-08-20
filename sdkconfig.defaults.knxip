@@ -1,0 +1,68 @@
+# KNX over KNXnet/IP — a KNX IP device (03/02/06) on Wi-Fi.
+#
+#   tools/build_variants.sh knxip
+#
+# The same device model, the same application program and the same ETS
+# parameters as the TP1 variant. What changes is the medium: no twisted pair,
+# no transceiver, no bus power. The device joins the KNXnet/IP routing
+# multicast group and ETS commissions it directly over the network, with its
+# connection set to Multicast.
+#
+# This variant needs the 5-30 V auxiliary supply on the secondary connector.
+# It will not run on KNX bus power, and there is no bus terminal to run it from.
+#
+# Note the topology rule it puts on the installation (03/02/06 rule 4): a KNX
+# IP device placed in a subnetwork requires that subnetwork, and every
+# subnetwork above it, to contain KNX IP devices only.
+CONFIG_HABINARI_PROTOCOL_KNX=y
+# CONFIG_HABINARI_KNX_MEDIUM_TP1 is not set
+CONFIG_HABINARI_KNX_MEDIUM_IP=y
+CONFIG_HABINARI_PROTOCOL_MODBUS=y
+# CONFIG_HABINARI_PROTOCOL_MQTT is not set
+
+CONFIG_HABINARI_KNXIP_MULTICAST_ADDR="224.0.23.12"
+CONFIG_HABINARI_KNXIP_PORT=3671
+CONFIG_HABINARI_KNXIP_TTL=16
+CONFIG_HABINARI_KNXIP_WIFI_WAIT_S=30
+
+# The KNX stack's own medium selection has to follow: it gates whole media out
+# of the build, headers included, so a TP1-configured stack in an IP image
+# would not compile the routing endpoint at all.
+# CONFIG_KNX_MEDIUM_TP1 is not set
+CONFIG_KNX_MEDIUM_IP=y
+CONFIG_KNX_ENABLE_ROUTING=y
+# Tunnelling is the client role — this device connecting out to a gateway —
+# and a KNX IP device does not do that. Off keeps it out of the image.
+# CONFIG_KNX_ENABLE_TUNNELING is not set
+CONFIG_KNX_IP_MULTICAST_ADDR="224.0.23.12"
+CONFIG_KNX_IP_PORT=3671
+
+# KNX Data Secure, and with it the KNX/IP Secure Routing wrapper that ETS
+# enables by downloading a backbone key.
+CONFIG_KNX_ENABLE_SECURITY=y
+
+# The routing endpoint decodes datagrams on the data-link RX worker, and a
+# KNXnet/IP frame is an order of magnitude larger than a TP1 one.
+CONFIG_KNX_RX_TASK_STACK_SIZE=8192
+
+# This variant carries more than any other: the KNX stack and KNXnet/IP, KNX
+# Secure, Wi-Fi, the BLE service channel and Modbus. That does not fit in the
+# 1.92 MB app partition at -Og with the bring-up log strings compiled in, so
+# the debug-strip half of sdkconfig.defaults.prod is applied here rather than
+# left for a release build to remember.
+#
+# Nothing functional changes: INFO and above still log, asserts still abort.
+# What goes is the per-frame KNX_LOGD dumps and the assert message strings.
+# For bus-level debugging, build with sdkconfig.defaults.knxip alone and raise
+# these again — an image with them on does not fit, so do it on a 8 MB board
+# or with one of the other personalities off.
+# CONFIG_KNX_DEBUG_ENABLED is not set
+CONFIG_KNX_LOG_LEVEL=3
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

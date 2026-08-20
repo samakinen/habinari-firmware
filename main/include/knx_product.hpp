@@ -7,6 +7,14 @@
 
 #include "control_defaults.hpp"
 
+// The medium below is a Kconfig choice in a firmware build. The ETS export
+// tool compiles this same header on the host, where there is no sdkconfig.h;
+// it passes the same symbol on the command line instead, so the two builds
+// cannot describe different products.
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
+
 #include <cstdint>
 
 /**
@@ -51,6 +59,47 @@ namespace habinari_knx {
 using namespace knx;
 using namespace knx::application;
 using namespace knx::product;
+
+// ---------------------------------------------------------------------------
+// Which medium this image speaks
+//
+// One device model, two ETS catalogue entries. Everything below this block —
+// every group object, every parameter, every default — is identical on both;
+// what differs is only what ETS needs in order to place the device in a
+// topology: the medium type it declares, and therefore the product and order
+// numbers that identify it.
+//
+// They have to be separate entries rather than one. ETS derives what a device
+// may be connected to from its declared medium, and 03/02/06 rule 4 makes the
+// consequences real: a KNX IP device requires its subnetwork, and every
+// subnetwork above it, to hold KNX IP devices only. A single catalogue entry
+// claiming both media would let an integrator drop a TP1 board into an IP line
+// and only find out on site.
+//
+// The persistence namespace differs with them, deliberately. It keys the NVS
+// blobs holding the individual address, the group object table and the security
+// key material — state that belongs to one commissioned identity. Reflashing a
+// board from one medium to the other must not have it wake up holding an
+// address that ETS assigned to the other product.
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+
+inline constexpr const char *kProductKey = "habinari_ip";
+inline constexpr const char *kProductDisplayName = "Habinari Room HVAC Sensor/Controller IP";
+inline constexpr endpoint::Medium kProductMedium = endpoint::Medium::IP_Routing;
+inline constexpr const char *kOrderNumber = "HBIP1";
+inline constexpr const char *kPersistenceNamespace = "habinari_ip";
+inline constexpr uint16_t kHardwareSerialNumber = 2;
+
+#else  // TP1, and the default for a build that names no medium at all
+
+inline constexpr const char *kProductKey = "habinari_tp1";
+inline constexpr const char *kProductDisplayName = "Habinari Room HVAC Sensor/Controller TP1";
+inline constexpr endpoint::Medium kProductMedium = endpoint::Medium::TP1;
+inline constexpr const char *kOrderNumber = "HBTP1";
+inline constexpr const char *kPersistenceNamespace = "habinari_tp1";
+inline constexpr uint16_t kHardwareSerialNumber = 1;
+
+#endif
 
 // ---------------------------------------------------------------------------
 // Parameter defaults
@@ -717,15 +766,15 @@ inline constexpr auto kHabinariProduct =
                                                  "Alarm Acknowledge",
                                                  false>>(
             ProductIdentity{
-                .productKey = "habinari_tp1",
-                .productDisplayName = "Habinari Room HVAC Sensor/Controller TP1",
+                .productKey = kProductKey,
+                .productDisplayName = kProductDisplayName,
                 // Development placeholder. A device distributed as a KNX
                 // product needs a manufacturer ID assigned by the KNX
                 // Association and a certified application program; replace
                 // this with yours before shipping anything. See
                 // THIRD-PARTY-NOTICES.md.
                 .manufacturerId = ManufacturerId(0x00FA),
-                .medium = endpoint::Medium::TP1,
+                .medium = kProductMedium,
                 .applicationNumber = 21,
                 .applicationVersion = 5,
                 .firmwareRevision = 1,
@@ -733,12 +782,12 @@ inline constexpr auto kHabinariProduct =
                 // Feeds both the device's PID_HARDWARE_TYPE / PID_VERSION /
                 // PID_ORDER_INFO and the generated knxprod's hardware entry,
                 // which ETS cross-checks before allowing a download.
-                .hardwareSerialNumber = 1,
+                .hardwareSerialNumber = kHardwareSerialNumber,
                 .hardwareVersion = 1,
-                .orderNumber = "HBTP1",
+                .orderNumber = kOrderNumber,
             },
             PersistencePolicy{
-                .namespacePrefix = "habinari_tp1",
+                .namespacePrefix = kPersistenceNamespace,
                 .schemaVersion = 2,
                 .persistKnxState = true,
             },

@@ -6,7 +6,7 @@
 # tools/ets_export is a host-native CMake project: it compiles the product
 # definition in main/include/knx_product.hpp against knx_core, runs the result
 # to emit JSON, and feeds that to the KNstaX Python exporter to produce
-# ets_export/habinari_tp1_ets.knxprod.xml.
+# ets_export/habinari_<medium>_ets.knxprod.xml.
 #
 # It cannot be an add_subdirectory() of the firmware build, because that build
 # is cross-compiled for the ESP32-C6 and the exporter binary has to run here.
@@ -24,6 +24,18 @@ set(ETS_EXPORT_SRC_DIR   "${CMAKE_SOURCE_DIR}/tools/ets_export")
 set(ETS_EXPORT_BUILD_DIR "${CMAKE_BINARY_DIR}/ets_export")
 set(ETS_EXPORT_OUT_DIR   "${CMAKE_SOURCE_DIR}/ets_export")
 
+# The exported catalogue entry follows the medium this image is being built for,
+# so the .knxprod an integrator imports always matches the firmware next to it.
+# A device model is the same on both media; what differs is what ETS will allow
+# it to be connected to.
+if(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    set(ETS_EXPORT_MEDIUM "ip")
+    set(ETS_EXPORT_BASENAME "habinari_ip_ets")
+else()
+    set(ETS_EXPORT_MEDIUM "tp1")
+    set(ETS_EXPORT_BASENAME "habinari_tp1_ets")
+endif()
+
 # Plain names only: the xtensa/riscv toolchain binaries are prefixed, so these
 # resolve to the host compilers even inside the IDF build.
 find_program(ETS_EXPORT_HOST_CC  NAMES cc gcc clang)
@@ -32,7 +44,7 @@ find_program(ETS_EXPORT_HOST_CXX NAMES c++ g++ clang++)
 if(NOT ETS_EXPORT_HOST_CC OR NOT ETS_EXPORT_HOST_CXX)
     message(WARNING
         "ETS export disabled: no host C/C++ compiler found. "
-        "ets_export/habinari_tp1_ets.knxprod.xml will not be refreshed.")
+        "the ets_export/*.knxprod.xml files will not be refreshed.")
     return()
 endif()
 
@@ -55,6 +67,7 @@ add_custom_command(
             -DCMAKE_C_COMPILER=${ETS_EXPORT_HOST_CC}
             -DCMAKE_CXX_COMPILER=${ETS_EXPORT_HOST_CXX}
             -DETS_EXPORT_OUTPUT_DIR=${ETS_EXPORT_OUT_DIR}
+            -DHABINARI_ETS_MEDIUM=${ETS_EXPORT_MEDIUM}
     DEPENDS "${ETS_EXPORT_SRC_DIR}/CMakeLists.txt"
     COMMENT "Configuring host ETS export build"
     VERBATIM
@@ -65,13 +78,13 @@ add_custom_command(
 # fight the outer one for job slots.
 add_custom_target(ets_export ALL
     COMMAND "${CMAKE_COMMAND}" --build "${ETS_EXPORT_BUILD_DIR}"
-            --target habinari_tp1_ets_knxprod
+            --target ${ETS_EXPORT_BASENAME}_knxprod
     # The .knxprod.xml is written straight to ETS_EXPORT_OUTPUT_DIR; the JSON
     # intermediate stays in the nested build tree, so bring it alongside — it is
     # the readable form of the same data and the better thing to diff.
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${ETS_EXPORT_BUILD_DIR}/habinari_tp1_ets.json"
-            "${ETS_EXPORT_OUT_DIR}/habinari_tp1_ets.json"
+            "${ETS_EXPORT_BUILD_DIR}/${ETS_EXPORT_BASENAME}.json"
+            "${ETS_EXPORT_OUT_DIR}/${ETS_EXPORT_BASENAME}.json"
     DEPENDS "${ETS_EXPORT_BUILD_DIR}/CMakeCache.txt"
     COMMENT "Regenerating ETS product export -> ${ETS_EXPORT_OUT_DIR}"
     USES_TERMINAL

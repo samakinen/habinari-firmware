@@ -30,19 +30,58 @@ menu "Habinari protocols"
     comment "Field-bus personalities. These are alternatives, not layers."
 
     config HABINARI_PROTOCOL_KNX
-        bool "KNX TP1"
+        bool "KNX"
         default y
         help
-            Speak KNX TP1 through the STKNX transceiver, commissioned from ETS.
+            Speak KNX, commissioned from ETS. Which medium it speaks is the
+            choice below — twisted pair or KNXnet/IP over Wi-Fi. The device
+            model, the application program and the ETS product are the same
+            either way; only the transport differs.
 
-            This is the bus-powered personality: the device runs entirely off
-            the KNX bus terminal with no auxiliary supply.
+    choice HABINARI_KNX_MEDIUM
+        prompt "KNX medium"
+        depends on HABINARI_PROTOCOL_KNX
+        default HABINARI_KNX_MEDIUM_TP1
+        help
+            KNX is one protocol on several media. A device is built for one of
+            them: the ETS product declares which, and an installation's topology
+            depends on the answer.
 
-            Mutually exclusive with the Wi-Fi/MQTT personality, and the build
-            enforces it. The TP1 receiver bit-bangs a 104 us bit cell and samples
-            at 52 us, against a measured worst-case ISR jitter of 51 us on this
-            board — one microsecond of margin. A radio stack in the same image
-            spends margin that is not there.
+        config HABINARI_KNX_MEDIUM_TP1
+            bool "TP1 (twisted pair, STKNX transceiver)"
+            help
+                The bus-powered personality: the device runs entirely off the
+                KNX bus terminal with no auxiliary supply.
+
+                Mutually exclusive with anything that needs a radio, and the
+                build enforces it. The TP1 receiver bit-bangs a 104 us bit cell
+                and samples at 52 us, against a measured worst-case ISR jitter
+                of 51 us on this board — one microsecond of margin. A radio
+                stack in the same image spends margin that is not there.
+
+        config HABINARI_KNX_MEDIUM_IP
+            bool "KNXnet/IP (routing over Wi-Fi)"
+            select HABINARI_REQUIRES_AUX_POWER
+            help
+                A KNX IP device (03/02/06): it joins the KNXnet/IP routing
+                multicast group and is a full KNX device on it — same group
+                objects, same parameters, same ETS download — with no TP1 line
+                and no gateway in between.
+
+                ETS commissions it directly over the network, with its
+                connection set to KNXnet/IP Routing. The device also answers
+                discovery, so it appears in ETS's device list rather than having
+                to be found by address.
+
+                Needs the 5-30 V auxiliary supply: Wi-Fi transmit peaks well
+                past what a KNX bus terminal could deliver, and there is no bus
+                terminal here in any case.
+
+                Note the topology rule this puts on the installation
+                (03/02/06 rule 4): a KNX IP device placed in a subnetwork
+                requires that subnetwork, and every subnetwork above it, to
+                contain KNX IP devices only.
+    endchoice
 
     config HABINARI_PROTOCOL_MODBUS
         bool "Modbus RTU (RS-485)"
@@ -71,8 +110,8 @@ menu "Habinari protocols"
             climate entity plus sensors without any manual YAML.
 
             Needs the 5-30 V auxiliary supply: Wi-Fi transmit peaks well past
-            what the KNX bus terminal can deliver. Cannot be combined with the
-            KNX personality.
+            what the KNX bus terminal can deliver. Cannot be combined with KNX
+            on TP1; it composes with KNXnet/IP, which is on the same radio.
 
     config HABINARI_REQUIRES_AUX_POWER
         bool
@@ -80,6 +119,54 @@ menu "Habinari protocols"
             Set automatically by any personality that cannot run on KNX bus
             power alone. Logged at boot so a field failure to come up on bus
             power reads as a configuration mistake rather than a dead board.
+
+    menu "KNXnet/IP medium"
+        depends on HABINARI_KNX_MEDIUM_IP
+
+        config HABINARI_KNXIP_MULTICAST_ADDR
+            string "Routing multicast group"
+            default "224.0.23.12"
+            help
+                The KNXnet/IP routing group this device joins. 224.0.23.12 is
+                the registered System Setup address and the default for every
+                installation; a project changes it only to keep two KNX
+                installations apart on one IP network.
+
+                Overridden at runtime by the device_config key knx.mcast, so a
+                field change does not need a rebuild.
+
+        config HABINARI_KNXIP_PORT
+            int "UDP port"
+            range 1 65535
+            default 3671
+            help
+                Fixed at 3671 by 03/02/06 §2.1. Configurable only because a
+                test bench sometimes needs two installations on one host.
+
+        config HABINARI_KNXIP_TTL
+            int "Multicast TTL"
+            range 1 255
+            default 16
+            help
+                How many routers a routing datagram may cross. 1 keeps KNX
+                traffic on the local subnet, which is what most installations
+                want; the default of 16 matches what KNXnet/IP routers ship
+                with and allows a routed site network.
+
+        config HABINARI_KNXIP_WIFI_WAIT_S
+            int "Seconds to wait for Wi-Fi before starting the stack"
+            range 0 300
+            default 30
+            help
+                The KNX stack needs an interface to join the multicast group.
+                Waiting avoids a start-up failure on a device that simply has
+                not associated yet.
+
+                Running out of patience is not fatal: the stack starts anyway
+                and the routing endpoint recovers when the interface appears.
+                0 means start immediately.
+
+    endmenu
 
     menu "MQTT personality"
         depends on HABINARI_PROTOCOL_MQTT
@@ -151,7 +238,7 @@ menu "Habinari service channel"
 
     config HABINARI_OOB_BLE
         bool "BLE commissioning and diagnostics channel"
-        depends on !HABINARI_PROTOCOL_KNX
+        depends on !HABINARI_KNX_MEDIUM_TP1
         default n
         select HABINARI_REQUIRES_AUX_POWER
         # Only forces the host stack on; it cannot pick NimBLE over Bluedroid
@@ -184,19 +271,26 @@ menu "Habinari service channel"
             way to do it from a phone, and the only way to reach a setting that
             no compiled-in personality exposes.
 
-            Not available in a KNX image, and the dependency above is not a
-            packaging decision:
+            Not available in a KNX TP1 image, and the dependency above is not
+            a packaging decision:
 
-              - ETS is already a complete out-of-band channel. It reaches the
-                device through the programming button and the individual
-                address, so a KNX device never has the circularity this solves,
-                and every setting is in the application program already.
+              - ETS is already a complete out-of-band channel on TP1. It
+                reaches the device through the programming button and the
+                individual address, so a TP1 device never has the circularity
+                this solves, and every setting is in the application program
+                already.
               - The bit-banged TP1 receiver samples a 104 us bit cell at 52 us
                 against a measured worst-case ISR jitter of 51 us. The BLE
                 controller installs its own high-priority interrupts and has
                 hard MAC deadlines; it spends margin that is not there.
-              - KNX is the bus-powered personality, within about 10 mA at 29 V.
+              - TP1 is the bus-powered personality, within about 10 mA at 29 V.
                 A BLE transmit burst is not in that budget.
+
+            A KNXnet/IP image is the opposite case and wants this channel: none
+            of the three arguments applies, and the circularity is back in full
+            — the SSID and passphrase decide whether ETS can reach the device
+            at all, and ETS reaches it over the network those two settings
+            create.
 
             Costs roughly 430 kB of flash (measured: 349 kB for a Modbus-only
             image against 776 kB with this enabled) plus the controller and host

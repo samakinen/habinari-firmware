@@ -44,6 +44,19 @@ target_compile_options(test_device_secret PRIVATE -Wall -Wextra)
 
 add_test(NAME test_device_secret COMMAND test_device_secret)
 
+# The KNXnet/IP routing group as an installer types it. Portable C, so the
+# validation that stands between a typo and a board that never rejoins the
+# network is covered here rather than only on hardware.
+add_executable(test_knx_ip_addr
+    test_knx_ip_addr.cpp
+    "${MAIN_DIR}/src/knx_ip_addr.c"
+)
+target_include_directories(test_knx_ip_addr PRIVATE "${MAIN_DIR}/include")
+target_link_libraries(test_knx_ip_addr PRIVATE unity)
+target_compile_options(test_knx_ip_addr PRIVATE -Wall -Wextra)
+
+add_test(NAME test_knx_ip_addr COMMAND test_knx_ip_addr)
+
 # Room-control logic: psychrometrics, dew point / slab moisture monitors,
 # setpoint ladder, ventilation and thermostat behaviour. Header-only and
 # platform-free, so no extra sources are needed.

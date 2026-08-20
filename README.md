@@ -56,15 +56,25 @@ ESP32-C6's own 2.4 GHz radio and USB. Which of them the firmware speaks is a
 
 | Personality | Transport | Power | Kconfig |
 |---|---|---|---|
-| KNX TP1 | STKNX, ETS-commissioned | KNX bus, no aux supply | `HABINARI_PROTOCOL_KNX` |
+| KNX TP1 | STKNX, ETS-commissioned | KNX bus, no aux supply | `HABINARI_PROTOCOL_KNX` + `HABINARI_KNX_MEDIUM_TP1` |
+| KNX IP | KNXnet/IP routing over Wi-Fi, ETS-commissioned | 5–30 V aux supply | `HABINARI_PROTOCOL_KNX` + `HABINARI_KNX_MEDIUM_IP` |
 | Modbus RTU | SP3485EN, RS-485 | either | `HABINARI_PROTOCOL_MODBUS` |
 | MQTT | Wi-Fi, Home Assistant discovery | 5–30 V aux supply | `HABINARI_PROTOCOL_MQTT` |
+
+The two KNX rows are one personality on two media, not two personalities. The
+device model, the application program, the group objects and every ETS
+parameter are identical; what differs is the wire and, because ETS derives a
+topology from it, the catalogue entry. See
+[docs/knxnet-ip.md](docs/knxnet-ip.md).
 
 Alongside them, and **not** one of them, is an optional out-of-band service
 channel over BLE (`HABINARI_OOB_BLE`). It exists for the settings that decide
 whether a personality works at all and therefore cannot be written over it — the
-Modbus address, the Wi-Fi credentials — and it is absent from every KNX image,
-where ETS already does that job through the programming button. See
+Modbus address, the Wi-Fi credentials. It is absent from a KNX **TP1** image,
+where ETS already does that job through the programming button and the radio
+would cost the bit-banged receiver its timing margin. A KNX **IP** image is the
+opposite case and wants it: ETS reaches that device over a Wi-Fi network whose
+credentials are exactly what BLE is there to write. See
 [docs/ble-commissioning.md](docs/ble-commissioning.md).
 
 ### One gate for every protocol
@@ -105,6 +115,7 @@ Building every personality at once:
 ```bash
 tools/build_variants.sh            # all of them, each with its own build dir and sdkconfig
 tools/build_variants.sh modbus-ble # just one
+tools/build_variants.sh knxip      # KNX over KNXnet/IP, with the BLE channel
 ```
 
 Use the script rather than `idf.py -B` by hand: `idf.py` defaults to the
@@ -138,9 +149,13 @@ never comes back out.
 * [docs/modbus-register-map.md](docs/modbus-register-map.md) — the Modbus RTU
   register map, scaling conventions, worked master transactions, and how a
   board with no address and no DIP switches gets one.
+* [docs/knxnet-ip.md](docs/knxnet-ip.md) — the KNXnet/IP medium: what a KNX IP
+  device is, commissioning one from ETS6 over the network, the topology rule it
+  puts on the installation, KNX/IP Secure Routing, and what is deliberately not
+  implemented.
 * [docs/protocol-variants.md](docs/protocol-variants.md) — how the field-bus
-  personalities are selected and built, why KNX and the radio cannot share an
-  image, and how to add a fourth protocol.
+  personalities are selected and built, why KNX TP1 and the radio cannot share
+  an image, and how to add another protocol.
 * [docs/mqtt-integration.md](docs/mqtt-integration.md) — the MQTT topic tree,
   the state document, the command topics, and how to provision Wi-Fi and broker
   credentials.
@@ -192,14 +207,19 @@ adapter) and `control_service.hpp` (typed, C++, for in-tree adapters) are the tw
 views of the one owner. A setpoint written over Modbus or MQTT takes the
 identical path a KNX telegram takes, clamping and configured limits included.
 
-### Why KNX and the radio cannot share an image
+### Why KNX TP1 and the radio cannot share an image
 
 `main/src/protocol_registry.c` refuses to compile the Wi-Fi personality or the
-Bluetooth controller alongside KNX. The TP1 receiver bit-bangs a 104 µs bit cell
-and samples at 52 µs, against a measured worst-case ISR jitter of 51 µs on this
-board — one microsecond of margin, which a radio stack will spend. The two are
-not wanted together anyway: KNX is the bus-powered personality and the radio
-needs the 5–30 V auxiliary supply.
+Bluetooth controller alongside KNX **on TP1**. The TP1 receiver bit-bangs a
+104 µs bit cell and samples at 52 µs, against a measured worst-case ISR jitter
+of 51 µs on this board — one microsecond of margin, which a radio stack will
+spend. The two are not wanted together anyway: TP1 is the bus-powered
+personality and the radio needs the 5–30 V auxiliary supply.
+
+The guard names the medium rather than the protocol, and that distinction is
+load-bearing. KNX on the KNXnet/IP medium *is* a radio personality — it reaches
+ETS over the same Wi-Fi — so it has no timing conflict with anything, and it
+composes with Modbus and the BLE service channel freely.
 
 Adding a protocol is: write the mapping, define one `protocol_adapter_t`, add it
 to `protocol_registry.c` behind a Kconfig symbol. Nothing in `main.c`, the
@@ -208,10 +228,16 @@ control core or any other adapter changes.
 ## ETS product export
 
 `main/include/knx_product.hpp` is the single source of truth for both the KNX
-runtime and the ETS catalogue entry. Every `idf.py build` regenerates
-`ets_export/habinari_tp1_ets.knxprod.xml` (plus the `.json` intermediate) from
-it, so the two can never drift. The directory is gitignored — the export is a
-build artefact, not a checked-in file.
+runtime and the ETS catalogue entry. Every `idf.py build` of a KNX image
+regenerates `ets_export/habinari_<medium>_ets.knxprod.xml` (plus the `.json`
+intermediate) from it, so the two can never drift. The directory is gitignored —
+the export is a build artefact, not a checked-in file.
+
+The medium follows the image being built, so a TP1 build refreshes
+`habinari_tp1_ets` and a KNXnet/IP build refreshes `habinari_ip_ets`. They are
+separate catalogue entries because ETS derives what a device may be connected to
+from its declared medium; one entry claiming both would let an integrator place
+a TP1 board on an IP line and discover it on site.
 
 Skip the regeneration with `idf.py -DHABINARI_ETS_EXPORT=OFF build`, or run it
 on its own with

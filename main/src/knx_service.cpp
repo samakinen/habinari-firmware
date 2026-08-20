@@ -23,10 +23,21 @@
 #include "nvs.h"
 
 #include "knx/platform/esp32_platform.hpp"
-#include "knx/physical/bitbang_driver_timer_isr_espidf.hpp"
-#include "knx/physical/physical_factory.hpp"
 #include "knx/product/commissioned_product.hpp"
 #include "knx/util/log.hpp"
+
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+#include "device_config.h"
+#include "device_default_name.h"
+#include "knx_ip_addr.h"
+#include "esp_netif.h"
+#include "knx/netip/netip_parameter_object.hpp"
+#include "wifi_service.h"
+#include <string>
+#else
+#include "knx/physical/bitbang_driver_timer_isr_espidf.hpp"
+#include "knx/physical/physical_factory.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -188,6 +199,12 @@ struct KnxAdapterState {
     // consumed by the service loop. Only ever set true from one context and
     // cleared from the other, so it needs no lock of its own.
     volatile bool controlTickPending{true};
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    // Raised from the Wi-Fi event loop when the interface gains an address, so
+    // the service task republishes what ETS reads back. Same single-writer /
+    // single-reader shape as controlTickPending above.
+    volatile bool ipIdentityDirty{false};
+#endif
 };
 
 KnxAdapterState g_knx;
@@ -408,6 +425,18 @@ void applyTransmitPolicies(AppT &app, const Settings &settings)
 }
 
 
+// ---------------------------------------------------------------------------
+// The transport, and the only thing about this device that differs by medium.
+//
+// Everything else in this file — every group object, every parameter callback,
+// the publish policy, programming mode — is the same code on TP1 and on
+// KNXnet/IP. The two startProduct() overloads below are the seam: each brings
+// its own transport up and hands back the identical started product handle, so
+// nothing downstream of them knows which medium it is running on.
+// ---------------------------------------------------------------------------
+
+#if !defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+
 util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platform::Esp32Platform &platform)
 {
     physical::Tp1BackendSelection selection{};
@@ -449,6 +478,225 @@ util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platfo
 
     return physicalResult;
 }
+
+#endif  // !CONFIG_HABINARI_KNX_MEDIUM_IP
+
+using HabinariProductHandle =
+    CommissionedProductHandle<std::remove_cvref_t<decltype(kHabinariProduct)>,
+                              kDefaultBindingCapacity>;
+using HabinariBindings =
+    CommissionedBindingsBuilder<std::remove_cvref_t<decltype(kHabinariProduct)>,
+                                kDefaultBindingCapacity>;
+
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+
+// --- KNXnet/IP settings ----------------------------------------------------
+//
+// The routing group is the one KNXnet/IP setting an installation genuinely
+// changes: two KNX projects sharing an IP network have to be told apart, and
+// the group is how. It is a device_config item rather than a Kconfig-only
+// value because that change happens on site, and the service channel is how a
+// device that has not joined the right group yet can still be reached.
+//
+// Everything else about the device — the individual address, the group object
+// bindings, the parameters — is ETS's, and does not belong here.
+constexpr const char *kKnxIpNvsNamespace = "knxip";
+constexpr const char *kKnxIpNvsMulticast = "mcast";
+
+esp_err_t knxIpConfigGet(const device_config_item_t *item, device_config_value_t *out)
+{
+    out->str[0] = '\0';
+
+    nvs_handle_t handle = 0;
+    if (nvs_open(kKnxIpNvsNamespace, NVS_READONLY, &handle) != ESP_OK) {
+        // Nothing stored yet is a valid answer: the compiled-in default is in
+        // force, and resolveMulticastGroup() reports which that is.
+        return ESP_OK;
+    }
+    size_t len = sizeof(out->str);
+    if (nvs_get_str(handle, static_cast<const char *>(item->ctx), out->str, &len) != ESP_OK) {
+        out->str[0] = '\0';
+    }
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+esp_err_t knxIpConfigSet(const device_config_item_t *item, const device_config_value_t *value)
+{
+    // Refuse a group the device could not join rather than storing it and
+    // failing to come up after the reboot this setting asks for: the group is
+    // joined at start-up, so a bad one is a device that never appears again.
+    // An empty value is not a bad one — it means "use the compiled-in default".
+    if (value->str[0] != '\0' && !knx_ip_is_multicast_text(value->str)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(kKnxIpNvsNamespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(handle, static_cast<const char *>(item->ctx), value->str);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+const device_config_item_t kKnxIpConfigItems[] = {
+    {
+        .key = "knx.mcast",
+        .label = "KNX routing multicast group",
+        .unit = nullptr,
+        .type = DEVICE_CONFIG_TYPE_STRING,
+        .flags = DEVICE_CONFIG_FLAG_REBOOT,
+        .min = 0.0f,
+        .max = 15.0f,  // "255.255.255.255"
+        .enum_labels = nullptr,
+        .enum_count = 0,
+        .get = knxIpConfigGet,
+        .set = knxIpConfigSet,
+        .ctx = const_cast<char *>(kKnxIpNvsMulticast),
+    },
+};
+
+// A registered item's current string value, empty when unset.
+bool readConfigString(const char *key, char *out, size_t outLen)
+{
+    out[0] = '\0';
+    const device_config_item_t *item = device_config_find(key);
+    if (item == nullptr) {
+        return false;
+    }
+    device_config_value_t value{};
+    if (device_config_get(item, &value) != ESP_OK || value.str[0] == '\0') {
+        return false;
+    }
+    snprintf(out, outLen, "%s", value.str);
+    return true;
+}
+
+// The device name an installer set, or the board's default. It is what ETS
+// shows in a discovery list, so it should name this unit rather than the model.
+std::string resolveFriendlyName()
+{
+    char name[DEVICE_CONFIG_STRING_MAX] = {0};
+    if (readConfigString("dev.name", name, sizeof(name))) {
+        return std::string(name);
+    }
+
+    // The same fallback every other channel shows: "<prefix> XXYYZZ" from the
+    // last three MAC bytes, so a board nobody has named still appears in ETS
+    // under something that tells two of them apart.
+    uint8_t mac[6] = {};
+    if (wifi_service_mac(mac) != ESP_OK) {
+        return std::string();
+    }
+    // 30 octets is the KNXnet/IP friendly-name field; the encoder pads and the
+    // BAU trims, so this only has to be big enough not to truncate first.
+    char fallback[32] = {0};
+    device_default_name(&mac[3], fallback, sizeof(fallback));
+    return std::string(fallback);
+}
+
+IpAddress resolveMulticastGroup()
+{
+    char configured[DEVICE_CONFIG_STRING_MAX] = {0};
+    if (readConfigString("knx.mcast", configured, sizeof(configured))) {
+        const IpAddress parsed = IpAddress::fromString(configured);
+        if (!parsed.isZero()) {
+            return parsed;
+        }
+        KNX_LOGW(TAG, "Ignoring unparseable routing group '%s'", configured);
+    }
+    return IpAddress::fromString(CONFIG_HABINARI_KNXIP_MULTICAST_ADDR);
+}
+
+// Publish what the device currently answers on into the KNXnet/IP Parameter
+// Object. ETS reads its address, its name and its multicast group from there,
+// and none of it is knowable before the interface has a lease — so this runs
+// after start and again whenever the address changes.
+template <typename AppT>
+void publishIpIdentity(AppT &app, IpAddress multicastGroup)
+{
+    esp_netif_ip_info_t info{};
+    if (wifi_service_ip_info(&info) != ESP_OK || info.ip.addr == 0) {
+        KNX_LOGD(TAG, "No address yet — KNXnet/IP parameters not published");
+        return;
+    }
+
+    netip::KnxNetIpConfiguration config{};
+    config.currentIpAddress = IpAddress(info.ip.addr);
+    config.currentSubnetMask = IpAddress(info.netmask.addr);
+    config.currentDefaultGateway = IpAddress(info.gw.addr);
+    config.routingMulticastAddress = multicastGroup;
+    config.timeToLive = static_cast<uint8_t>(CONFIG_HABINARI_KNXIP_TTL);
+    config.ipAssignmentMethod = netip::ip_assignment::kDhcp;
+    // Only what this build actually contains. Claiming Tunnelling here would
+    // have ETS offer the device as an interface and then fail to connect to it.
+    config.deviceCapabilities = netip::device_capability::kDhcp;
+    config.friendlyName = resolveFriendlyName();
+    (void)wifi_service_mac(config.macAddress.data());
+
+    const auto result = app.applyKnxNetIpConfiguration(config);
+    if (result.isError()) {
+        KNX_LOGW(TAG, "KNXnet/IP parameter publish failed: %d", static_cast<int>(result.error()));
+        return;
+    }
+
+    char text[16] = {0};
+    config.currentIpAddress.toString(text);
+    KNX_LOGI(TAG, "KNXnet/IP parameters published: %s", text);
+}
+
+util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platform,
+                                                 HabinariBindings &&bindings)
+{
+    // The stack needs an interface to join the multicast group on. Waiting is
+    // not the same as requiring: the routing endpoint recovers when the
+    // interface turns up, so running out of patience costs a slower start
+    // rather than a dead device.
+    if (CONFIG_HABINARI_KNXIP_WIFI_WAIT_S > 0 && !wifi_service_is_connected()) {
+        KNX_LOGI(TAG, "Waiting up to %d s for Wi-Fi", CONFIG_HABINARI_KNXIP_WIFI_WAIT_S);
+        if (wifi_service_wait_connected(CONFIG_HABINARI_KNXIP_WIFI_WAIT_S * 1000u) != ESP_OK) {
+            KNX_LOGW(TAG, "Starting KNXnet/IP without a network — the device will "
+                          "join the routing group once Wi-Fi associates");
+        }
+    }
+
+    IpRoutingOptions options{};
+    options.multicastGroup = resolveMulticastGroup();
+    options.port = NetIpPort(CONFIG_HABINARI_KNXIP_PORT);
+    options.timeToLive = static_cast<uint8_t>(CONFIG_HABINARI_KNXIP_TTL);
+    options.friendlyName = resolveFriendlyName();
+
+    char groupText[16] = {0};
+    options.multicastGroup.toString(groupText);
+    KNX_LOGI(TAG, "KNXnet/IP routing on %s:%d (TTL %d), announced as \"%s\"",
+             groupText, CONFIG_HABINARI_KNXIP_PORT, CONFIG_HABINARI_KNXIP_TTL,
+             options.friendlyName.c_str());
+
+    return startCommissionedProduct(platform, kHabinariProduct, std::move(bindings),
+                                    std::move(options));
+}
+
+#else  // TP1
+
+util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platform,
+                                                 HabinariBindings &&bindings)
+{
+    auto physicalResult = createTp1Physical(platform);
+    if (physicalResult.isError()) {
+        KNX_LOGE(TAG, "TP1 physical init failed: %d", static_cast<int>(physicalResult.error()));
+        return physicalResult.error();
+    }
+
+    return startCommissionedProduct(platform, kHabinariProduct, std::move(bindings),
+                                    std::move(physicalResult.value()));
+}
+
+#endif
 
 PublishSnapshot takePublishSnapshot()
 {
@@ -651,19 +899,11 @@ void knxServiceTask(void *arg)
 
     platform::Esp32Platform platform;
 
-    auto physicalResult = createTp1Physical(platform);
-    if (physicalResult.isError()) {
-        KNX_LOGE(TAG, "TP1 physical init failed: %d", static_cast<int>(physicalResult.error()));
-        vTaskDelete(nullptr);
-        return;
-    }
-
-    // startCommissionedProduct() builds the runtime on the heap and hands back
-    // an owning handle: at ~34 KB it cannot travel through a stack frame. The
-    // bindings builder is still a stack object, so it stays scoped so its space
-    // is released before the service loop runs.
-    CommissionedProductHandle<std::remove_cvref_t<decltype(kHabinariProduct)>,
-                              kDefaultBindingCapacity> appPtr;
+    // startProduct() builds the runtime on the heap and hands back an owning
+    // handle: at ~34 KB it cannot travel through a stack frame. The bindings
+    // builder is still a stack object, so it stays scoped so its space is
+    // released before the service loop runs.
+    HabinariProductHandle appPtr;
     {
     // Declared first, then chained onto as an lvalue. Writing this as
     // `auto bindings = makeCommissionedBindings(...).provideState(...)...`
@@ -1381,14 +1621,10 @@ void knxServiceTask(void *arg)
                      info.detail != nullptr ? info.detail : "");
         });
 
-    auto appResult = startCommissionedProduct(
-        platform,
-        kHabinariProduct,
-        std::move(bindings),
-        std::move(physicalResult.value()));
+    auto appResult = startProduct(platform, std::move(bindings));
 
     if (appResult.isError()) {
-        KNX_LOGE(TAG, "startCommissionedProduct failed: %d", static_cast<int>(appResult.error()));
+        KNX_LOGE(TAG, "KNX start failed: %d", static_cast<int>(appResult.error()));
         vTaskDelete(nullptr);
         return;
     }
@@ -1656,7 +1892,30 @@ void knxServiceTask(void *arg)
         g_state.in.controllerMode = s.defaultControllerMode;
     }
 
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    // The address is published now and again on every change: a DHCP renewal
+    // that moves the device would otherwise leave ETS reading back an address
+    // it no longer answers on.
+    publishIpIdentity(app, resolveMulticastGroup());
+    wifi_service_set_event_callback(
+        [](bool connected, void *ctx) {
+            if (!connected) {
+                return;
+            }
+            // Runs on the default event loop, which must not block. Waking the
+            // service task is enough; it republishes on its next pass.
+            auto *handle = static_cast<TaskHandle_t *>(ctx);
+            g_knx.ipIdentityDirty = true;
+            if (*handle != nullptr) {
+                xTaskNotifyGive(*handle);
+            }
+        },
+        &g_knx.taskHandle);
+
+    KNX_LOGI(TAG, "ETS-commissionable KNXnet/IP sensor bridge started");
+#else
     KNX_LOGI(TAG, "ETS-commissionable TP1 sensor bridge started");
+#endif
 
     DeviceLifecycleState previousLifecycle = app.lifecycleState();
 
@@ -1713,6 +1972,13 @@ void knxServiceTask(void *arg)
 
     for (;;) {
         app.loop();
+
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+        if (g_knx.ipIdentityDirty) {
+            g_knx.ipIdentityDirty = false;
+            publishIpIdentity(app, resolveMulticastGroup());
+        }
+#endif
 
         if (g_knx.controlTickPending) {
             g_knx.controlTickPending = false;
@@ -1811,6 +2077,30 @@ esp_err_t knxAdapterStart()
         return ESP_ERR_INVALID_STATE;
     }
 
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    // Registered before association is attempted, so a device with the wrong
+    // credentials — or on the wrong routing group — is still reachable from the
+    // service channel to be corrected. That is the whole point of the registry.
+    const esp_err_t wifiCfg = wifi_service_register_config();
+    if (wifiCfg != ESP_OK) {
+        KNX_LOGW(TAG, "Wi-Fi settings not exposed out of band: %s", esp_err_to_name(wifiCfg));
+    }
+    const esp_err_t knxCfg = device_config_register(
+        kKnxIpConfigItems, sizeof(kKnxIpConfigItems) / sizeof(*kKnxIpConfigItems));
+    if (knxCfg != ESP_OK) {
+        KNX_LOGW(TAG, "KNXnet/IP settings not exposed out of band: %s", esp_err_to_name(knxCfg));
+    }
+
+    // Not fatal. An unprovisioned device still boots, still senses, still
+    // controls, and can still be given credentials over BLE — which is exactly
+    // the situation a device out of the box is in.
+    const esp_err_t wifiErr = wifi_service_start();
+    if (wifiErr != ESP_OK) {
+        KNX_LOGW(TAG, "Wi-Fi not started (%s) — KNXnet/IP will be unreachable until "
+                      "credentials are provisioned", esp_err_to_name(wifiErr));
+    }
+#endif
+
     const BaseType_t created = xTaskCreate(knxServiceTask, "knx_service",
                                            kKnxServiceTaskStackSize, nullptr, 8, nullptr);
     if (created != pdPASS) {
@@ -1845,7 +2135,11 @@ bool knxAdapterIdentifyActive()
 }  // namespace
 
 extern "C" const protocol_adapter_t knx_protocol_adapter = {
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    .name = "knx-ip",
+#else
     .name = "knx-tp1",
+#endif
     .start = knxAdapterStart,
     .on_control_tick = knxAdapterOnControlTick,
     // No on_sensor_data hook: measurements are published from the control tick
@@ -1862,5 +2156,10 @@ extern "C" const protocol_adapter_t knx_protocol_adapter = {
     .owns_programming_mode = true,
     // Required: on a board wired to a TP1 bus, a device that silently fails to
     // join it is worse than one that refuses to boot and says why.
+    //
+    // The same holds on IP, and for the same reason — but note that "started"
+    // there means the service task was created, not that the network exists.
+    // A KNXnet/IP device that boots before its access point is a normal state,
+    // not a failure, so it is not one this flag should turn into a dead boot.
     .required = true,
 };

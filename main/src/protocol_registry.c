@@ -34,30 +34,36 @@ extern const protocol_adapter_t mqtt_protocol_adapter;
  * interrupts and take long critical sections, and the radio MAC has hard
  * deadlines of its own; they will spend margin that is not there.
  *
- * The board is not asked to do both anyway — KNX is bus-powered and the radio
+ * The board is not asked to do both anyway — TP1 is bus-powered and the radio
  * personalities need the 5-30 V auxiliary supply. So this is a build-time error
- * rather than a note somebody has to remember, and a KNX image does not link the
+ * rather than a note somebody has to remember, and a TP1 image does not link the
  * radio stacks at all: the timing guarantee is a property of the binary, not of
  * a runtime flag someone could get wrong.
+ *
+ * Note that the guards below name the medium, not the protocol. KNX on the
+ * KNXnet/IP medium *is* a radio personality — it reaches ETS over the same
+ * Wi-Fi — and has no timing conflict with anything here.
  */
-#if CONFIG_HABINARI_PROTOCOL_KNX && CONFIG_HABINARI_PROTOCOL_MQTT
-#error "KNX TP1 and the Wi-Fi/MQTT personality cannot share an image: the bit-banged TP1 receiver has ~1 us of timing margin and the radio stack will consume it. Pick one in menuconfig -> Habinari protocols."
+#if CONFIG_HABINARI_KNX_MEDIUM_TP1 && CONFIG_HABINARI_PROTOCOL_MQTT
+#error "KNX TP1 and the Wi-Fi/MQTT personality cannot share an image: the bit-banged TP1 receiver has ~1 us of timing margin and the radio stack will consume it. Pick one in menuconfig -> Habinari protocols. KNX on the KNXnet/IP medium has no such conflict — it is already on the radio."
 #endif
 
 /*
  * The same argument, applied to the BLE service channel — and it is worth being
  * explicit rather than leaving it to Kconfig, because CONFIG_BT_ENABLED is not
- * ours to gate. CONFIG_HABINARI_OOB_BLE already depends on !KNX and would be
- * silently dropped from a KNX configuration; this catches the other route in,
+ * ours to gate. CONFIG_HABINARI_OOB_BLE already depends on !TP1 and would be
+ * silently dropped from such a configuration; this catches the other route in,
  * where somebody enables the Bluetooth controller directly and expects the TP1
  * receiver to survive it.
  *
- * There is no loss here. A KNX device does not need an out-of-band channel: ETS
- * reaches it through the programming button and the individual address, which is
- * the same circularity-breaking trick, standardised and already in the box.
+ * There is no loss on TP1. That device does not need an out-of-band channel:
+ * ETS reaches it through the programming button and the individual address,
+ * which is the same circularity-breaking trick, standardised and already in the
+ * box. A KNXnet/IP device is the opposite case — ETS reaches it over a Wi-Fi
+ * network that BLE is how you configure — so the guard is on the medium.
  */
-#if CONFIG_HABINARI_PROTOCOL_KNX && CONFIG_BT_ENABLED
-#error "KNX TP1 and the Bluetooth controller cannot share an image, for the same reason as the Wi-Fi personality: the bit-banged TP1 receiver has ~1 us of ISR-jitter margin and the BLE MAC has hard deadlines of its own. A KNX device is configured from ETS and needs no out-of-band channel."
+#if CONFIG_HABINARI_KNX_MEDIUM_TP1 && CONFIG_BT_ENABLED
+#error "KNX TP1 and the Bluetooth controller cannot share an image, for the same reason as the Wi-Fi personality: the bit-banged TP1 receiver has ~1 us of ISR-jitter margin and the BLE MAC has hard deadlines of its own. A TP1 device is configured from ETS over the bus and needs no out-of-band channel; a KNXnet/IP device does, and may enable both."
 #endif
 
 static const protocol_adapter_t *const s_adapters[] = {
