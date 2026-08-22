@@ -71,8 +71,16 @@ channel that had to remember them would eventually forget:
 
 ## 3. Access model: one gate for every protocol
 
-The channel advertises exactly while the board is in **programming mode**, and
+The channel is reachable exactly while the board is in **programming mode**, and
 nothing else opens it. There is no separate BLE window and no second gesture.
+
+It is not merely silent the rest of the time — the BLE controller is not
+initialised at all. An initialised controller keeps the Wi-Fi/BLE coexistence
+arbiter slicing the one radio between them for the life of the device, and on an
+IP build the field bus is riding on that Wi-Fi: KNXnet/IP routing is multicast,
+which 802.11 neither acknowledges nor retries, so a telegram lost to a
+coexistence slot is lost for good. Outside programming mode the radio goes back
+to Wi-Fi, along with some tens of kilobytes of RAM.
 
 Programming mode is the board's one protocol-neutral "this device is selected"
 state, and every commissioning path is gated on it:
@@ -80,7 +88,7 @@ state, and every commissioning path is gated on it:
 | Protocol | What programming mode unlocks |
 |---|---|
 | KNX TP1 | the individual-address write, as the standard has always done |
-| BLE | advertising at all |
+| BLE | the radio at all — outside it the controller is torn down |
 | Modbus RTU | the address/baud commit, and the commissioning address for an unaddressed board |
 
 It is raised by holding the programming button for a second, by ETS on a KNX
@@ -431,8 +439,13 @@ want its own entry in `tools/check_webui_parity.py`, for the reason given
 there — a client that decodes offsets by hand has nothing else holding it to
 this file.
 
-`oob_service.h` is the contract: `start`, `set_programming_mode`, `advertising`,
-`client_connected`. Write a second implementation, guard it with
+`oob_service.h` is the contract: `start`, `set_programming_mode`, `loop`,
+`advertising`, `client_connected`. `start` arms the channel without touching the
+radio; `set_programming_mode` only records intent, because it is called from
+four task contexts and taking a radio down can block; `loop` is the one place
+that reconciles the two, and the board's poll loop is what drives it.
+
+Write a second implementation, guard it with
 its own Kconfig symbol, and render `device_config_count()` / `device_config_at()`
 / `device_config_get_text()` / `device_config_set_text()` however your transport
 prefers. `main.c` calls `oob_service_start()` unconditionally and does not know

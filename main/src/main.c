@@ -208,6 +208,11 @@ void app_main(void)
 
     for (;;) {
         handle_programming_button();
+        // Owns the BLE radio's bring-up and tear-down. Here rather than in the
+        // programming-mode callback because taking the radio down blocks on the
+        // NimBLE host task, and that callback runs on whichever task changed the
+        // mode — the control tick, the KNX service, or the channel's own timer.
+        oob_service_loop();
         update_led();
         vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_PERIOD_MS));
     }

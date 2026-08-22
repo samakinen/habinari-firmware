@@ -90,7 +90,24 @@ static const ble_uuid128_t s_uuid_status = OOB_UUID128(06);
 #define OOB_DESCRIPTOR_MAX 256
 
 typedef struct {
-    bool started;
+    /* Armed, not running. oob_service_start() loads the configuration and
+     * creates the timers; the radio itself only comes up in programming mode.
+     * The two are separate because everything below the GATT table survives a
+     * radio cycle, and rebuilding it each time would be work for nothing. */
+    bool armed;
+    /* The NimBLE controller and host are up. Reconciled against
+     * programming_mode by oob_service_loop() and by nothing else. */
+    bool radio_up;
+    /* Bringing the radio up failed for this stint in programming mode. Latched
+     * so the reconcile does not retry twenty times a second; cleared on the way
+     * out, so the next press tries again. */
+    bool radio_failed;
+    /* A tear-down was asked for and did not complete: the radio is up, but
+     * silenced and unwanted. Two jobs. It keeps a host that will not stop from
+     * writing the same two lines to the console at the poll rate, and it is how
+     * the reconcile recognises a radio that has to be told to advertise again
+     * if programming mode comes back before the stop succeeds. */
+    bool stop_pending;
     bool synced;
     bool provisioned;
 
@@ -763,6 +780,14 @@ static void advertise_start(void)
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
     };
     err = ble_gap_adv_start(s_ctx.own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event, NULL);
+    /* EALREADY is the host telling us we are already doing what we asked for.
+     * Three callers can reach here — on_sync() on the host task, the
+     * advertising timer, and the reconcile loop — so the flag and the host can
+     * disagree for a few microseconds. That is a race won, not an error. */
+    if (err == BLE_HS_EALREADY) {
+        s_ctx.advertising = true;
+        return;
+    }
     if (err != 0) {
         ESP_LOGE(TAG, "ble_gap_adv_start failed: %d", err);
         return;
@@ -800,6 +825,124 @@ static void host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
+/* --- Radio lifecycle ------------------------------------------------------ */
+/*
+ * The BLE radio runs only while the board is in programming mode.
+ *
+ * It is not merely idle the rest of the time: an initialised controller keeps
+ * the Wi-Fi/BLE coexistence arbiter slicing the one radio between them, and
+ * KNXnet/IP routing rides on multicast, which 802.11 neither acknowledges nor
+ * retries. Telegrams lost to a coexistence slot are lost for good, and an ETS
+ * download is long enough that losing one is likely. Programming mode is the
+ * only time the channel is reachable anyway, so outside it the controller is
+ * torn down completely — nimble_port_deinit() disables and deinitialises it,
+ * which hands the radio and some tens of kilobytes back.
+ */
+
+/// Bring up controller, host and GATT table. Caller must not be the host task.
+static esp_err_t radio_start(void)
+{
+    esp_err_t err = nimble_port_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ble_hs_cfg.reset_cb = on_reset;
+    ble_hs_cfg.sync_cb = on_sync;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+
+    /* LE Secure Connections with passkey entry. "Display only" is the truthful
+     * I/O capability for a board whose only display is the label its passkey is
+     * printed on, and it is what makes the pairing authenticated rather than
+     * Just Works. Bonding so a return visit does not re-pair. */
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_ONLY;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_mitm = 1;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+
+    /* All of this is per-init, not once per boot: ble_hs_init() runs
+     * ble_gatts_reset() and empties the service list, so a radio that comes
+     * back up with no re-registration comes back up with no GATT table. */
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+
+    int rc = ble_gatts_count_cfg(s_gatt_services);
+    if (rc == 0) {
+        rc = ble_gatts_add_svcs(s_gatt_services);
+    }
+    if (rc == 0) {
+        rc = ble_svc_gap_device_name_set(s_ctx.device_name);
+    }
+    if (rc != 0) {
+        ESP_LOGE(TAG, "GATT registration failed: %d", rc);
+        (void)nimble_port_deinit();
+        return ESP_FAIL;
+    }
+
+    ble_store_config_init();
+
+    s_ctx.radio_up = true;
+    /* on_sync() fires from the host task once the controller is up, and that is
+     * what actually begins advertising. */
+    nimble_port_freertos_init(host_task);
+    return ESP_OK;
+}
+
+/// Take the radio down. Caller must not be the host task: this blocks on it.
+/// Returns false if the host would not stop, leaving the radio up for the
+/// caller to try again.
+static bool radio_stop(void)
+{
+    /* Session state goes first, and on purpose. esp_timer_stop() does not wait
+     * for a callback that has already started, so status_timer_cb() can be on
+     * the timer task at this moment, on its way into ble_gatts_notify_custom().
+     * Clearing what it checks turns it into a no-op before the host it would
+     * have called into is freed below. */
+    const uint16_t conn = s_ctx.conn_handle;
+    s_ctx.conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_ctx.status_subscribed = false;
+    s_ctx.authenticated = false;
+    s_ctx.identify_blink = false;
+    esp_timer_stop(s_ctx.status_timer);
+    esp_timer_stop(s_ctx.adv_timer);
+
+    /* Drop the client before the stack goes out from under them, so they see a
+     * disconnect rather than a link that stops answering. An installer who has
+     * walked away must not leave a link open behind them; the bond survives,
+     * only this connection does not. */
+    if (conn != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
+    }
+    if (s_ctx.advertising) {
+        ble_gap_adv_stop();
+    }
+
+    const int rc = nimble_port_stop();
+    if (rc != 0) {
+        /* The host did not stop, so deinit would pull memory out from under a
+         * running task. Leaving the radio up costs coexistence slots; freeing
+         * it here would cost a crash. */
+        if (!s_ctx.stop_pending) {
+            ESP_LOGE(TAG, "nimble_port_stop failed: %d - retrying until it does", rc);
+            s_ctx.stop_pending = true;
+        }
+        return false;
+    }
+    const esp_err_t err = nimble_port_deinit();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nimble_port_deinit failed: %s", esp_err_to_name(err));
+    }
+
+    s_ctx.radio_up = false;
+    s_ctx.synced = false;
+    s_ctx.advertising = false;
+    s_ctx.stop_pending = false;
+    return true;
+}
+
 /* --- Public lifecycle ----------------------------------------------------- */
 
 static void build_device_name(void)
@@ -830,7 +973,7 @@ static void build_device_name(void)
 
 esp_err_t oob_service_start(void)
 {
-    if (s_ctx.started) {
+    if (s_ctx.armed) {
         return ESP_OK;
     }
 
@@ -871,50 +1014,9 @@ esp_err_t oob_service_start(void)
         return err;
     }
 
-    err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    ble_hs_cfg.reset_cb = on_reset;
-    ble_hs_cfg.sync_cb = on_sync;
-    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-
-    /* LE Secure Connections with passkey entry. "Display only" is the truthful
-     * I/O capability for a board whose only display is the label its passkey is
-     * printed on, and it is what makes the pairing authenticated rather than
-     * Just Works. Bonding so a return visit does not re-pair. */
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_ONLY;
-    ble_hs_cfg.sm_sc = 1;
-    ble_hs_cfg.sm_mitm = 1;
-    ble_hs_cfg.sm_bonding = 1;
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
-
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-
-    int rc = ble_gatts_count_cfg(s_gatt_services);
-    if (rc == 0) {
-        rc = ble_gatts_add_svcs(s_gatt_services);
-    }
-    if (rc == 0) {
-        rc = ble_svc_gap_device_name_set(s_ctx.device_name);
-    }
-    if (rc != 0) {
-        ESP_LOGE(TAG, "GATT registration failed: %d", rc);
-        return ESP_FAIL;
-    }
-
-    ble_store_config_init();
-
-    /* Before the host starts, both of them. on_sync() fires from the host task
-     * as soon as the controller is up and is what actually begins advertising;
-     * if it ran while `started` was still false, or before programming mode had
-     * been raised, an unprovisioned device would come up silent and there would
-     * be no second chance — nothing else can select it. */
-    s_ctx.started = true;
+    /* Before the unprovisioned check below, which asks for programming mode and
+     * so decides whether the radio comes up on the next reconcile. */
+    s_ctx.armed = true;
     if (!s_ctx.provisioned) {
         /* Never commissioned: the board selects itself, because there is no
          * other way in and nobody has told it anything yet. Going through
@@ -926,9 +1028,8 @@ esp_err_t oob_service_start(void)
         control_service_set_programming_mode(true);
     }
 
-    nimble_port_freertos_init(host_task);
-
-    ESP_LOGI(TAG, "Out-of-band channel ready: %u settings, name '%s', passkey %s",
+    ESP_LOGI(TAG, "Out-of-band channel armed: %u settings, name '%s', passkey %s "
+                  "(radio comes up in programming mode)",
              (unsigned)device_config_count(), s_ctx.device_name,
              s_ctx.passkey_from_efuse ? "derived from eFuse root secret" : "NOT PROVISIONED");
     return ESP_OK;
@@ -936,37 +1037,63 @@ esp_err_t oob_service_start(void)
 
 void oob_service_set_programming_mode(bool active)
 {
-    if (!s_ctx.started || s_ctx.programming_mode == active) {
+    /* Intent only. This is called from at least four task contexts — the button
+     * poll, the control tick's timeout, the KNX service when ETS sets the bit,
+     * and this channel's own leave timer — and taking the radio down blocks on
+     * the NimBLE host task. Reconciling in one known place (oob_service_loop())
+     * is what makes the caller's context stop mattering. */
+    if (!s_ctx.armed || s_ctx.programming_mode == active) {
         return;
     }
     s_ctx.programming_mode = active;
+    if (!active) {
+        s_ctx.radio_failed = false;
+    }
+}
 
-    if (active) {
-        ESP_LOGI(TAG, "Programming mode: advertising as '%s'", s_ctx.device_name);
-        advertise_start();
+void oob_service_loop(void)
+{
+    if (!s_ctx.armed) {
         return;
     }
 
-    ESP_LOGI(TAG, "Programming mode ended: going silent");
-    /* A restart may already be armed from a dropped link; going silent cancels
-     * it. advertise_start() would refuse anyway now that the flag is clear —
-     * this just keeps "going silent" from leaving work behind it. */
-    esp_timer_stop(s_ctx.adv_timer);
-    if (s_ctx.advertising) {
-        ble_gap_adv_stop();
-        s_ctx.advertising = false;
+    if (s_ctx.programming_mode) {
+        if (s_ctx.radio_up) {
+            /* Up already. The one thing left to do is recover a radio that a
+             * failed tear-down left running but silenced, now that it is wanted
+             * again — otherwise the board would sit selected and unreachable. */
+            if (s_ctx.stop_pending) {
+                s_ctx.stop_pending = false;
+                advertise_start();
+            }
+            return;
+        }
+        if (s_ctx.radio_failed) {
+            return;
+        }
+        ESP_LOGI(TAG, "Programming mode: bringing the BLE radio up");
+        if (radio_start() != ESP_OK) {
+            /* Latched: without it this would retry twenty times a second for as
+             * long as the board stays selected. Cleared on the way out, so the
+             * next press tries again. */
+            s_ctx.radio_failed = true;
+            ESP_LOGE(TAG, "Out-of-band channel unavailable for this programming session");
+        }
+        return;
     }
-    /* An installer who has walked away must not leave a link open behind them,
-     * so leaving programming mode drops a connected client too. The bond
-     * survives; only this connection does not. */
-    if (s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(s_ctx.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+
+    if (!s_ctx.radio_up) {
+        return;
     }
+    if (!s_ctx.stop_pending) {
+        ESP_LOGI(TAG, "Programming mode ended: taking the BLE radio down");
+    }
+    (void)radio_stop();  /* Failure leaves radio_up set; the next pass retries. */
 }
 
 bool oob_service_advertising(void)
 {
-    return s_ctx.started && (s_ctx.advertising || s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE);
+    return s_ctx.radio_up && (s_ctx.advertising || s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE);
 }
 
 bool oob_service_client_connected(void)

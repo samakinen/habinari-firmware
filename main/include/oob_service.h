@@ -139,8 +139,14 @@ enum {
 #if CONFIG_HABINARI_OOB_BLE
 
 /**
- * @brief Bring the channel up. Call after every owner has registered its
- *        settings, i.e. after the protocol adapters have started.
+ * @brief Arm the channel. Call after every owner has registered its settings,
+ *        i.e. after the protocol adapters have started.
+ *
+ * Arming loads the configuration and prepares the GATT content; it does not
+ * start the BLE radio. The radio runs only in programming mode, because an
+ * initialised controller keeps the Wi-Fi/BLE coexistence arbiter slicing the
+ * one radio between them for the whole life of the device, and the field bus
+ * on an IP build is riding on that Wi-Fi.
  *
  * A device that has never been committed asks for programming mode here, since
  * nothing else can. A failure is not fatal: the device keeps sampling and
@@ -149,14 +155,24 @@ enum {
 esp_err_t oob_service_start(void);
 
 /**
- * @brief The board's programming mode changed; advertising follows it exactly.
+ * @brief The board's programming mode changed; the radio follows it exactly.
  *
- * Called from whoever routes the board's identify state — main.c, from the one
- * control_service identify callback. Safe from any task **except** the NimBLE
- * host task inside a GATT callback, which is why the channel's own requests to
- * leave programming mode go through a timer.
+ * Called from whoever routes the board's programming state — main.c, from the
+ * one control_service callback. Records intent and returns; the radio is
+ * brought up and taken down by oob_service_loop(). Safe from any task,
+ * including the NimBLE host task, precisely because it does no radio work.
  */
 void oob_service_set_programming_mode(bool active);
+
+/**
+ * @brief Reconcile the radio with programming mode. Call from the main loop.
+ *
+ * The one place the BLE controller and host are started and stopped. Stopping
+ * blocks until the NimBLE host task has exited, so it needs a caller that holds
+ * no locks and is not the host task itself — the board's poll loop is both.
+ * Cheap and idempotent when there is nothing to do.
+ */
+void oob_service_loop(void);
 
 /// True while advertising or connected.
 bool oob_service_advertising(void);
@@ -174,6 +190,7 @@ bool oob_service_identify_active(void);
  * reason it does not know which personalities do. */
 static inline esp_err_t oob_service_start(void) { return ESP_OK; }
 static inline void oob_service_set_programming_mode(bool active) { (void)active; }
+static inline void oob_service_loop(void) { }
 static inline bool oob_service_advertising(void) { return false; }
 static inline bool oob_service_client_connected(void) { return false; }
 static inline bool oob_service_identify_active(void) { return false; }
