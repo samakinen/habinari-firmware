@@ -204,6 +204,11 @@ struct KnxAdapterState {
     // the service task republishes what ETS reads back. Same single-writer /
     // single-reader shape as controlTickPending above.
     volatile bool ipIdentityDirty{false};
+    // True when the routing socket opened with no interface to join the group
+    // on. Set before the socket exists and read once the event callback is
+    // installed, to close the gap between the two: an interface that arrived in
+    // between leaves no event to fire and would strand the device off the group.
+    bool startedWithoutNetwork{false};
 #endif
 };
 
@@ -664,6 +669,7 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
                           "join the routing group once Wi-Fi associates");
         }
     }
+    g_knx.startedWithoutNetwork = !wifi_service_is_connected();
 
     IpRoutingOptions options{};
     options.multicastGroup = resolveMulticastGroup();
@@ -1912,6 +1918,13 @@ void knxServiceTask(void *arg)
         },
         &g_knx.taskHandle);
 
+    // The association that beat the callback registration: it raised no event
+    // anyone was listening for, and the socket's own join attempt had already
+    // failed. Nothing else would ever ask for the membership again.
+    if (g_knx.startedWithoutNetwork && wifi_service_is_connected()) {
+        g_knx.ipIdentityDirty = true;
+    }
+
     KNX_LOGI(TAG, "ETS-commissionable KNXnet/IP sensor bridge started");
 #else
     KNX_LOGI(TAG, "ETS-commissionable TP1 sensor bridge started");
@@ -1976,6 +1989,19 @@ void knxServiceTask(void *arg)
 #if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
         if (g_knx.ipIdentityDirty) {
             g_knx.ipIdentityDirty = false;
+            // The membership first, the identity second. The join is what makes
+            // the device hear the group at all — it is established against
+            // whichever interface exists when the routing socket opens, and on
+            // a device that booted before the access point answered, that was
+            // no interface. Publishing an address nobody can reach us on would
+            // be the more visible half of the same event and the less useful.
+            const auto rejoin = app.refreshIpMulticastMembership();
+            if (rejoin.isError()) {
+                KNX_LOGW(TAG, "Routing group rejoin failed: %d",
+                         static_cast<int>(rejoin.error()));
+            } else {
+                KNX_LOGI(TAG, "Rejoined the routing group on the current interface");
+            }
             publishIpIdentity(app, resolveMulticastGroup());
         }
 #endif

@@ -47,6 +47,9 @@ extern "C" {
  * Returns ESP_ERR_NOT_FOUND when no credentials are provisioned, which is a
  * normal state for a device out of the box rather than a fault — the caller
  * should say so and carry on, since the service channel is how they arrive.
+ * The TCP/IP stack is brought up even on that path, so a personality that
+ * opens a socket regardless of whether the radio associated gets an interface
+ * that is merely down rather than an lwIP that does not exist.
  *
  * Association continues in the background and retries forever; a device on a
  * wall with no UI must not give up on an access point that is down for an hour.
@@ -60,7 +63,9 @@ bool wifi_service_is_connected(void);
  * Block until the interface has an address, or the timeout expires.
  *
  * @param timeout_ms 0 waits forever.
- * @return ESP_OK when connected, ESP_ERR_TIMEOUT otherwise.
+ * @return ESP_OK when connected, ESP_ERR_TIMEOUT if it did not arrive in time,
+ *         ESP_ERR_INVALID_STATE when no association was ever attempted (no
+ *         credentials) — there is nothing to wait for in that case.
  */
 esp_err_t wifi_service_wait_connected(uint32_t timeout_ms);
 

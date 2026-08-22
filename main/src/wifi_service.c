@@ -38,6 +38,7 @@ typedef struct {
     EventGroupHandle_t events;
     esp_timer_handle_t reconnect_timer;
     esp_netif_t *netif;
+    bool stack_ready;
     bool started;
     bool config_registered;
     wifi_service_event_cb_t callback;
@@ -182,10 +183,92 @@ static void wifi_reconnect_timer_cb(void *arg)
     esp_wifi_connect();
 }
 
+/* --- Network stack -------------------------------------------------------- */
+
+/* esp_netif_init() is what starts the lwIP TCP/IP thread, and every socket in
+ * the image goes through that thread's mailbox — so a personality that opens
+ * one before this has run does not fail, it asserts ("Invalid mbox") and
+ * panics. That is why the stack comes up here, unconditionally, ahead of the
+ * credentials: a device with an empty NVS still runs KNXnet/IP, still binds its
+ * routing socket, and simply has nothing to route over until it is provisioned.
+ *
+ * Everything except esp_wifi_start() lives here. Bringing the driver up without
+ * associating costs a few kilobytes and no radio power — the PHY is only
+ * powered from esp_wifi_start() — and it leaves wifi_service_mac() and
+ * wifi_service_ip_info() with a real interface to answer from. */
+static esp_err_t ensure_network_stack(void)
+{
+    if (s_ctx.stack_ready) {
+        return ESP_OK;
+    }
+
+    if (s_ctx.events == NULL) {
+        s_ctx.events = xEventGroupCreate();
+        if (s_ctx.events == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* The default loop is shared with whatever else on the board posts to it,
+     * so "already created" is the expected answer, not a fault. */
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+
+    if (s_ctx.netif == NULL) {
+        s_ctx.netif = esp_netif_create_default_wifi_sta();
+        if (s_ctx.netif == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&init);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                              wifi_event_handler, NULL, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                              wifi_event_handler, NULL, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = wifi_reconnect_timer_cb,
+        .name = "wifi_reconnect",
+    };
+    err = esp_timer_create(&timer_args, &s_ctx.reconnect_timer);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_ctx.stack_ready = true;
+    return ESP_OK;
+}
+
 esp_err_t wifi_service_start(void)
 {
     if (s_ctx.started) {
         return ESP_OK;
+    }
+
+    /* Before the credentials check, not after: see ensure_network_stack(). */
+    const esp_err_t stack_err = ensure_network_stack();
+    if (stack_err != ESP_OK) {
+        ESP_LOGE(TAG, "Network stack init failed: %s", esp_err_to_name(stack_err));
+        return stack_err;
     }
 
     char ssid[64] = {0};
@@ -212,29 +295,6 @@ esp_err_t wifi_service_start(void)
         ESP_LOGE(TAG, "Wi-Fi SSID not provisioned");
         return ESP_ERR_NOT_FOUND;
     }
-
-    s_ctx.events = xEventGroupCreate();
-    if (s_ctx.events == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    const esp_timer_create_args_t timer_args = {
-        .callback = wifi_reconnect_timer_cb,
-        .name = "wifi_reconnect",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_ctx.reconnect_timer));
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    s_ctx.netif = esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&init));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                        wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                        wifi_event_handler, NULL, NULL));
 
     wifi_config_t config = {0};
     strncpy((char *)config.sta.ssid, ssid, sizeof(config.sta.ssid) - 1);
@@ -267,7 +327,11 @@ bool wifi_service_is_connected(void)
 
 esp_err_t wifi_service_wait_connected(uint32_t timeout_ms)
 {
-    if (s_ctx.events == NULL) {
+    /* Gated on started, not on the event group: the group now exists from the
+     * moment the stack is up, and waiting 30 s for an association that was
+     * never attempted only slows the boot of a device that has no credentials
+     * to associate with. */
+    if (!s_ctx.started || s_ctx.events == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
