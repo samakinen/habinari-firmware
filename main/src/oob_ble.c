@@ -104,6 +104,7 @@ typedef struct {
     esp_timer_handle_t leave_timer;
     esp_timer_handle_t status_timer;
     esp_timer_handle_t restart_timer;
+    esp_timer_handle_t adv_timer;
     volatile bool advertising;
     /// Mirrors the board's programming mode; advertising follows it exactly.
     volatile bool programming_mode;
@@ -347,6 +348,20 @@ static void schedule_restart(const char *why)
 {
     ESP_LOGW(TAG, "Restarting: %s", why);
     esp_timer_start_once(s_ctx.restart_timer, OOB_DEFER_MS * 1000);
+}
+
+/// Restart advertising from the timer task rather than from the GAP callback.
+///
+/// NimBLE can report a failed connection from inside ble_gap_conn_broken(),
+/// which frees the connection object only *after* the callback returns. Calling
+/// ble_gap_adv_start() from there finds the (single-entry) connection pool still
+/// full and fails with BLE_HS_ENOMEM, and no disconnect event follows to give a
+/// second chance -- so the board goes quiet until programming mode lapses. Zero
+/// delay is enough; the point is only to land after the host task unwinds.
+static void schedule_advertise_restart(void)
+{
+    esp_timer_stop(s_ctx.adv_timer);
+    esp_timer_start_once(s_ctx.adv_timer, 0);
 }
 
 /// Ask to leave programming mode from the timer task rather than from here.
@@ -600,6 +615,12 @@ static void restart_timer_cb(void *arg)
     esp_restart();
 }
 
+static void adv_timer_cb(void *arg)
+{
+    (void)arg;
+    advertise_start();
+}
+
 static void leave_timer_cb(void *arg)
 {
     (void)arg;
@@ -619,7 +640,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "Connection failed (status %d)", event->connect.status);
             s_ctx.advertising = false;
-            advertise_start();
+            schedule_advertise_restart();
             return 0;
         }
         s_ctx.conn_handle = event->connect.conn_handle;
@@ -639,7 +660,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         /* Still selected? Then advertise again: a dropped link during
          * commissioning must not mean a walk back to the button. Programming
          * mode's own timeout is what eventually ends this. */
-        advertise_start();
+        schedule_advertise_restart();
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE: {
@@ -832,12 +853,19 @@ esp_err_t oob_service_start(void)
         .callback = restart_timer_cb,
         .name = "oob-restart",
     };
+    const esp_timer_create_args_t adv_args = {
+        .callback = adv_timer_cb,
+        .name = "oob-adv",
+    };
     esp_err_t err = esp_timer_create(&leave_args, &s_ctx.leave_timer);
     if (err == ESP_OK) {
         err = esp_timer_create(&status_args, &s_ctx.status_timer);
     }
     if (err == ESP_OK) {
         err = esp_timer_create(&restart_args, &s_ctx.restart_timer);
+    }
+    if (err == ESP_OK) {
+        err = esp_timer_create(&adv_args, &s_ctx.adv_timer);
     }
     if (err != ESP_OK) {
         return err;
@@ -920,6 +948,10 @@ void oob_service_set_programming_mode(bool active)
     }
 
     ESP_LOGI(TAG, "Programming mode ended: going silent");
+    /* A restart may already be armed from a dropped link; going silent cancels
+     * it. advertise_start() would refuse anyway now that the flag is clear —
+     * this just keeps "going silent" from leaving work behind it. */
+    esp_timer_stop(s_ctx.adv_timer);
     if (s_ctx.advertising) {
         ble_gap_adv_stop();
         s_ctx.advertising = false;
