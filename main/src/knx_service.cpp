@@ -1700,21 +1700,33 @@ void knxServiceTask(void *arg)
             // verify ("no SyncResponse was received; probably the key did not
             // match"). So the factory key is only applied when the device does
             // not already carry one.
+            //
+            // Security Mode is deliberately not asserted here either. It is
+            // ETS's property, it is persisted, and ETS turns it on when it
+            // finishes a secure download. Forcing it on at every boot made the
+            // device refuse every unsecured management service, so a project
+            // that does not use security could not commission it at all: ETS
+            // opened the connection, sent A_Authorize_Request in the clear,
+            // and the device dropped it without an answer.
             const bool provisionedKeyInForce = app.hasEtsToolKey();
-            const auto secureResult = provisionedKeyInForce ? app.enableSecurityMode()
-                                                            : app.applyEtsToolKey(toolKey);
+            const auto secureResult = provisionedKeyInForce
+                                          ? util::Result<void>::ok()
+                                          : app.installFactoryToolKey(toolKey);
             if (secureResult.isError()) {
-                KNX_LOGE(TAG, "Data Secure: applyEtsToolKey failed: %d",
+                KNX_LOGE(TAG, "Data Secure: installFactoryToolKey failed: %d",
                          static_cast<int>(secureResult.error()));
             } else {
                 if (provisionedKeyInForce) {
                     KNX_LOGW(TAG,
-                             "KNX Data Secure ENABLED. Keeping the tool key already on the "
-                             "device; the factory key below was not re-applied and is only "
-                             "valid again after a factory reset.");
+                             "KNX Data Secure available (mode %s, set by ETS). Keeping the "
+                             "tool key already on the device; the factory key below was not "
+                             "re-applied and is only valid again after a factory reset.",
+                             app.isSecurityEnabled() ? "ON" : "off");
                 } else {
                     KNX_LOGW(TAG,
-                             "KNX Data Secure ENABLED. Tool key (%s): %s",
+                             "KNX Data Secure available (mode %s, set by ETS). "
+                             "Tool key (%s): %s",
+                             app.isSecurityEnabled() ? "ON" : "off",
                              keySource == ToolKeySource::EfuseDerived
                                  ? "derived from the eFuse root secret"
                                  : (created ? "NVS, generated" : "NVS, stored"),
