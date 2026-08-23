@@ -23,3 +23,9 @@ CONFIG_LWIP_MULTICAST_PING=y
 #
 # Off here so the variable is removed rather than reasoned about.
 # CONFIG_HABINARI_OOB_BLE is not set
+
+# What the routing socket and the data link layer counted, logged once a second
+# while the counters move. Separates "the telegram never arrived" from "it
+# arrived and this device dropped it" -- the two look identical in a capture
+# taken anywhere else.
+CONFIG_HABINARI_KNXIP_LINK_DIAGNOSTICS=y

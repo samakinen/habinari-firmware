@@ -166,6 +166,22 @@ menu "Habinari protocols"
                 and the routing endpoint recovers when the interface appears.
                 0 means start immediately.
 
+        config HABINARI_KNXIP_LINK_DIAGNOSTICS
+            bool "Log routing link counters"
+            default n
+            help
+                Log what the routing socket and the data link layer counted,
+                once a second while the counters move.
+
+                Answers the question a capture taken on the network cannot:
+                when the device stops answering a client, did the telegram
+                reach it at all? A stalled datagram count while ETS is plainly
+                transmitting is a delivery problem below the stack; a rising
+                drop count is this device discarding what it did receive.
+
+                Off by default: on a live installation the routing group is
+                busy and this logs every second.
+
     endmenu
 
     menu "MQTT personality"

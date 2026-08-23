@@ -108,6 +108,35 @@ From there it is an ordinary KNX download:
    individual-address write.
 3. Download the individual address, then the application program.
 
+The download restarts the device partway through — ETS master-resets it after
+writing the address and the KNXnet/IP configuration, then picks up where it
+left off. On this variant that restart is not just a firmware reboot: Wi-Fi has
+to associate and get an address again before the device can answer anything,
+which measures at 7-8 s and longer when the first association attempt fails.
+The device declares that in `A_Restart_Response` so ETS waits for it
+(`CONFIG_KNX_RESTART_PROCESS_TIME_S`, 15 s in `sdkconfig.defaults.knxip`);
+without it ETS polls a device that is still booting, runs out of retries and
+reports the download as failed.
+
+### When the download fails anyway
+
+A KNXnet/IP download that stalls looks the same whether the telegram never
+reached the device or the device received it and dropped it, and a capture
+taken on a PC cannot tell them apart — it sees what ETS sent, not what arrived
+over the air. `CONFIG_HABINARI_KNXIP_LINK_DIAGNOSTICS` (on in the
+`knxip-diag` overlay) logs what the routing socket and the data link layer
+counted, once a second while the counters move:
+
+```
+knx_service: Routing link: 412 datagrams in (0 dropped, 62 ms since the last),
+             data link: 118 frames, 294 filtered, 0 pool-dropped, 0 undecodable
+```
+
+A datagram count standing still while ETS is plainly transmitting is a delivery
+problem below the stack — multicast that the access point is not forwarding —
+and nothing in the firmware fixes it. Counts that rise while frames are dropped
+are this device discarding what it received, which is a firmware problem.
+
 ### Data Secure
 
 Unchanged from TP1, including the eFuse-derived FDSK. The device logs its serial

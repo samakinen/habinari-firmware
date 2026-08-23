@@ -245,6 +245,10 @@ on its own with
 
 To get an actual `.knxprod` for ETS import, run the XML through OpenKNXproducer
 on a host that has it installed: `tools/ets_export/package_with_openknxproducer.ps1`.
+The script strips the `MasterData` section first — the exported XML is
+self-contained, while a `.knxprod` takes its master data from ETS, and the ETS
+signing step aborts with `Naming pair for MasterData cannot be found` if the
+section is still there.
 
 ETS keys an application program by manufacturer + number + version and stores a
 hash of its content, so it refuses to import a changed program that still claims

@@ -41,6 +41,20 @@ CONFIG_KNX_IP_PORT=3671
 # enables by downloading a backbone key.
 CONFIG_KNX_ENABLE_SECURITY=y
 
+# What the device reports in A_Restart_Response after ETS master-resets it
+# mid-download: how long a management client should wait before touching it
+# again. The default of 0 means "back in under 5 s", which is true of a device
+# that restarts nothing but its own firmware and false of this one — it has to
+# re-associate with the access point and get an address first. Measured from
+# the console, reset to the stack answering again is 7-8 s, and a failed first
+# association attempt adds another 4. ETS told "under 5 s" spends its whole
+# retry budget while the device is still booting and reports the download as
+# failed.
+#
+# 15 s covers the measured worst case with margin. Overshooting only makes ETS
+# wait, once per download; undershooting fails the download.
+CONFIG_KNX_RESTART_PROCESS_TIME_S=15
+
 # The routing endpoint decodes datagrams on the data-link RX worker, and a
 # KNXnet/IP frame is an order of magnitude larger than a TP1 one.
 CONFIG_KNX_RX_TASK_STACK_SIZE=8192

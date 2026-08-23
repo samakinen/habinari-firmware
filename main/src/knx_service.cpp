@@ -1987,6 +1987,12 @@ void knxServiceTask(void *arg)
     const TickType_t startupPublishReleaseTick =
         xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs);
     bool startupDelayLogged = false;
+#if defined(CONFIG_HABINARI_KNXIP_LINK_DIAGNOSTICS)
+    uint64_t lastLinkReceived = 0;
+    uint64_t lastLinkDropped = 0;
+    uint32_t lastLinkPoolDropped = 0;
+    TickType_t lastLinkLogTick = 0;
+#endif
 
     // Startup is this task's stack peak, and it is now behind us. Report what
     // was left so kKnxServiceTaskStackSize can be retuned from measurement.
@@ -2070,6 +2076,40 @@ void knxServiceTask(void *arg)
         } else if (control::takeProgrammingModeToggleRequest()) {
             app.toggleProgrammingMode();
         }
+
+#if defined(CONFIG_HABINARI_KNXIP_LINK_DIAGNOSTICS)
+        // The question a capture taken on the network cannot answer: when the
+        // device stops answering a client, did the telegram reach it at all?
+        // A datagram count standing still while ETS is plainly transmitting is
+        // a delivery problem below the stack; a rising drop count is this
+        // device discarding what it did receive. Rate-limited to a second, and
+        // silent while nothing moves, so it can be left on for a download.
+        {
+            const TickType_t nowTick = xTaskGetTickCount();
+            if ((nowTick - lastLinkLogTick) >= kControlIntervalTicks) {
+                const auto link = app.linkDiagnostics();
+                if (link.mediumDatagramsReceived != lastLinkReceived
+                    || link.mediumDatagramsDropped != lastLinkDropped
+                    || link.rxPoolDropped != lastLinkPoolDropped) {
+                    lastLinkReceived = link.mediumDatagramsReceived;
+                    lastLinkDropped = link.mediumDatagramsDropped;
+                    lastLinkPoolDropped = link.rxPoolDropped;
+                    lastLinkLogTick = nowTick;
+                    KNX_LOGI(TAG,
+                             "Routing link: %llu datagrams in (%llu dropped, %u ms since "
+                             "the last), data link: %u frames, %u filtered, %u pool-dropped, "
+                             "%u undecodable",
+                             static_cast<unsigned long long>(link.mediumDatagramsReceived),
+                             static_cast<unsigned long long>(link.mediumDatagramsDropped),
+                             static_cast<unsigned>(link.msSinceLastInbound),
+                             static_cast<unsigned>(link.rxFrames),
+                             static_cast<unsigned>(link.rxFilterDropped),
+                             static_cast<unsigned>(link.rxPoolDropped),
+                             static_cast<unsigned>(link.rxDecodeFailed));
+                }
+            }
+        }
+#endif
 
         previousLifecycle = app.lifecycleState();
 

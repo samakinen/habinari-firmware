@@ -31,3 +31,8 @@ venv/
 __pycache__/
 
 /docs/The KNX Standard v3.0.0
+
+# Host binary the nested tools/ets_export build drops next to its own sources:
+# KNstaX puts product_exporter under the top-level project's source dir, which
+# is tools/ets_export when that project is configured on its own.
+/tools/ets_export/tools/
