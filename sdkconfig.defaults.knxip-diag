@@ -1,0 +1,25 @@
+# Bring-up overlay for the knxip variant. Not a shipping configuration.
+#
+#   idf.py -B build_knxip_diag -DSDKCONFIG=build_knxip_diag/sdkconfig \
+#     -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.knxip;sdkconfig.defaults.knxip-diag" build
+#
+# Answers one question a PC-side capture cannot: do group-addressed frames
+# reach this device at all? KNXnet/IP discovery and routing are multicast, and
+# an AP that drops multicast to its wireless clients looks exactly like a
+# firmware that ignores it -- the device answers every unicast probe and stays
+# silent on 224.0.23.12.
+#
+# With this on, `ping 224.0.23.12` from a machine on the same subnet is
+# decisive. A reply means multicast arrives and the fault is above the radio.
+# Silence means it never gets there, and no amount of stack work will help.
+CONFIG_LWIP_MULTICAST_PING=y
+
+# The BLE service channel shares one radio with Wi-Fi. Coexistence overrides
+# esp_wifi_set_ps(WIFI_PS_NONE) -- the driver says so on the console:
+# "Coexist!!! Wi-Fi station would only keep waked when available". Unicast
+# survives that, because the AP acknowledges and retries it. Group-addressed
+# frames go out once, unacknowledged, right after a DTIM beacon, and a radio
+# that is servicing BLE at that instant loses them outright.
+#
+# Off here so the variable is removed rather than reasoned about.
+# CONFIG_HABINARI_OOB_BLE is not set
