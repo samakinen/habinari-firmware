@@ -246,6 +246,14 @@ on its own with
 To get an actual `.knxprod` for ETS import, run the XML through OpenKNXproducer
 on a host that has it installed: `tools/ets_export/package_with_openknxproducer.ps1`.
 
+ETS keys an application program by manufacturer + number + version and stores a
+hash of its content, so it refuses to import a changed program that still claims
+an existing key ("the product has a different hash than the existing product").
+Bump `kApplicationVersion` in `knx_product.hpp` after any change to the
+ETS-visible content, or delete the old product from the ETS catalogue first.
+See [docs/knxnet-ip.md](docs/knxnet-ip.md#4-two-catalogue-entries-one-device)
+for the full set of identities that distinguish the two catalogue entries.
+
 The KNX manufacturer ID in the product definition is a **development
 placeholder** — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) before
 distributing anything as a KNX product.

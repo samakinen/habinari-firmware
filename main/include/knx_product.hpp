@@ -81,6 +81,15 @@ using namespace knx::product;
 // key material — state that belongs to one commissioned identity. Reflashing a
 // board from one medium to the other must not have it wake up holding an
 // address that ETS assigned to the other product.
+//
+// The application program number differs too, and has to. ETS stores one
+// application program per manufacturer + number + version and keys it by a hash
+// of its content; two programs sharing that key but differing in content are
+// rejected on import ("the product has a different hash than the existing
+// product"). These two cannot be one program, because a program declares its
+// mask version and the mask version is medium-dependent — 07B0h on TP1, 57B0h
+// on KNX IP. So they are numbered apart rather than versioned apart: they are
+// different programs, not successive revisions of one.
 #if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
 
 inline constexpr const char *kProductKey = "habinari_ip";
@@ -89,6 +98,7 @@ inline constexpr endpoint::Medium kProductMedium = endpoint::Medium::IP_Routing;
 inline constexpr const char *kOrderNumber = "HBIP1";
 inline constexpr const char *kPersistenceNamespace = "habinari_ip";
 inline constexpr uint16_t kHardwareSerialNumber = 2;
+inline constexpr uint16_t kApplicationNumber = 22;
 
 #else  // TP1, and the default for a build that names no medium at all
 
@@ -98,8 +108,15 @@ inline constexpr endpoint::Medium kProductMedium = endpoint::Medium::TP1;
 inline constexpr const char *kOrderNumber = "HBTP1";
 inline constexpr const char *kPersistenceNamespace = "habinari_tp1";
 inline constexpr uint16_t kHardwareSerialNumber = 1;
+inline constexpr uint16_t kApplicationNumber = 21;
 
 #endif
+
+// Bump on any change to the application program's ETS-visible content —
+// parameters, group objects, the download procedure. ETS refuses to replace a
+// program of the same number and version whose content hash has moved, so a
+// regenerated knxprod that keeps the old version will not import.
+inline constexpr uint16_t kApplicationVersion = 6;
 
 // ---------------------------------------------------------------------------
 // Parameter defaults
@@ -775,8 +792,8 @@ inline constexpr auto kHabinariProduct =
                 // THIRD-PARTY-NOTICES.md.
                 .manufacturerId = ManufacturerId(0x00FA),
                 .medium = kProductMedium,
-                .applicationNumber = 21,
-                .applicationVersion = 5,
+                .applicationNumber = kApplicationNumber,
+                .applicationVersion = kApplicationVersion,
                 .firmwareRevision = 1,
                 .maxApduLength = 254,
                 // Feeds both the device's PID_HARDWARE_TYPE / PID_VERSION /
