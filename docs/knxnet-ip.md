@@ -76,10 +76,27 @@ unless the project changed it. ETS then talks to the multicast group directly,
 using the PC itself as the KNX IP endpoint. No router and no interface is
 needed; that is the point of the medium.
 
-The device also answers KNXnet/IP discovery, so it appears in ETS's device list
-rather than having to be found by address. Discovery is not what makes
-commissioning work — that happens over routing — but a device that cannot be
-listed is one you have no way to confirm is even on the network.
+The device also answers KNXnet/IP discovery — but do not go looking for it
+under **Bus → Discovered Interfaces**. That list holds interfaces ETS can
+connect *through*, and ETS builds it from the Tunnelling service family, which
+this device deliberately does not advertise (§8). Its search response carries
+Core and Routing and nothing else, which is what a KNX IP device is. A device
+that never appears there is behaving correctly, and no amount of waiting will
+change it.
+
+Discovery is a bring-up tool here, not part of commissioning. It answers one
+question — is the device on the network and talking? — and Wireshark on
+`224.0.23.12`, or any KNXnet/IP scanner, is the place to ask it.
+
+### Find it in programming mode
+
+With the routing connection up and the programming button pressed, the device
+appears in **Bus → Devices → Programming Mode**, at its uncommissioned address
+`15.15.255`. That list is built from `A_IndividualAddress_Read` — an ordinary
+KNX broadcast over the multicast group, not a KNXnet/IP service — and the
+device answers it only while programming mode is on. Seeing it there means the
+whole path works: routing in, the stack, and routing back out. It is the
+milestone to aim for, and the one that says the next step is a download.
 
 ### Program it
 
@@ -96,6 +113,14 @@ From there it is an ordinary KNX download:
 Unchanged from TP1, including the eFuse-derived FDSK. The device logs its serial
 number and factory tool key at every boot; enter both in ETS to commission
 securely. See the README's device-root-secret section.
+
+The KNX serial number is the board's base MAC, so it identifies the *board* and
+not the personality flashed onto it. Reflashing a board from TP1 to KNXnet/IP
+leaves the serial — and therefore the device certificate — unchanged, which is
+correct: it is still one device. ETS enforces that too, and a project holding
+both catalogue entries backed by the same physical board will reject the second
+certificate as already in use. Test one medium at a time on a given board, or
+use two boards.
 
 ---
 
@@ -118,12 +143,13 @@ applying on IP:
 
 ## 4. Two catalogue entries, one device
 
-`habinari_tp1_ets` and `habinari_ip_ets` are separate ETS products with
-different product keys, order numbers and hardware serial numbers, even though
-the application program is identical.
+`habinari_tp1_ets` and `habinari_ip_ets` are separate ETS products. Every group
+object, every parameter and every default is identical; what differs is what
+ETS needs in order to place the device in a topology and to keep the two apart
+in its catalogue.
 
-They have to be. ETS derives what a device may be connected to from its declared
-medium, and 03/02/06 rule 4 makes that consequential:
+They have to be separate. ETS derives what a device may be connected to from its
+declared medium, and 03/02/06 rule 4 makes that consequential:
 
 > If a KNX IP device is assigned to a Subnetwork as a simple device then that
 > Subnetwork and any Subnetwork higher in the system structure shall contain
@@ -133,9 +159,40 @@ A single entry claiming both media would let an integrator drop a TP1 board into
 an IP line and find out on site. The build follows the image: a TP1 build
 refreshes the TP1 entry, a KNXnet/IP build refreshes the IP one.
 
-The device's Device Descriptor follows too — mask version `07B0h` on TP1,
-`57B0h` on KNX IP. ETS reads it before every download and compares it against
-the catalogue entry, so this is not cosmetic.
+| | TP1 | KNXnet/IP |
+|---|---|---|
+| Medium (`MediumType/@Number`) | 0 — TP | 5 — IP |
+| Mask version | `07B0h` (1968) | `57B0h` (22448) |
+| `Hardware/@IsIPEnabled` | absent | `true` |
+| Order number | `HBTP1` | `HBIP1` |
+| Hardware serial number | 1 | 2 |
+| Application program number | 21 | 22 |
+
+Three of those rows are load-bearing in ways that are invisible from firmware:
+
+* **The medium** is what rule 4 acts on. ETS resolves `MT-*` against its own
+  master data by id, so the id and the number both have to say IP — writing
+  `MT-0 Number="5"` silently leaves the product on TP1.
+* **The mask version** is what the device reports in its Device Descriptor, and
+  ETS compares the two before every download. It is medium-dependent because
+  the medium is the high nibble of the mask.
+* **The application program number** keeps the two entries apart in the ETS
+  catalogue. ETS stores one program per manufacturer + number + version, keyed
+  by a hash of its content, and refuses an import whose content has moved under
+  an existing key — "the product has a different hash than the existing
+  product". These two programs cannot share a key, because they declare
+  different mask versions.
+
+`main/include/knx_product.hpp` holds all six values, and both the running
+firmware and the exported catalogue entry are generated from them.
+
+### Re-importing after a change
+
+ETS will not replace an application program of the same number and version whose
+content hash has changed. Any change to the ETS-visible content — parameters,
+group objects, the download procedure — therefore needs
+`kApplicationVersion` bumped in `knx_product.hpp`, or the old product removed
+from the ETS catalogue first.
 
 ### Persistence
 
@@ -206,6 +263,43 @@ property write (`PID_BACKBONE_KEY`) over a secured management connection. The
 device applies it immediately, without a restart: the routing socket starts
 wrapping every datagram in a `SECURE_WRAPPER` from the next telegram onwards.
 Clearing the key in the project turns it back off the same way.
+
+### Do not start with a secured backbone
+
+That property write has to arrive somehow, and on this device it cannot arrive
+over a backbone that is already secure. Turning Security on for the IP line
+before the first download produces a deadlock, not an error message:
+
+* System broadcasts stay in the clear, so part of the commissioning dialogue
+  works and the device looks reachable — ETS reads the serial number, the Data
+  Secure sync completes, `A_DomainAddressSerialNumber_Write` lands.
+* Everything else — every point-to-point connection, `DeviceDescriptor_Read`,
+  `A_IndividualAddressSerialNumber_Read` — is normal traffic, so ETS wraps it,
+  and a device with no backbone key drops every one. The download stalls
+  part-way through with the device visible and mute.
+* `PID_BACKBONE_KEY` is itself a property write over a point-to-point
+  connection. It is in the half that is wrapped, so the key that would break
+  the deadlock is the one thing that cannot get through it.
+
+What breaks the cycle on a device that supports it is a secure *unicast*
+KNXnet/IP session — Device Management or Tunnelling, opened against the
+device's own control endpoint with credentials from its device certificate.
+Unicast is the point: it reaches a device that cannot read the group. Both
+services are in §8, and neither is implemented here, which is why KNX
+documentation describes the backbone key as being downloaded to IP Secure
+*couplers and interfaces* — the device classes that have them.
+
+So commission with the IP line's Security **off**. Only once the device is
+fully downloaded is there a device that could hold a backbone key at all.
+
+The device certificate is not the missing piece, though expecting it to be is
+the natural mistake. It does bootstrap this device, exactly as KNX Secure
+intends — the Data Secure sync in the trace above is that bootstrap working,
+over system broadcast, on an already-secured group. But it bootstraps the
+*application layer*: it authorises telegrams whose payload ETS can then
+protect. It cannot decrypt a `SECURE_WRAPPER`, which is a different layer with
+a different key, and it cannot conjure a point-to-point channel to carry a
+download. Two protections, stacked, commissioned by different means.
 
 Two details worth knowing, both from the specification rather than choices made
 here:
