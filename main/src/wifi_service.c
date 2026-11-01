@@ -20,7 +20,9 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/task.h"
 #include "nvs.h"
+#include "wifi_credentials.h"
 
 static const char *TAG = "wifi";
 
@@ -41,11 +43,16 @@ typedef struct {
     bool stack_ready;
     bool started;
     bool config_registered;
+    /* Set by an adapter's task, read on the default event loop. The two are
+     * one value: a callback paired with the previous registration's context
+     * would be handed a pointer it does not know how to read. So both are
+     * written and read together under callback_lock. */
     wifi_service_event_cb_t callback;
     void *callback_ctx;
 } wifi_ctx_t;
 
 static wifi_ctx_t s_ctx;
+static portMUX_TYPE s_callback_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* --- Out-of-band configuration -------------------------------------------- */
 
@@ -135,8 +142,16 @@ esp_err_t wifi_service_register_config(void)
 
 static void notify(bool connected)
 {
-    if (s_ctx.callback != NULL) {
-        s_ctx.callback(connected, s_ctx.callback_ctx);
+    /* Copied out under the lock and called outside it: the callback may take
+     * locks or notify tasks of its own, and none of that belongs in a critical
+     * section. */
+    taskENTER_CRITICAL(&s_callback_lock);
+    const wifi_service_event_cb_t callback = s_ctx.callback;
+    void *const ctx = s_ctx.callback_ctx;
+    taskEXIT_CRITICAL(&s_callback_lock);
+
+    if (callback != NULL) {
+        callback(connected, ctx);
     }
 }
 
@@ -296,21 +311,41 @@ esp_err_t wifi_service_start(void)
         return ESP_ERR_NOT_FOUND;
     }
 
+    /* Full-width copies: see wifi_credentials.h for why a 32-character SSID
+     * must not be cut to 31. */
     wifi_config_t config = {0};
-    strncpy((char *)config.sta.ssid, ssid, sizeof(config.sta.ssid) - 1);
-    strncpy((char *)config.sta.password, password, sizeof(config.sta.password) - 1);
+    const bool ssid_fits = wifi_credential_copy(config.sta.ssid, sizeof(config.sta.ssid), ssid);
+    const bool password_fits =
+        wifi_credential_copy(config.sta.password, sizeof(config.sta.password), password);
     memset(password, 0, sizeof(password));
+    if (!ssid_fits || !password_fits) {
+        ESP_LOGE(TAG, "Stored Wi-Fi %s is too long for 802.11",
+                 ssid_fits ? "passphrase" : "SSID");
+        memset(&config, 0, sizeof(config));
+        return ESP_ERR_INVALID_SIZE;
+    }
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
+    /* Errors are returned rather than ESP_ERROR_CHECKed: Wi-Fi serves optional
+     * adapters as well as required ones, and the caller is the one that knows
+     * whether a device without it should still boot. */
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err == ESP_OK) {
+        err = esp_wifi_set_config(WIFI_IF_STA, &config);
+    }
     memset(&config, 0, sizeof(config));
     /* The board is mains/aux powered and must answer promptly, so no modem
      * sleep: the latency it saves is not worth the power it costs here. And a
      * KNX IP device that sleeps through a multicast is a device that misses
      * group telegrams addressed to it. */
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    if (err == ESP_OK) {
+        err = esp_wifi_set_ps(WIFI_PS_NONE);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi configuration failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    const esp_err_t err = esp_wifi_start();
+    err = esp_wifi_start();
     if (err == ESP_OK) {
         s_ctx.started = true;
     }
@@ -370,6 +405,8 @@ esp_err_t wifi_service_mac(uint8_t out[6])
 
 void wifi_service_set_event_callback(wifi_service_event_cb_t callback, void *ctx)
 {
+    taskENTER_CRITICAL(&s_callback_lock);
     s_ctx.callback = callback;
     s_ctx.callback_ctx = ctx;
+    taskEXIT_CRITICAL(&s_callback_lock);
 }

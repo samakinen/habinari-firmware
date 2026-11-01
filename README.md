@@ -116,6 +116,7 @@ Building every personality at once:
 tools/build_variants.sh            # all of them, each with its own build dir and sdkconfig
 tools/build_variants.sh modbus-ble # just one
 tools/build_variants.sh knxip      # KNX over KNXnet/IP, with the BLE channel
+tools/build_variants.sh --prod     # release-trimmed (sdkconfig.defaults.prod), into build_<name>_prod
 ```
 
 Use the script rather than `idf.py -B` by hand: `idf.py` defaults to the
@@ -139,6 +140,11 @@ out-of-band settings registry (`test_device_config`) — including the two
 properties every service channel depends on and none can enforce for itself:
 that an out-of-range value is refused rather than clamped, and that a secret
 never comes back out.
+
+CI (`.github/workflows/host-tests.yml`) runs these on every push and builds
+every variant in `tools/build_variants.sh` with ESP-IDF v6.1, so an image that
+stops compiling or outgrows its partition fails there. The KNX stack's own
+suite runs in the KNstaX repository's CI.
 
 ## Documentation
 

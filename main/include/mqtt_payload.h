@@ -65,6 +65,36 @@ int mqtt_payload_state_json(char *buf, size_t buf_len, const control_state_t *st
 bool mqtt_payload_parse_command(const char *topic_suffix, const char *payload, size_t payload_len,
                                 control_command_t *out_command, float *out_value);
 
+/// What every Home Assistant discovery document says about the device itself.
+/// The strings are copied into the document JSON-escaped, so they may hold
+/// anything an installer typed.
+typedef struct {
+    const char *device_id;           ///< also the prefix of every unique id
+    const char *device_name;         ///< the name HA shows on the device card
+    const char *manufacturer;
+    const char *model;
+    const char *state_topic;         ///< where the state document is published
+    const char *availability_topic;  ///< "online" / "offline", retained
+    const char *command_base;        ///< commands go to "<command_base>/cmd/<name>"
+} mqtt_discovery_device_t;
+
+/**
+ * Home Assistant discovery configuration for one sensor entity reading
+ * @p value_key from the state document. @p device_class and @p unit may be
+ * NULL; a unit also marks the entity as a measurement.
+ *
+ * @return bytes written excluding the NUL, or -1 if the buffer was too small
+ *         (the buffer then holds an empty string, never a truncated document).
+ */
+int mqtt_payload_discovery_sensor(char *buf, size_t buf_len, const mqtt_discovery_device_t *device,
+                                  const char *object_id, const char *name,
+                                  const char *device_class, const char *unit,
+                                  const char *value_key);
+
+/// Home Assistant discovery configuration for the climate entity. Returns as
+/// mqtt_payload_discovery_sensor() does.
+int mqtt_payload_discovery_climate(char *buf, size_t buf_len, const mqtt_discovery_device_t *device);
+
 /// Home Assistant preset name for an OperatingPreset code point, or NULL.
 const char *mqtt_payload_preset_name(uint8_t operating_mode);
 

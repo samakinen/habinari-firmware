@@ -86,6 +86,20 @@ target_compile_options(test_modbus_registers PRIVATE -Wall -Wextra)
 
 add_test(NAME test_modbus_registers COMMAND test_modbus_registers)
 
+# The Modbus slave's write/read-back bookkeeping (mb_sync.h): the logic that
+# lost master writes landing between the snapshot and the refresh, and ran each
+# commit twice. Pulled out of mb_rtu_slave.c so those interleavings can be
+# placed exactly here instead of hoped for on a bench.
+add_executable(test_modbus_sync test_modbus_sync.cpp)
+target_include_directories(test_modbus_sync PRIVATE
+    "${MAIN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs"
+)
+target_link_libraries(test_modbus_sync PRIVATE unity)
+target_compile_options(test_modbus_sync PRIVATE -Wall -Wextra)
+
+add_test(NAME test_modbus_sync COMMAND test_modbus_sync)
+
 # The room controller itself, driven at simulated time. This is the test that
 # the multiprotocol refactor exists to make possible: before it, the control
 # model lived inside knx_service.cpp behind a FreeRTOS task and a KNX stack, and
@@ -96,6 +110,19 @@ target_link_libraries(test_control_core PRIVATE unity)
 target_compile_options(test_control_core PRIVATE -Wall -Wextra)
 
 add_test(NAME test_control_core COMMAND test_control_core)
+
+# The command gate behind control_state_write(): every adapter's writes pass
+# through it, so a NaN, an infinity or an undefined code point is stopped here
+# or nowhere. host_stubs supplies esp_err.h for the return codes.
+add_executable(test_control_command test_control_command.cpp)
+target_include_directories(test_control_command PRIVATE
+    "${MAIN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs"
+)
+target_link_libraries(test_control_command PRIVATE unity)
+target_compile_options(test_control_command PRIVATE -Wall -Wextra)
+
+add_test(NAME test_control_command COMMAND test_control_command)
 
 # MQTT wire format: the state document and the command mapping. host_stubs
 # supplies esp_err.h, which is all that control_state.h needs from ESP-IDF —
@@ -130,6 +157,23 @@ target_link_libraries(test_device_config PRIVATE unity)
 target_compile_options(test_device_config PRIVATE -Wall -Wextra)
 
 add_test(NAME test_device_config COMMAND test_device_config)
+
+# The pure helpers the Wi-Fi and KNX services lean on: copying a credential into
+# the unterminated station-config fields, and recognising the DPT 9 "invalid
+# data" code. The latter is checked against KNstaX's own DPT codec, the one
+# every inbound group write is decoded by, rather than a copy of its formula.
+add_executable(test_service_helpers
+    test_service_helpers.cpp
+    "${REPO_ROOT}/components/KNstaX/src/application/dpt.cpp"
+)
+target_include_directories(test_service_helpers PRIVATE
+    "${MAIN_DIR}/include"
+    "${REPO_ROOT}/components/KNstaX/include"
+)
+target_link_libraries(test_service_helpers PRIVATE unity)
+target_compile_options(test_service_helpers PRIVATE -Wall -Wextra)
+
+add_test(NAME test_service_helpers COMMAND test_service_helpers)
 
 # The browser commissioning client (docs/webui/index.html) decodes the same GATT
 # characteristics by hand, in JavaScript, at fixed offsets — and nothing in any

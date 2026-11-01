@@ -18,8 +18,8 @@
  * So the numbers live here, in a header with no dependency on any protocol
  * stack, and every configuration front end is a *view* of them:
  *
- *   knx_product.hpp   exports them as ETS parameter defaults (`using namespace`
- *                     below keeps every `kDefault...` reference there working)
+ *   knx_product.hpp   exports them as ETS parameter defaults (through the
+ *                     `cfg::` namespace alias)
  *   control_core.hpp  uses them as the member initialisers of Settings, which
  *                     is what an un-commissioned device actually runs on
  *

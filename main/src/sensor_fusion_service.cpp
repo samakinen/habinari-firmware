@@ -57,9 +57,12 @@ using TemperatureTrend = fu::TrendMonitor<20>;
 using SlowTrend = fu::TrendMonitor<16>;
 
 struct FusionState {
-    SemaphoreHandle_t configMutex{nullptr};
+    /// Guards everything below. Held for a whole update, not just the config
+    /// copy: applyConfig() rewrites the channel and detector configurations the
+    /// update is reading, so a configure from the control task in the middle of
+    /// a cycle used to be a data race on half of this struct.
+    SemaphoreHandle_t mutex{nullptr};
     sensor_fusion_config_t config{};
-    bool configured{false};
 
     fu::RedundantMeasurement temperature;
     fu::RedundantMeasurement humidity;
@@ -91,6 +94,30 @@ struct FusionState {
 };
 
 FusionState g_state;
+
+/// RAII hold of the fusion lock. The lock exists from sensor_fusion_init() on;
+/// entry points refuse to run before then rather than run unlocked.
+class FusionLock {
+public:
+    FusionLock()
+        : held_(g_state.mutex != nullptr
+                && xSemaphoreTake(g_state.mutex, portMAX_DELAY) == pdTRUE)
+    {
+    }
+    ~FusionLock()
+    {
+        if (held_) {
+            xSemaphoreGive(g_state.mutex);
+        }
+    }
+    FusionLock(const FusionLock &) = delete;
+    FusionLock &operator=(const FusionLock &) = delete;
+
+    explicit operator bool() const { return held_; }
+
+private:
+    bool held_;
+};
 
 fu::ChannelConfig channelConfig(float minValid,
                                 float maxValid,
@@ -268,27 +295,41 @@ extern "C" void sensor_fusion_default_config(sensor_fusion_config_t *out)
     out->window_fall_k_per_min = 0.35f;
 }
 
+extern "C" esp_err_t sensor_fusion_init(void)
+{
+    if (g_state.mutex != nullptr) {
+        return ESP_OK;
+    }
+    g_state.mutex = xSemaphoreCreateMutex();
+    if (g_state.mutex == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+    sensor_fusion_config_t defaults;
+    sensor_fusion_default_config(&defaults);
+    sensor_fusion_configure(&defaults);
+    return ESP_OK;
+}
+
 extern "C" void sensor_fusion_configure(const sensor_fusion_config_t *config)
 {
     if (config == nullptr) {
         return;
     }
-    if (g_state.configMutex == nullptr) {
-        g_state.configMutex = xSemaphoreCreateMutex();
-    }
-    if (g_state.configMutex != nullptr) {
-        xSemaphoreTake(g_state.configMutex, portMAX_DELAY);
+    FusionLock lock;
+    if (!lock) {
+        ESP_LOGE(TAG, "sensor_fusion_configure before sensor_fusion_init; ignored");
+        return;
     }
     g_state.config = *config;
-    g_state.configured = true;
     applyConfig(g_state.config);
-    if (g_state.configMutex != nullptr) {
-        xSemaphoreGive(g_state.configMutex);
-    }
 }
 
 extern "C" void sensor_fusion_reset(void)
 {
+    FusionLock lock;
+    if (!lock) {
+        return;
+    }
     g_state.temperature.reset();
     g_state.humidity.reset();
     g_state.pressure.reset();
@@ -312,6 +353,12 @@ extern "C" void sensor_fusion_reset(void)
 
 extern "C" void sensor_fusion_acknowledge_alarms(void)
 {
+    // Called from the control task; the fire detector's latch is mid-update on
+    // the sensor task often enough that this needs the lock like everything else.
+    FusionLock lock;
+    if (!lock) {
+        return;
+    }
     g_state.fire.acknowledge();
 }
 
@@ -323,20 +370,16 @@ extern "C" void sensor_fusion_update(const sensor_bus_results_t *bus,
     if (out == nullptr) {
         return;
     }
-    if (!g_state.configured) {
-        sensor_fusion_config_t defaults;
-        sensor_fusion_default_config(&defaults);
-        sensor_fusion_configure(&defaults);
+    // The whole cycle under the lock (see FusionState::mutex). Pure arithmetic
+    // on a few dozen floats, so the control task waits on it for well under a
+    // millisecond at most.
+    FusionLock lock;
+    if (!lock) {
+        // Not initialised: report nothing rather than fuse unlocked.
+        *out = sensor_data_t{};
+        return;
     }
-
-    sensor_fusion_config_t config;
-    if (g_state.configMutex != nullptr) {
-        xSemaphoreTake(g_state.configMutex, portMAX_DELAY);
-        config = g_state.config;
-        xSemaphoreGive(g_state.configMutex);
-    } else {
-        config = g_state.config;
-    }
+    const sensor_fusion_config_t &config = g_state.config;
 
     const bool haveBus = bus != nullptr;
     const uint16_t mask = haveBus ? bus->updated_mask : 0;

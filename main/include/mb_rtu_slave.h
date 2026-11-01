@@ -5,7 +5,9 @@
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mb_sync.h"
 #include "modbus_registers.h"
 #include "sensor_data.h"
 
@@ -31,6 +33,12 @@ extern "C" {
 
 typedef struct {
     void *mbc_slave_handle;
+    /// Guards `mbc_slave_handle` against the service task deleting and
+    /// recreating the controller (a re-address) while the sensor task is
+    /// publishing into it. Only that pair needs it: every other use of the
+    /// handle is on the service task itself. Created once and kept across
+    /// stop/start.
+    SemaphoreHandle_t handle_mutex;
     TaskHandle_t task_handle;
     volatile bool stop_requested;
 
@@ -42,10 +50,10 @@ typedef struct {
     uint8_t discrete_bits[MB_DISCRETE_BYTES];
     uint8_t coil_bits[MB_COIL_BYTES];
 
-    // Last values this task itself wrote, so a master's write is told apart
-    // from the device's own read-back.
-    mb_holding_registers_t applied_holding;
-    uint8_t applied_coils[MB_COIL_BYTES];
+    // What each writable register last held when this task synchronised it —
+    // acted on it, or wrote it — so a master's write is told apart from the
+    // device's own read-back. See mb_sync.h.
+    mb_writable_image_t applied;
 
     // Commissioning. `slave_address` is what the device has been *given*
     // (MB_SLAVE_ADDR_UNASSIGNED until somebody does); `listen_address` is what

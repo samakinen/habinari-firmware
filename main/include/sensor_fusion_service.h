@@ -22,9 +22,11 @@ extern "C" {
  * the redundant measurands, and produces the sensor_data_t the rest of the
  * firmware consumes.
  *
- * Threading: sensor_fusion_update() is called only from the sensor task.
- * sensor_fusion_configure() may be called from any task (the KNX task pushes
- * ETS parameter changes into it) and takes the config lock.
+ * Threading: sensor_fusion_init() runs once, before any task uses the layer
+ * (control_service_start() calls it). After that every entry point may be
+ * called from any task: sensor_fusion_update() holds the fusion lock for the
+ * whole cycle, and configure, reset and acknowledge take the same lock, so none
+ * of them can land in the middle of an update and leave it half-configured.
  */
 
 /// Runtime tuning. Everything an integrator can reach from ETS ends up here;
@@ -68,6 +70,11 @@ typedef struct {
     bool window_detect_enabled;
     float window_fall_k_per_min;        ///< 0 disables detection
 } sensor_fusion_config_t;
+
+/// Create the fusion lock and apply the default configuration. Call once, before
+/// any other task can reach the layer; the lock is not created lazily, because
+/// two tasks racing to create it would each get their own. Idempotent.
+esp_err_t sensor_fusion_init(void);
 
 /// Fill @p out with the compiled-in defaults.
 void sensor_fusion_default_config(sensor_fusion_config_t *out);

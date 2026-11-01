@@ -61,7 +61,7 @@ static void on_sensor_data(const sensor_data_t *data)
     // temperature source reads as an unexplained step: how many sources are live
     // and which of them are disagreeing is what says whether that step was a
     // sensor dying or the sensors merely arguing.
-    ESP_LOGI(TAG,
+    ESP_LOGD(TAG,
              "Room T=%.2f C (src%u of %u%s%s) RH=%.1f %% CO2=%.0f ppm P=%.0f Pa IAQ=%.0f(acc%u) | "
              "Probe T=%.2f C RH=%.1f %% | dT=%+.2f K/min health=0x%02x suspect=0x%02x%s%s",
              data->temperature.value, data->temperature.source,
@@ -165,6 +165,41 @@ static void update_led(void)
     gpio_set_level(PIN_LED, on ? 1 : 0);
 }
 
+// Log levels for the whole image, set once before anything starts logging.
+// They used to be set from inside the KNX task, which made one adapter decide
+// the verbosity of every other component; they live here now, still applied
+// only to images with KNX, so no other image's output changes.
+static void configure_logging(void)
+{
+#if defined(CONFIG_HABINARI_PROTOCOL_KNX)
+    esp_log_level_set("*", ESP_LOG_INFO);
+    // The default image carries Modbus beside KNX. Keep its driver's
+    // per-transaction chatter out of the KNX diagnostics; esp_log matches tags
+    // exactly (no prefix matching), so every component tag needs its own entry.
+    esp_log_level_set("mb_port.event", ESP_LOG_WARN);
+    esp_log_level_set("mb_port.serial", ESP_LOG_WARN);
+    esp_log_level_set("mb_port.timer", ESP_LOG_WARN);
+    esp_log_level_set("mb_object.master", ESP_LOG_WARN);
+    esp_log_level_set("mb_object.slave", ESP_LOG_WARN);
+    esp_log_level_set("mb_transaction", ESP_LOG_WARN);
+    esp_log_level_set("mb_transp.rtu_master", ESP_LOG_WARN);
+    esp_log_level_set("mb_transp.rtu_slave", ESP_LOG_WARN);
+#endif
+}
+
+// What Kconfig's HABINARI_REQUIRES_AUX_POWER promises: a board that will not
+// come up on KNX bus power alone says so first, so a field failure reads as a
+// wiring mistake rather than a dead board.
+static void log_power_requirement(void)
+{
+#if defined(CONFIG_HABINARI_REQUIRES_AUX_POWER)
+    ESP_LOGW(TAG, "This image needs the 5-30 V auxiliary supply; KNX bus power alone "
+                  "is not enough for its radio");
+#else
+    ESP_LOGI(TAG, "This image runs on KNX bus power");
+#endif
+}
+
 static void log_enabled_protocols(void)
 {
     size_t count = 0;
@@ -181,6 +216,8 @@ static void log_enabled_protocols(void)
 
 void app_main(void)
 {
+    configure_logging();
+    log_power_requirement();
     ESP_ERROR_CHECK(init_pins());
 
     // First: the device itself. This initialises NVS, which several adapters
@@ -203,8 +240,19 @@ void app_main(void)
         ESP_LOGE(TAG, "Out-of-band service channel unavailable: %s", esp_err_to_name(oob_err));
     }
 
-    ESP_ERROR_CHECK(sensor_service_init(&s_sensor_service, on_sensor_data));
-    ESP_ERROR_CHECK(sensor_service_start(&s_sensor_service));
+    // Not ESP_ERROR_CHECK either. A missing sensor is already absorbed inside
+    // (sensor_bus_enable() leaves it out and its readings go unavailable); what
+    // is left to fail here is the sensor bus itself or the task. Even then the
+    // device still has its adapters, its button and its settings, and a
+    // reboot loop would take all of those away to report one fault.
+    esp_err_t sensor_err = sensor_service_init(&s_sensor_service, on_sensor_data);
+    if (sensor_err == ESP_OK) {
+        sensor_err = sensor_service_start(&s_sensor_service);
+    }
+    if (sensor_err != ESP_OK) {
+        ESP_LOGE(TAG, "Sensor service unavailable: %s — running without measurements",
+                 esp_err_to_name(sensor_err));
+    }
 
     for (;;) {
         handle_programming_button();

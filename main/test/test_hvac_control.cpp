@@ -561,6 +561,36 @@ void test_status_gen_distinguishes_missing_from_faulty()
                             packStatusGen(true, true, true));
 }
 
+// ---------------------------------------------------------------------------
+// clampf and NaN
+// ---------------------------------------------------------------------------
+
+void test_clampf_maps_nan_to_the_low_bound()
+{
+    // NaN fails every comparison, so the plain two-sided clamp passed it through.
+    const float nan = std::nanf("");
+    // Exact comparison on purpose: the harness's FLOAT assertions compare a
+    // difference with a tolerance, and that comparison is false for NaN too.
+    TEST_ASSERT_TRUE(clampf(nan, 7.0f, 35.0f) == 7.0f);
+    TEST_ASSERT_EQUAL_FLOAT(7.0f, clampf(-1.0f, 7.0f, 35.0f));
+    TEST_ASSERT_EQUAL_FLOAT(35.0f, clampf(99.0f, 7.0f, 35.0f));
+    TEST_ASSERT_EQUAL_FLOAT(21.0f, clampf(21.0f, 7.0f, 35.0f));
+}
+
+void test_a_nan_setpoint_does_not_poison_the_pid_integrator()
+{
+    // One bad sample used to leave the integral NaN for good, and with it the
+    // valve output: the loop never recovered without a reboot.
+    PidController pid;
+    pid.configure(PidConfig{.kp = 25.0f, .tiSeconds = 9000.0f});
+    pid.update(21.0f, 20.0f, 1.0f);
+    pid.update(std::nanf(""), 20.0f, 1.0f);
+
+    const float output = pid.update(21.0f, 20.0f, 1.0f);
+    TEST_ASSERT_TRUE(std::isfinite(output));
+    assertClose(25.0f, output, 1.0f, "PI output one kelvin below setpoint");
+}
+
 } // namespace
 
 // Required by the Unity harness; nothing here needs per-test fixturing.
@@ -602,6 +632,9 @@ int main()
     RUN_TEST(test_frost_and_overheat_alarms_reach_the_status_word);
     RUN_TEST(test_both_effective_setpoints_are_reported);
     RUN_TEST(test_status_gen_distinguishes_missing_from_faulty);
+
+    RUN_TEST(test_clampf_maps_nan_to_the_low_bound);
+    RUN_TEST(test_a_nan_setpoint_does_not_poison_the_pid_integrator);
 
     return UNITY_END();
 }

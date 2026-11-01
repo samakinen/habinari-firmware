@@ -15,6 +15,7 @@
  */
 #include "control_service.hpp"
 
+#include "control_command.hpp"
 #include "control_core.hpp"
 #include "control_state.h"
 #include "device_config.h"
@@ -301,10 +302,18 @@ extern "C" esp_err_t control_service_start(void)
         }
     }
 
+    // The fusion lock is created here, while nothing else is running, rather
+    // than by whichever of the sensor and control tasks reaches it first.
+    esp_err_t err = sensor_fusion_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(ctrl::TAG, "Failed to initialise sensor fusion: %s", esp_err_to_name(err));
+        return err;
+    }
+
     // NVS belongs to the service, not to any adapter: the KNX commissioned
     // state, the Modbus address and the Wi-Fi credentials all live in it, and
     // whichever of them is compiled in, somebody has to have initialised it.
-    esp_err_t err = ctrl::initNvs();
+    err = ctrl::initNvs();
     if (err != ESP_OK) {
         ESP_LOGE(ctrl::TAG, "Failed to initialize NVS: %s", esp_err_to_name(err));
         return err;
@@ -507,54 +516,8 @@ extern "C" esp_err_t control_state_write(control_command_t command, float value)
         return ESP_ERR_INVALID_STATE;
     }
 
-    namespace hvac_ns = habinari::hvac;
-    const bool flag = value != 0.0f;
+    // Validation and the mapping onto the model live in control_command.hpp so
+    // the host tests exercise exactly this gate; all this adds is the lock.
     ctrl::LockGuard lock(g.mutex);
-    switch (command) {
-    case CONTROL_CMD_CONTROLLER_ON_OFF:
-        g.in.controllerOnOff = flag;
-        return ESP_OK;
-    case CONTROL_CMD_HVAC_MODE:
-        g.in.hvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(static_cast<uint8_t>(value));
-        return ESP_OK;
-    case CONTROL_CMD_CONTROLLER_MODE:
-        // Compact ControllerMode code points, the same ones control_state_t
-        // reports back. This used to decode KNX DPT 20.105 here, which made the
-        // command asymmetric with the reading: an adapter that read
-        // controller_mode == 2 (Cool) and wrote 2 back got Auto, because 2 is
-        // not a 20.105 code point. The 20.105 mapping belongs at the KNX edge —
-        // where it already is, in knx_service.cpp — and not in the neutral API.
-        g.in.controllerMode = (static_cast<uint8_t>(value) <= 3)
-                                  ? static_cast<hvac_ns::ControllerMode>(
-                                        static_cast<uint8_t>(value))
-                                  : hvac_ns::ControllerMode::Auto;
-        return ESP_OK;
-    case CONTROL_CMD_SETPOINT_BASE:
-        // Same clamping as the KNX SetpointBase write: the configured min/max
-        // are a property of the installation, not of the protocol that asked.
-        g.hvac.comfortHeatingSetpointC =
-            hvac_ns::clampf(value, g.hvac.minSetpointC, g.hvac.maxSetpointC);
-        return ESP_OK;
-    case CONTROL_CMD_SETPOINT_SHIFT:
-        g.in.setpointShiftK = value;
-        return ESP_OK;
-    case CONTROL_CMD_WINDOW_STATUS:
-        g.in.windowOpen = flag;
-        g.in.windowStatusKnown = true;
-        return ESP_OK;
-    case CONTROL_CMD_PRESENCE:
-        g.in.presence = flag;
-        g.in.presenceKnown = true;
-        return ESP_OK;
-    case CONTROL_CMD_VENTILATION_MODE:
-        g.in.ventilationMode = static_cast<hvac_ns::VentilationMode>(static_cast<uint8_t>(value));
-        return ESP_OK;
-    case CONTROL_CMD_CO2_SETPOINT:
-        g.hvac.ventilationSetpointPpm = value;
-        return ESP_OK;
-    case CONTROL_CMD_ACKNOWLEDGE_ALARMS:
-        g.acknowledgeAlarmsRequested = true;
-        return ESP_OK;
-    }
-    return ESP_ERR_INVALID_ARG;
+    return ctrl::applyCommand(command, value, g.hvac, g.in, g.acknowledgeAlarmsRequested);
 }

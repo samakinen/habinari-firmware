@@ -119,9 +119,37 @@ typedef enum {
     CONTROL_CMD_ACKNOWLEDGE_ALARMS,     ///< clear latched alarms (value ignored)
 } control_command_t;
 
-/// Apply a command. `value` carries the payload for every command; booleans and
-/// enumerations pass as 0/1/code point. Returns ESP_ERR_INVALID_ARG for an
-/// unknown command and ESP_ERR_INVALID_STATE before the control task is up.
+/**
+ * Apply a command. `value` carries the payload for every command; booleans and
+ * enumerations pass as 0/1/code point.
+ *
+ * This is the one validation gate between a wire and the controller, so an
+ * adapter does not need its own checks to be safe — only to report the result.
+ * A rejected command changes nothing.
+ *
+ * Returns:
+ *   ESP_OK                 applied (a setpoint may still have been clamped to
+ *                          the configured limits, as the KNX write is)
+ *   ESP_ERR_INVALID_STATE  the control service is not started yet
+ *   ESP_ERR_INVALID_ARG    unknown command, or a value that is not finite
+ *                          (NaN, ±inf — for every command, including the
+ *                          booleans), or outside the range below
+ *
+ * Accepted ranges. They are the widest the ETS parameters allow, so no
+ * installation can have configured a limit beyond them:
+ *   SETPOINT_BASE      3..45 °C, then clamped to the configured min/max
+ *   SETPOINT_SHIFT     -10..+10 K, then clamped by the controller to the
+ *                      configured maximum shift
+ *   CO2_SETPOINT       400..5000 ppm
+ *   HVAC_MODE          whole number 0..4 (OperatingPreset)
+ *   CONTROLLER_MODE    whole number 0..3 (ControllerMode)
+ *   VENTILATION_MODE   whole number 0..3 (VentilationMode)
+ *   booleans, ACKNOWLEDGE_ALARMS   any finite value
+ *
+ * An enumeration value outside its range used to be cast regardless, which is
+ * undefined behaviour for a float and an invalid enumerator for an integer; it
+ * is now refused rather than mapped to a default, so the caller can say so.
+ */
 esp_err_t control_state_write(control_command_t command, float value);
 
 #ifdef __cplusplus

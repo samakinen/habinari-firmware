@@ -281,6 +281,134 @@ void test_an_overlong_payload_is_rejected_rather_than_truncated()
         mqtt_payload_parse_command("setpoint", huge.data(), huge.size(), &command, &value));
 }
 
+void test_non_finite_numbers_are_rejected()
+{
+    // strtod reads all of these as numbers. None of them is a setpoint, and a
+    // NaN reaching the controller compares false against every limit it has.
+    const char *const payloads[] = {"nan", "NaN", "inf", "-inf", "infinity", "1e300", "-1e39"};
+    for (const char *payload : payloads) {
+        control_command_t command;
+        float value = 0.0f;
+        TEST_ASSERT_FALSE(mqtt_payload_parse_command("setpoint", payload, std::strlen(payload),
+                                                     &command, &value));
+        TEST_ASSERT_FALSE(mqtt_payload_parse_command("mode", payload, std::strlen(payload),
+                                                     &command, &value));
+    }
+    // The largest float still is one.
+    expectCommand("co2_setpoint", "3.4e38", CONTROL_CMD_CO2_SETPOINT, 3.4e38f);
+}
+
+// ---------------------------------------------------------------------------
+// Home Assistant discovery
+// ---------------------------------------------------------------------------
+
+mqtt_discovery_device_t discoveryDevice(const char *name)
+{
+    mqtt_discovery_device_t device{};
+    device.device_id = "a1b2c3";
+    device.device_name = name;
+    device.manufacturer = "Maker";
+    device.model = "Model";
+    device.state_topic = "habinari/a1b2c3/state";
+    device.availability_topic = "habinari/a1b2c3/availability";
+    device.command_base = "habinari/a1b2c3";
+    return device;
+}
+
+void test_discovery_sensor_document_keeps_its_layout()
+{
+    // Byte for byte what the hand-written snprintf version produced, so moving
+    // it into a bounded writer changed nothing Home Assistant can see.
+    const auto device = discoveryDevice("Habinari a1b2c3");
+    char buf[512];
+    int n = mqtt_payload_discovery_sensor(buf, sizeof(buf), &device, "temperature",
+                                          "Room temperature", "temperature", "\xC2\xB0" "C",
+                                          "temperature");
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"uniq_id\":\"a1b2c3_temperature\",\"name\":\"Room temperature\","
+        "\"stat_t\":\"habinari/a1b2c3/state\","
+        "\"val_tpl\":\"{{value_json.temperature|default('')}}\",\"dev_cla\":\"temperature\","
+        "\"unit_of_meas\":\"\xC2\xB0" "C\",\"stat_cla\":\"measurement\","
+        "\"dev\":{\"ids\":[\"a1b2c3\"],\"name\":\"Habinari a1b2c3\",\"mf\":\"Maker\","
+        "\"mdl\":\"Model\"},\"avty_t\":\"habinari/a1b2c3/availability\"}",
+        buf);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(std::strlen(buf)), n);
+
+    // No unit: no unit and no state class either.
+    n = mqtt_payload_discovery_sensor(buf, sizeof(buf), &device, "iaq", "Air quality index", "aqi",
+                                      nullptr, "iaq");
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"uniq_id\":\"a1b2c3_iaq\",\"name\":\"Air quality index\","
+        "\"stat_t\":\"habinari/a1b2c3/state\","
+        "\"val_tpl\":\"{{value_json.iaq|default('')}}\",\"dev_cla\":\"aqi\","
+        "\"dev\":{\"ids\":[\"a1b2c3\"],\"name\":\"Habinari a1b2c3\",\"mf\":\"Maker\","
+        "\"mdl\":\"Model\"},\"avty_t\":\"habinari/a1b2c3/availability\"}",
+        buf);
+}
+
+void test_discovery_climate_document_keeps_its_layout()
+{
+    const auto device = discoveryDevice("Habinari a1b2c3");
+    char buf[1024];
+    const int n = mqtt_payload_discovery_climate(buf, sizeof(buf), &device);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"uniq_id\":\"a1b2c3_thermostat\",\"name\":\"Room thermostat\","
+        "\"stat_t\":\"habinari/a1b2c3/state\","
+        "\"curr_temp_tpl\":\"{{value_json.temperature|default('')}}\","
+        "\"curr_hum_tpl\":\"{{value_json.humidity|default('')}}\","
+        "\"temp_stat_tpl\":\"{{value_json.setpoint}}\","
+        "\"temp_cmd_t\":\"habinari/a1b2c3/cmd/setpoint\","
+        "\"mode_stat_tpl\":\"{{value_json.mode}}\","
+        "\"mode_cmd_t\":\"habinari/a1b2c3/cmd/mode\","
+        "\"modes\":[\"off\",\"heat\",\"cool\",\"auto\"],"
+        "\"act_tpl\":\"{{value_json.action}}\","
+        "\"pr_mode_stat_tpl\":\"{{value_json.preset}}\","
+        "\"pr_mode_cmd_t\":\"habinari/a1b2c3/cmd/preset\","
+        "\"pr_modes\":[\"comfort\",\"standby\",\"eco\",\"away\"],"
+        "\"min_temp\":7,\"max_temp\":35,\"temp_step\":0.5,\"temp_unit\":\"C\","
+        "\"dev\":{\"ids\":[\"a1b2c3\"],\"name\":\"Habinari a1b2c3\",\"mf\":\"Maker\","
+        "\"mdl\":\"Model\"},\"avty_t\":\"habinari/a1b2c3/availability\"}",
+        buf);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(std::strlen(buf)), n);
+}
+
+void test_discovery_escapes_the_device_name()
+{
+    // The device name is whatever an installer typed. Unescaped, the quote
+    // ended the JSON string and Home Assistant dropped the whole entity.
+    const auto device = discoveryDevice("Bob's \"office\" \\ 2\n\x01");
+    char buf[512];
+    const int n = mqtt_payload_discovery_sensor(buf, sizeof(buf), &device, "co2", "Room CO2",
+                                                "carbon_dioxide", "ppm", "co2");
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_TRUE(contains(buf, "\"name\":\"Bob's \\\"office\\\" \\\\ 2\\n\\u0001\""));
+}
+
+void test_discovery_that_does_not_fit_is_reported_not_truncated()
+{
+    const auto device = discoveryDevice("Habinari a1b2c3");
+    char full[1024];
+    const int n = mqtt_payload_discovery_climate(full, sizeof(full), &device);
+    TEST_ASSERT_TRUE(n > 0);
+
+    // Exactly enough room succeeds; one byte less fails and leaves nothing a
+    // caller could publish by mistake.
+    std::string exact(static_cast<size_t>(n) + 1u, 'x');
+    TEST_ASSERT_EQUAL_INT(n, mqtt_payload_discovery_climate(exact.data(), exact.size(), &device));
+    TEST_ASSERT_EQUAL_STRING(full, exact.c_str());
+
+    std::string shortBuf(static_cast<size_t>(n), 'x');
+    TEST_ASSERT_EQUAL_INT(-1,
+                          mqtt_payload_discovery_climate(shortBuf.data(), shortBuf.size(), &device));
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(std::strlen(shortBuf.c_str())));
+
+    char tiny[8];
+    TEST_ASSERT_EQUAL_INT(-1, mqtt_payload_discovery_sensor(tiny, sizeof(tiny), &device, "co2",
+                                                            "Room CO2", nullptr, nullptr, "co2"));
+    TEST_ASSERT_EQUAL_INT(0, static_cast<int>(std::strlen(tiny)));
+}
+
 }  // namespace
 
 extern "C" void setUp() {}
@@ -308,6 +436,12 @@ int main()
     RUN_TEST(test_alarm_acknowledgement_accepts_an_empty_payload);
     RUN_TEST(test_unknown_topics_and_unparseable_payloads_are_rejected);
     RUN_TEST(test_an_overlong_payload_is_rejected_rather_than_truncated);
+    RUN_TEST(test_non_finite_numbers_are_rejected);
+
+    RUN_TEST(test_discovery_sensor_document_keeps_its_layout);
+    RUN_TEST(test_discovery_climate_document_keeps_its_layout);
+    RUN_TEST(test_discovery_escapes_the_device_name);
+    RUN_TEST(test_discovery_that_does_not_fit_is_reported_not_truncated);
 
     return UNITY_END();
 }

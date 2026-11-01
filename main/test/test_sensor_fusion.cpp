@@ -390,6 +390,44 @@ void test_trend_resets_when_the_source_goes_invalid(void)
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, trend.ratePerMinute());
 }
 
+namespace {
+
+/// Run a 20-sample monitor flat for @p days of uptime at the 5 s sampling
+/// interval, then up a 1 K/min ramp, and return the measured rate in K/min.
+float rampRateAfterUptime(double days)
+{
+    TrendMonitor<20> trend;
+    const long flatSamples = static_cast<long>(days * 86400.0 / 5.0);
+    for (long i = 0; i < flatSamples; ++i) {
+        trend.update(5.0f, 21.0f, true);
+    }
+    float value = 21.0f;
+    for (int i = 0; i < 40; ++i) {
+        value += 1.0f / 12.0f;  // 1 K/min at one sample per 5 s
+        trend.update(5.0f, value, true);
+    }
+    return trend.ratePerMinute();
+}
+
+} // namespace
+
+void test_trend_holds_its_accuracy_after_30_days_of_uptime(void)
+{
+    // The clock used to be a float of seconds since the last invalid reading,
+    // regressed on as-is: the slope was off by tens of percent within a day
+    // and read zero after that, which is a fire alarm that never fires.
+    const float rate = rampRateAfterUptime(30.0);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, rate);
+}
+
+void test_trend_survives_the_millisecond_counter_wrapping(void)
+{
+    // 2^32 ms is 49.7 days. The window straddles the wrap at some point after
+    // that; the unsigned differences have to carry it through.
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, rampRateAfterUptime(49.71));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.0f, rampRateAfterUptime(60.0));
+}
+
 // --- FireDetector ----------------------------------------------------------
 
 namespace {
@@ -699,6 +737,8 @@ int main(void)
     RUN_TEST(test_trend_measures_a_linear_rise);
     RUN_TEST(test_trend_is_quiet_on_a_flat_signal);
     RUN_TEST(test_trend_resets_when_the_source_goes_invalid);
+    RUN_TEST(test_trend_holds_its_accuracy_after_30_days_of_uptime);
+    RUN_TEST(test_trend_survives_the_millisecond_counter_wrapping);
 
     RUN_TEST(test_fire_ignores_normal_room_warmup);
     RUN_TEST(test_fire_needs_confirmation_before_latching);

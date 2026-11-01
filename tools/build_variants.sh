@@ -11,6 +11,11 @@
 #
 #   tools/build_variants.sh            build all variants
 #   tools/build_variants.sh mqtt       build one
+#   tools/build_variants.sh --prod     release-trim them: sdkconfig.defaults.prod
+#                                      is layered last, into build_<name>_prod
+#
+# HABINARI_ETS_EXPORT=OFF in the environment skips the ETS export (CI does, as
+# it needs a C++23 host compiler next to the ESP-IDF toolchain).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,9 +33,21 @@ declare -A variants=(
     [mqtt]="sdkconfig.defaults.mqtt;sdkconfig.defaults.ble"
 )
 
-selected=("$@")
+prod=0
+selected=()
+for arg in "$@"; do
+    case "${arg}" in
+        --prod) prod=1 ;;
+        *) selected+=("${arg}") ;;
+    esac
+done
 if [ ${#selected[@]} -eq 0 ]; then
     selected=(knx knxip modbus modbus-ble mqtt)
+fi
+
+build_suffix=""
+if [ "${prod}" -eq 1 ]; then
+    build_suffix="_prod"
 fi
 
 for name in "${selected[@]}"; do
@@ -39,10 +56,13 @@ for name in "${selected[@]}"; do
         exit 2
     fi
 
-    build_dir="build_${name}"
+    build_dir="build_${name}${build_suffix}"
     defaults="sdkconfig.defaults"
     if [ -n "${variants[$name]}" ]; then
         defaults="sdkconfig.defaults;${variants[$name]}"
+    fi
+    if [ "${prod}" -eq 1 ]; then
+        defaults="${defaults};sdkconfig.defaults.prod"
     fi
 
     echo "=== ${name} -> ${build_dir} ==============================="
@@ -52,7 +72,7 @@ for name in "${selected[@]}"; do
     # each build refreshes its own.
     ets_export=OFF
     case "${name}" in
-        knx|knxip) ets_export=ON ;;
+        knx|knxip) ets_export="${HABINARI_ETS_EXPORT:-ON}" ;;
     esac
 
     idf.py -B "${build_dir}" \
@@ -68,8 +88,8 @@ done
 echo
 echo "=== image sizes ============================================="
 for name in "${selected[@]}"; do
-    bin="build_${name}/habinari.bin"
+    bin="build_${name}${build_suffix}/habinari.bin"
     if [ -f "${bin}" ]; then
-        printf '%-8s %8s bytes\n' "${name}" "$(stat -c%s "${bin}")"
+        printf '%-16s %8s bytes\n' "${name}${build_suffix}" "$(stat -c%s "${bin}")"
     fi
 done

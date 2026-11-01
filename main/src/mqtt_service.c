@@ -14,6 +14,7 @@
  */
 #include "mqtt_service.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -71,9 +72,12 @@ typedef struct {
     char mqtt_user[64];
     char mqtt_pass[64];
 
-    volatile bool connected;
-    volatile bool discovery_pending;
-    volatile bool publish_forced;
+    /* Raised by the MQTT client's event handler and consumed by mqtt_task, so
+     * the consumer clears them with an exchange: a plain read-then-clear could
+     * drop a request raised between the two. */
+    atomic_bool connected;
+    atomic_bool discovery_pending;
+    atomic_bool publish_forced;
 
     /* Send-on-change plus heartbeat, the same model the KNX transmit policy
      * uses and for the same reason: a room sensor that republishes an unchanged
@@ -197,102 +201,99 @@ static const device_config_item_t netcfg_config_items[] = {
 #define DISCOVERY_PREFIX ""
 #endif
 
-/* The device block every entity repeats, so Home Assistant groups them under
- * one device card rather than scattering nine unrelated entities. */
-static int append_device_block(char *buf, size_t len, const mqtt_ctx_t *ctx)
+static mqtt_discovery_device_t discovery_device(const mqtt_ctx_t *ctx)
 {
-    return snprintf(buf, len,
-                    "\"dev\":{\"ids\":[\"%s\"],\"name\":\"%s\","
-                    "\"mf\":\"%s\",\"mdl\":\"%s\"},"
-                    "\"avty_t\":\"%s\"",
-                    ctx->device_id, ctx->device_name,
-                    CONFIG_HABINARI_MQTT_MANUFACTURER, CONFIG_HABINARI_MQTT_MODEL,
-                    ctx->topic_avail);
+    const mqtt_discovery_device_t device = {
+        .device_id = ctx->device_id,
+        .device_name = ctx->device_name,
+        .manufacturer = CONFIG_HABINARI_MQTT_MANUFACTURER,
+        .model = CONFIG_HABINARI_MQTT_MODEL,
+        .state_topic = ctx->topic_state,
+        .availability_topic = ctx->topic_avail,
+        .command_base = ctx->base,
+    };
+    return device;
 }
 
-static void publish_discovery_sensor(mqtt_ctx_t *ctx, const char *object_id, const char *name,
+/* Retained: Home Assistant must find the configuration after a restart without
+ * waiting for this device to reboot. A document that did not fit is skipped
+ * with an error rather than sent truncated, which Home Assistant would reject
+ * anyway — and the rest of the entities still get theirs. */
+static bool publish_discovery_document(mqtt_ctx_t *ctx, const char *topic, int topic_len,
+                                       size_t topic_size, const char *payload, int payload_len)
+{
+    if (topic_len < 0 || (size_t)topic_len >= topic_size) {
+        ESP_LOGE(TAG, "Discovery topic for %s does not fit in %u bytes; skipped", topic,
+                 (unsigned)topic_size);
+        return false;
+    }
+    if (payload_len < 0) {
+        ESP_LOGE(TAG, "Discovery document for %s did not fit; skipped", topic);
+        return false;
+    }
+    if (esp_mqtt_client_publish(ctx->client, topic, payload, payload_len, 1, 1) < 0) {
+        ESP_LOGW(TAG, "Discovery publish to %s failed", topic);
+        return false;
+    }
+    return true;
+}
+
+static bool publish_discovery_sensor(mqtt_ctx_t *ctx, const char *object_id, const char *name,
                                      const char *device_class, const char *unit,
                                      const char *value_key)
 {
     char topic[TOPIC_MAX];
     char payload[512];
 
-    snprintf(topic, sizeof(topic), "%s/sensor/%s/%s/config", DISCOVERY_PREFIX, ctx->device_id,
-             object_id);
-
-    int n = snprintf(payload, sizeof(payload),
-                     "{\"uniq_id\":\"%s_%s\",\"name\":\"%s\",\"stat_t\":\"%s\","
-                     "\"val_tpl\":\"{{value_json.%s|default('')}}\",",
-                     ctx->device_id, object_id, name, ctx->topic_state, value_key);
-    if (device_class != NULL) {
-        n += snprintf(payload + n, sizeof(payload) - n, "\"dev_cla\":\"%s\",", device_class);
-    }
-    if (unit != NULL) {
-        n += snprintf(payload + n, sizeof(payload) - n, "\"unit_of_meas\":\"%s\",\"stat_cla\":\"measurement\",",
-                      unit);
-    }
-    n += append_device_block(payload + n, sizeof(payload) - n, ctx);
-    snprintf(payload + n, sizeof(payload) - n, "}");
-
-    /* Retained: Home Assistant must find the configuration after a restart
-     * without waiting for this device to reboot. */
-    esp_mqtt_client_publish(ctx->client, topic, payload, 0, 1, 1);
+    const int topic_len = snprintf(topic, sizeof(topic), "%s/sensor/%s/%s/config",
+                                   DISCOVERY_PREFIX, ctx->device_id, object_id);
+    const mqtt_discovery_device_t device = discovery_device(ctx);
+    const int n = mqtt_payload_discovery_sensor(payload, sizeof(payload), &device, object_id, name,
+                                                device_class, unit, value_key);
+    return publish_discovery_document(ctx, topic, topic_len, sizeof(topic), payload, n);
 }
 
-static void publish_discovery_climate(mqtt_ctx_t *ctx)
+static bool publish_discovery_climate(mqtt_ctx_t *ctx)
 {
     char topic[TOPIC_MAX];
     char payload[1024];
 
-    snprintf(topic, sizeof(topic), "%s/climate/%s/thermostat/config", DISCOVERY_PREFIX,
-             ctx->device_id);
-
-    int n = snprintf(
-        payload, sizeof(payload),
-        "{\"uniq_id\":\"%s_thermostat\",\"name\":\"Room thermostat\","
-        "\"stat_t\":\"%s\","
-        "\"curr_temp_tpl\":\"{{value_json.temperature|default('')}}\","
-        "\"curr_hum_tpl\":\"{{value_json.humidity|default('')}}\","
-        "\"temp_stat_tpl\":\"{{value_json.setpoint}}\","
-        "\"temp_cmd_t\":\"%s/cmd/setpoint\","
-        "\"mode_stat_tpl\":\"{{value_json.mode}}\","
-        "\"mode_cmd_t\":\"%s/cmd/mode\","
-        "\"modes\":[\"off\",\"heat\",\"cool\",\"auto\"],"
-        "\"act_tpl\":\"{{value_json.action}}\","
-        "\"pr_mode_stat_tpl\":\"{{value_json.preset}}\","
-        "\"pr_mode_cmd_t\":\"%s/cmd/preset\","
-        "\"pr_modes\":[\"comfort\",\"standby\",\"eco\",\"away\"],"
-        "\"min_temp\":7,\"max_temp\":35,\"temp_step\":0.5,\"temp_unit\":\"C\",",
-        ctx->device_id, ctx->topic_state, ctx->base, ctx->base, ctx->base);
-    n += append_device_block(payload + n, sizeof(payload) - n, ctx);
-    snprintf(payload + n, sizeof(payload) - n, "}");
-
-    esp_mqtt_client_publish(ctx->client, topic, payload, 0, 1, 1);
+    const int topic_len = snprintf(topic, sizeof(topic), "%s/climate/%s/thermostat/config",
+                                   DISCOVERY_PREFIX, ctx->device_id);
+    const mqtt_discovery_device_t device = discovery_device(ctx);
+    const int n = mqtt_payload_discovery_climate(payload, sizeof(payload), &device);
+    return publish_discovery_document(ctx, topic, topic_len, sizeof(topic), payload, n);
 }
 
-static void publish_discovery(mqtt_ctx_t *ctx)
+/* Returns false if any entity's configuration did not go out, so the caller can
+ * try again: an entity missing from Home Assistant has no other way back. */
+static bool publish_discovery(mqtt_ctx_t *ctx)
 {
     if (DISCOVERY_PREFIX[0] == '\0') {
         ESP_LOGI(TAG, "Discovery prefix empty — publishing no discovery config");
-        return;
+        return true;
     }
 
-    publish_discovery_climate(ctx);
-    publish_discovery_sensor(ctx, "temperature", "Room temperature", "temperature", "°C",
-                             "temperature");
-    publish_discovery_sensor(ctx, "humidity", "Room humidity", "humidity", "%", "humidity");
-    publish_discovery_sensor(ctx, "co2", "Room CO2", "carbon_dioxide", "ppm", "co2");
-    publish_discovery_sensor(ctx, "pressure", "Air pressure", "atmospheric_pressure", "Pa",
-                             "pressure");
-    publish_discovery_sensor(ctx, "iaq", "Air quality index", "aqi", NULL, "iaq");
-    publish_discovery_sensor(ctx, "dew_point", "Dew point", "temperature", "°C", "dew_point");
-    publish_discovery_sensor(ctx, "probe_temperature", "Floor temperature", "temperature", "°C",
-                             "probe_temperature");
-    publish_discovery_sensor(ctx, "heating_percent", "Heating demand", "power_factor", "%",
-                             "heating_percent");
-    publish_discovery_sensor(ctx, "ventilation_percent", "Ventilation demand", "power_factor", "%",
-                             "ventilation_percent");
-    ESP_LOGI(TAG, "Published Home Assistant discovery under %s/", DISCOVERY_PREFIX);
+    bool ok = publish_discovery_climate(ctx);
+    ok &= publish_discovery_sensor(ctx, "temperature", "Room temperature", "temperature", "°C",
+                                   "temperature");
+    ok &= publish_discovery_sensor(ctx, "humidity", "Room humidity", "humidity", "%", "humidity");
+    ok &= publish_discovery_sensor(ctx, "co2", "Room CO2", "carbon_dioxide", "ppm", "co2");
+    ok &= publish_discovery_sensor(ctx, "pressure", "Air pressure", "atmospheric_pressure", "Pa",
+                                   "pressure");
+    ok &= publish_discovery_sensor(ctx, "iaq", "Air quality index", "aqi", NULL, "iaq");
+    ok &= publish_discovery_sensor(ctx, "dew_point", "Dew point", "temperature", "°C",
+                                   "dew_point");
+    ok &= publish_discovery_sensor(ctx, "probe_temperature", "Floor temperature", "temperature",
+                                   "°C", "probe_temperature");
+    ok &= publish_discovery_sensor(ctx, "heating_percent", "Heating demand", "power_factor", "%",
+                                   "heating_percent");
+    ok &= publish_discovery_sensor(ctx, "ventilation_percent", "Ventilation demand",
+                                   "power_factor", "%", "ventilation_percent");
+    if (ok) {
+        ESP_LOGI(TAG, "Published Home Assistant discovery under %s/", DISCOVERY_PREFIX);
+    }
+    return ok;
 }
 
 /* --- MQTT ----------------------------------------------------------------- */
@@ -321,19 +322,22 @@ static void handle_command(mqtt_ctx_t *ctx, const char *topic, int topic_len, co
         return;
     }
 
+    /* control_state_write() is the gate: it refuses a value out of range for
+     * the command, and that refusal is reported, never applied. */
     const esp_err_t err = control_state_write(command, value);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Command '%s' rejected: %s", suffix, esp_err_to_name(err));
-        return;
+        ESP_LOGW(TAG, "Command '%s' = %.2f rejected: %s", suffix, value, esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Command %s = %.2f", suffix, value);
     }
-    ESP_LOGI(TAG, "Command %s = %.2f", suffix, value);
 
     /* Publish the resulting state immediately rather than at the next interval:
      * a UI that has just sent a command is waiting to see it take effect, and
      * the device may well have clamped the value it was given. Forced, because
      * a rejected or clamped-to-unchanged command still owes the sender an
-     * answer. */
-    ctx->publish_forced = true;
+     * answer — the unchanged state is how Home Assistant learns it did not
+     * take. */
+    atomic_store(&ctx->publish_forced, true);
     if (ctx->task != NULL) {
         xTaskNotifyGive(ctx->task);
     }
@@ -348,20 +352,32 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "Broker connected");
-        ctx->connected = true;
-        esp_mqtt_client_subscribe(ctx->client, ctx->topic_cmd_wild, 1);
-        esp_mqtt_client_publish(ctx->client, ctx->topic_avail, "online", 0, 1, 1);
-        ctx->discovery_pending = true;
-        /* A reconnect must republish even if nothing changed while we were
-         * away: the broker may have lost the retained document. */
-        ctx->last_payload[0] = '\0';
+        atomic_store(&ctx->connected, true);
+        /* Both are queued in the client's outbox and sent from its own task, so
+         * a failure here is the outbox refusing them, not the network. Neither
+         * is retried: the session is new, and a failure this early means the
+         * client is about to drop it and reconnect, which comes back here. */
+        if (esp_mqtt_client_subscribe(ctx->client, ctx->topic_cmd_wild, 1) < 0) {
+            ESP_LOGW(TAG, "Subscribe to %s failed — commands will not be received",
+                     ctx->topic_cmd_wild);
+        }
+        if (esp_mqtt_client_publish(ctx->client, ctx->topic_avail, "online", 0, 1, 1) < 0) {
+            ESP_LOGW(TAG, "Availability publish failed");
+        }
+        /* The state document goes out after the discovery config, and a
+         * reconnect must republish it even if nothing changed while we were
+         * away: the broker may have lost the retained copy. mqtt_task forces
+         * that publish once discovery is done. Requested through the flag
+         * rather than by clearing last_payload here, which belongs to the
+         * publishing task. */
+        atomic_store(&ctx->discovery_pending, true);
         if (ctx->task != NULL) {
             xTaskNotifyGive(ctx->task);
         }
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Broker disconnected");
-        ctx->connected = false;
+        atomic_store(&ctx->connected, false);
         break;
     case MQTT_EVENT_DATA:
         handle_command(ctx, event->topic, event->topic_len, event->data, event->data_len);
@@ -397,8 +413,15 @@ static bool publish_state_if_due(mqtt_ctx_t *ctx, bool force)
 
     /* Retained, QoS 0: a late subscriber should see the current room state
      * immediately, and a dropped update is superseded by the next one a few
-     * seconds later — redelivery would only ever deliver a stale reading. */
-    esp_mqtt_client_publish(ctx->client, ctx->topic_state, payload, n, 0, 1);
+     * seconds later — redelivery would only ever deliver a stale reading.
+     *
+     * Remembered as sent only once the client has taken it. Otherwise a
+     * refused publish would count as delivered, and an unchanged room would
+     * then wait a whole heartbeat for the next attempt. */
+    if (esp_mqtt_client_publish(ctx->client, ctx->topic_state, payload, n, 0, 1) < 0) {
+        ESP_LOGW(TAG, "State publish failed; retrying on the next tick");
+        return false;
+    }
     memcpy(ctx->last_payload, payload, (size_t)n + 1);
     ctx->last_publish_us = now;
     return true;
@@ -418,21 +441,26 @@ static void mqtt_task(void *arg)
          * first. Nothing here polls. */
         (void)ulTaskNotifyTake(pdTRUE, max_wait);
 
-        if (!ctx->connected) {
+        if (!atomic_load(&ctx->connected)) {
             continue;
         }
-        if (ctx->discovery_pending) {
-            ctx->discovery_pending = false;
-            publish_discovery(ctx);
+        if (atomic_exchange(&ctx->discovery_pending, false)) {
+            if (!publish_discovery(ctx)) {
+                /* Again on the next wake, which is at most a control tick
+                 * away. Entities that did go out are simply re-sent. */
+                atomic_store(&ctx->discovery_pending, true);
+            }
             /* The retained state document must follow the discovery config, or
              * Home Assistant creates the entities and shows them as unknown
              * until the next change. */
-            ctx->publish_forced = true;
+            atomic_store(&ctx->publish_forced, true);
         }
 
-        const bool force = ctx->publish_forced;
-        ctx->publish_forced = false;
-        (void)publish_state_if_due(ctx, force);
+        const bool force = atomic_exchange(&ctx->publish_forced, false);
+        if (!publish_state_if_due(ctx, force) && force) {
+            /* A forced publish that did not go out is still owed. */
+            atomic_store(&ctx->publish_forced, true);
+        }
     }
 }
 
@@ -537,10 +565,20 @@ static esp_err_t mqtt_adapter_start(void)
     if (s_ctx.client == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_ctx.client, ESP_EVENT_ANY_ID,
-                                                   mqtt_event_handler, &s_ctx));
+    /* Returned, not ESP_ERROR_CHECKed: this adapter is optional, and aborting
+     * here would turn "no MQTT" into "no device". */
+    err = esp_mqtt_client_register_event(s_ctx.client, ESP_EVENT_ANY_ID, mqtt_event_handler,
+                                         &s_ctx);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "MQTT event registration failed: %s", esp_err_to_name(err));
+        esp_mqtt_client_destroy(s_ctx.client);
+        s_ctx.client = NULL;
+        return err;
+    }
 
     if (xTaskCreate(mqtt_task, "mqtt", 4096, &s_ctx, 4, &s_ctx.task) != pdPASS) {
+        esp_mqtt_client_destroy(s_ctx.client);
+        s_ctx.client = NULL;
         return ESP_ERR_NO_MEM;
     }
 
@@ -556,14 +594,14 @@ static void mqtt_adapter_on_control_tick(uint32_t generation)
      * control task, and esp_mqtt_client_publish can block on the outbox. The
      * task rate-limits itself, so a nudge every second is not a publish every
      * second. */
-    if (s_ctx.task != NULL && s_ctx.connected) {
+    if (s_ctx.task != NULL && atomic_load(&s_ctx.connected)) {
         xTaskNotifyGive(s_ctx.task);
     }
 }
 
 bool mqtt_service_connected(void)
 {
-    return s_ctx.connected;
+    return atomic_load(&s_ctx.connected);
 }
 
 esp_err_t mqtt_service_provision(const char *ssid, const char *password, const char *broker_uri)

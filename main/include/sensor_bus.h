@@ -25,9 +25,18 @@ typedef struct
     // Serialises BME688 access between this reader and the BSEC task (which,
     // when compiled in, owns the BME688 gas-measurement cadence).
     SemaphoreHandle_t bme68x_mutex;
+    // SENSOR_BUS_PRESENT_* bits for the parts that came up in
+    // sensor_bus_enable(). A part that did not is never addressed again, and
+    // the fusion layer reports its measurands as unavailable.
+    uint8_t present_mask;
 } sensor_bus_t;
 
 typedef sensor_bus_t *sensor_bus_handle_t;
+
+// Which parts of the sensor package answered at start-up.
+#define SENSOR_BUS_PRESENT_HDC302X (1u << 0)
+#define SENSOR_BUS_PRESENT_SCD4X   (1u << 1)
+#define SENSOR_BUS_PRESENT_BME68X  (1u << 2)
 
 // Which raw readings this acquisition cycle produced. These bits describe the
 // *bus transaction*, not the measurement's usefulness: deciding what is valid,
@@ -68,6 +77,10 @@ typedef struct
 } sensor_bus_results_t;
 
 esp_err_t sensor_bus_init(sensor_bus_handle_t sensor_bus_handle);
+// Powers the package and brings up each part. A part that does not come up is
+// logged, released and left out of present_mask; that is ESP_OK, because one
+// missing sensor is a degraded device, not a dead one. Only a bus that cannot
+// be created at all is an error.
 esp_err_t sensor_bus_enable(sensor_bus_handle_t sensor_bus_handle);
 esp_err_t sensor_bus_disable(sensor_bus_handle_t sensor_bus_handle);
 // Runs one acquisition cycle. Always fills @p results, including a per-cycle

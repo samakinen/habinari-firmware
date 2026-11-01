@@ -18,13 +18,11 @@ CONFIG_IDF_TARGET="esp32c6"
 CONFIG_HABINARI_DEVICE_NAME_PREFIX="Habinari"
 
 # The board's KNX physical layer is the STKNX transceiver driven by the
-# bit-banging backend, not a TPUART. The KNX_TP1_PHYSICAL choice defaults to
-# KNX_TP1_TPUART, so this has to be stated: without it every
-# CONFIG_KNX_TP1_BITBANG_* option below is a child of a disabled parent and is
-# silently dropped, and the build fails on the first reference to one of them.
-#
-# This used to live only in an untracked ./sdkconfig set once through
-# menuconfig, which meant a fresh clone did not build.
+# bit-banging backend, not a TPUART. Bit-bang is also the KNX_TP1_PHYSICAL
+# default now that TPUART is marked broken, but it is stated anyway: without it
+# every CONFIG_KNX_TP1_BITBANG_* option below would be a child of a disabled
+# parent, silently dropped, and the build would fail on the first reference to
+# one of them.
 CONFIG_KNX_MEDIUM_TP1=y
 CONFIG_KNX_TP1_BITBANG=y
 CONFIG_KNX_TP1_BITBANG_TX_PIN=4
@@ -77,9 +75,11 @@ CONFIG_KNX_RX_TASK_STACK_SIZE=8192
 # Bring-up default: compile in KNX_LOGD so the per-frame RX/TX dumps exist.
 # The runtime level is already set to Debug in knx_service.cpp; without this
 # compile-time gate at 4 those calls expand to ((void)0) and nothing is logged.
-# Production (sdkconfig.prod) leaves KNX_DEBUG_ENABLED off entirely.
+# Production (sdkconfig.defaults.prod) turns debug off and drops it back to 3.
 CONFIG_KNX_DEBUG_ENABLED=y
 CONFIG_KNX_LOG_LEVEL=4
+# Every variant layers its overlay on top of this file, so the flash size and
+# partition table are stated here only.
 # Board has 4 MB flash; the default 2 MB left half of it unreachable.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"

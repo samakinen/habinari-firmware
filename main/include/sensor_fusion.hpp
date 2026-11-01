@@ -406,8 +406,14 @@ public:
             reset();
             return;
         }
-        elapsed_ += dtSeconds;
-        times_[head_] = elapsed_;
+        // Whole milliseconds in an integer. A float clock stops resolving a 1 s
+        // step after about 194 days, and long before that its rounding is
+        // visible in the slope; the counter wraps after 49.7 days instead, which
+        // the unsigned differences below are immune to.
+        if (dtSeconds > 0.0f) {
+            elapsedMs_ += static_cast<uint32_t>(std::lround(dtSeconds * 1000.0f));
+        }
+        timesMs_[head_] = elapsedMs_;
         values_[head_] = value;
         head_ = (head_ + 1) % N;
         if (count_ < N) {
@@ -419,27 +425,34 @@ public:
 
     // Slope in units per second. Zero until the window has filled enough to
     // mean anything, so callers never act on a two-sample "trend".
+    //
+    // Times are taken relative to the oldest sample in the window and summed in
+    // double. Regressing on absolute uptime made n*sumTT and sumT^2 two huge,
+    // nearly equal numbers: in float the slope was 13 % off after six hours and
+    // read zero after a day, which silenced the fire rate-of-rise alarm and the
+    // window detector on any board that had been running for a while.
     float ratePerSecond() const
     {
         if (!ready()) {
             return 0.0f;
         }
-        float sumT = 0.0f, sumV = 0.0f, sumTT = 0.0f, sumTV = 0.0f;
+        const uint32_t origin = timesMs_[oldestSlot()];
+        double sumT = 0.0, sumV = 0.0, sumTT = 0.0, sumTV = 0.0;
         for (size_t i = 0; i < count_; ++i) {
             const size_t slot = (head_ + N - count_ + i) % N;
-            const float t = times_[slot];
-            const float v = values_[slot];
+            const double t = static_cast<double>(timesMs_[slot] - origin) / 1000.0;
+            const double v = values_[slot];
             sumT += t;
             sumV += v;
             sumTT += t * t;
             sumTV += t * v;
         }
-        const float n = static_cast<float>(count_);
-        const float denominator = n * sumTT - sumT * sumT;
-        if (std::fabs(denominator) < 1e-6f) {
+        const double n = static_cast<double>(count_);
+        const double denominator = n * sumTT - sumT * sumT;
+        if (std::fabs(denominator) < 1e-9) {
             return 0.0f;
         }
-        return (n * sumTV - sumT * sumV) / denominator;
+        return static_cast<float>((n * sumTV - sumT * sumV) / denominator);
     }
 
     float ratePerMinute() const { return ratePerSecond() * 60.0f; }
@@ -450,24 +463,25 @@ public:
         if (count_ < 2) {
             return 0.0f;
         }
-        const size_t oldest = (head_ + N - count_) % N;
         const size_t newest = (head_ + N - 1) % N;
-        return times_[newest] - times_[oldest];
+        return static_cast<float>(timesMs_[newest] - timesMs_[oldestSlot()]) / 1000.0f;
     }
 
     void reset()
     {
         count_ = 0;
         head_ = 0;
-        elapsed_ = 0.0f;
+        elapsedMs_ = 0;
     }
 
 private:
-    std::array<float, N> times_{};
+    size_t oldestSlot() const { return (head_ + N - count_) % N; }
+
+    std::array<uint32_t, N> timesMs_{};
     std::array<float, N> values_{};
     size_t head_{0};
     size_t count_{0};
-    float elapsed_{0.0f};
+    uint32_t elapsedMs_{0};
 };
 
 // ---------------------------------------------------------------------------

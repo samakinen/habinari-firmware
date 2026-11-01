@@ -4,9 +4,11 @@
 #include "board.h"
 #include "control_core.hpp"
 #include "control_service.hpp"
+#include "control_state.h"
 #include "device_identity.hpp"
 #include "device_secret.hpp"
 #include "hvac_control.hpp"
+#include "knx_dpt9.hpp"
 #include "knx_product.hpp"
 #include "protocol_adapter.h"
 #include "sensor_fusion_service.h"
@@ -41,11 +43,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <span>
+#include <tuple>
+#include <type_traits>
 
 using namespace knx;
 using namespace knx::application;
@@ -73,6 +78,15 @@ static constexpr const char *TAG = "knx_service";
 // The high-water mark is logged once below; retune this from that number rather
 // than from guesswork if the product grows.
 static constexpr uint32_t kKnxServiceTaskStackSize = 32 * 1024;
+
+// How long knxAdapterStart() waits for the service task to report whether the
+// product started. Start-up itself (NVS load, BAU init) takes well under a
+// second. The KNXnet/IP wait for Wi-Fi is deliberately not part of the
+// allowance: app_main starts the BLE service channel after the adapters, and
+// that channel is how a device with wrong Wi-Fi credentials gets corrected.
+// Holding it back for the whole Wi-Fi wait would delay the repair by exactly
+// the outage it is meant to repair.
+static constexpr uint32_t kKnxStartTimeoutMs = 5000u;
 
 // --- Bus-citizenship: boot-storm mitigation -------------------------------
 // On a bus-wide power-up (line powered on) every device would otherwise dump
@@ -103,7 +117,9 @@ static constexpr uint32_t kTelegramRateWindowMs = 1000;
 // in NVS. That key does NOT survive knx_service_reset_nvm(), which erases the
 // whole default NVS partition, so a factory reset regenerates it and the
 // previously printed certificate stops matching the device.
-static constexpr bool kEnableKnxDataSecure = true;
+//
+// Data Secure is always on in this firmware; the ETS catalogue entry says so
+// too (SecurityPolicy in knx_product.hpp), and the two must agree.
 static constexpr const char *kSecureNvsNamespace = "knx_secure";
 static constexpr const char *kSecureNvsToolKeyBlob = "tool_key";
 
@@ -193,17 +209,32 @@ auto &g_state = control::state();
 
 // What only the KNX personality has.
 struct KnxAdapterState {
-    TaskHandle_t taskHandle{nullptr};
+    // Written by the service task as its first act, so that anything able to
+    // notify it — the control tick, the stack's work callback, the Wi-Fi event
+    // — finds the handle already there. Read from those other tasks, hence
+    // atomic.
+    std::atomic<TaskHandle_t> taskHandle{nullptr};
     bool started{false};
+    // The task waiting in knxAdapterStart() for the start-up result, or null
+    // once nobody is. Taken with an exchange by whichever side gets there
+    // first: the service task to report, or knxAdapterStart() giving up. A
+    // report can then never be sent to an app_main that has already returned
+    // and been deleted.
+    std::atomic<TaskHandle_t> startWaiter{nullptr};
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+    // True while startProduct() waits for Wi-Fi. knxAdapterStart() stops
+    // waiting for a start-up that is only waiting for the network.
+    std::atomic<bool> waitingForNetwork{false};
+#endif
     // Raised by the control task through the adapter's on_control_tick hook,
-    // consumed by the service loop. Only ever set true from one context and
-    // cleared from the other, so it needs no lock of its own.
-    volatile bool controlTickPending{true};
+    // consumed by the service loop with an exchange, so a tick raised between
+    // the read and the clear is never lost.
+    std::atomic<bool> controlTickPending{true};
 #if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
     // Raised from the Wi-Fi event loop when the interface gains an address, so
-    // the service task republishes what ETS reads back. Same single-writer /
-    // single-reader shape as controlTickPending above.
-    volatile bool ipIdentityDirty{false};
+    // the service task republishes what ETS reads back. Consumed the same way
+    // as controlTickPending above.
+    std::atomic<bool> ipIdentityDirty{false};
     // True when the routing socket opened with no interface to join the group
     // on. Set before the socket exists and read once the event callback is
     // installed, to close the gap between the two: an interface that arrived in
@@ -664,7 +695,10 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
     // rather than a dead device.
     if (CONFIG_HABINARI_KNXIP_WIFI_WAIT_S > 0 && !wifi_service_is_connected()) {
         KNX_LOGI(TAG, "Waiting up to %d s for Wi-Fi", CONFIG_HABINARI_KNXIP_WIFI_WAIT_S);
-        if (wifi_service_wait_connected(CONFIG_HABINARI_KNXIP_WIFI_WAIT_S * 1000u) != ESP_OK) {
+        g_knx.waitingForNetwork.store(true);
+        const esp_err_t waited = wifi_service_wait_connected(CONFIG_HABINARI_KNXIP_WIFI_WAIT_S * 1000u);
+        g_knx.waitingForNetwork.store(false);
+        if (waited != ESP_OK) {
             KNX_LOGW(TAG, "Starting KNXnet/IP without a network — the device will "
                           "join the routing group once Wi-Fi associates");
         }
@@ -879,29 +913,403 @@ void publishAllState(AppT &app, const PublishSnapshot &snapshot)
                 "window open detected");
 }
 
+// ---------------------------------------------------------------------------
+// Inbound group writes.
+//
+// A write that has a control_state_write() equivalent goes through it, so a KNX
+// telegram meets the same gate a Modbus or MQTT write does — finite, in range,
+// a defined code point — and a refusal is logged instead of cast into the
+// controller. What has no command (the neighbour-device measurements, the
+// changeover inputs) is written directly, as before.
+// ---------------------------------------------------------------------------
+
+bool applyCommand(control_command_t command, float value, const char *label)
+{
+    const esp_err_t err = control_state_write(command, value);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s write %.2f rejected: %s", label, static_cast<double>(value),
+                 esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+// A DPT 9 group write carrying 7FFFh, the "invalid data" code (knx_dpt9.hpp),
+// is the sender saying it has no value — never a value to act on.
+bool dpt9Usable(float value, const char *label)
+{
+    if (habinari_knx::dpt9IsInvalid(value)) {
+        ESP_LOGW(TAG, "%s: sender reports invalid data (DPT 9 7FFFh), ignored", label);
+        return false;
+    }
+    return true;
+}
+
+template <typename ReadT>
+auto readLocked(ReadT read)
+{
+    LockGuard lock(g_state.mutex);
+    return read();
+}
+
+// ---------------------------------------------------------------------------
+// ETS parameters.
+//
+// One row per parameter, saying where its value lands in the control state.
+// The same table drives the live onParameterChanged bindings and the one-time
+// load at start-up; they used to be two hand-kept lists of the same 81
+// mappings, which had to be kept in step by reading.
+//
+// A setter receives the value in the type knx_product.hpp declares for that
+// parameter — Dpt9Float (KNX 2-byte half-float, implicitly a float), uint16_t
+// for counts and seconds, uint8_t for enumerations and percentages — and runs
+// with the control mutex held.
+// ---------------------------------------------------------------------------
+
+template <HabinariParameter Id, typename Apply>
+struct ParameterRow {
+    Apply apply;
+};
+
+template <HabinariParameter Id, typename Apply>
+constexpr ParameterRow<Id, Apply> row(Apply apply)
+{
+    return ParameterRow<Id, Apply>{apply};
+}
+
+template <HabinariParameter Id>
+using ParameterValue = typename std::remove_cvref_t<
+    decltype(kHabinariProduct)>::template ParameterValueType<Id>;
+
+// Fusion tuning lands in the fusion config rather than in Settings and is
+// pushed down to the acquisition side by the control tick, hence the dirty flag.
+constexpr auto kParameterTable = std::make_tuple(
+    row<HabinariParameter::MeasurementHeartbeatSeconds>([](auto &g, auto v) {
+        g.hvac.heartbeatSeconds = v;
+    }),
+    row<HabinariParameter::MeasurementMinRepTimeSeconds>([](auto &g, auto v) {
+        g.hvac.minRepTimeSeconds = v;
+    }),
+    row<HabinariParameter::RoomTemperatureOffset>([](auto &g, auto v) {
+        g.hvac.roomTemperatureOffsetK = v;
+    }),
+    row<HabinariParameter::RoomTemperatureCov>([](auto &g, auto v) {
+        g.hvac.roomTemperatureCovK = v;
+    }),
+    row<HabinariParameter::RoomHumidityOffset>([](auto &g, auto v) {
+        g.hvac.roomHumidityOffsetPct = v;
+    }),
+    row<HabinariParameter::RoomHumidityCov>([](auto &g, auto v) {
+        g.hvac.roomHumidityCovPct = v;
+    }),
+    row<HabinariParameter::Co2Cov>([](auto &g, auto v) {
+        g.hvac.co2CovPpm = static_cast<float>(v);
+    }),
+    row<HabinariParameter::PressureCov>([](auto &g, auto v) {
+        g.hvac.pressureCovPa = static_cast<float>(v);
+    }),
+    row<HabinariParameter::AirQualityCov>([](auto &g, auto v) {
+        g.hvac.airQualityCovIndex = static_cast<float>(v);
+    }),
+    row<HabinariParameter::FloorTemperatureOffset>([](auto &g, auto v) {
+        g.hvac.floorTemperatureOffsetK = v;
+    }),
+    row<HabinariParameter::FloorTemperatureCov>([](auto &g, auto v) {
+        g.hvac.floorTemperatureCovK = v;
+    }),
+    row<HabinariParameter::FloorHumidityCov>([](auto &g, auto v) {
+        g.hvac.floorHumidityCovPct = v;
+    }),
+    row<HabinariParameter::DerivedValueCov>([](auto &g, auto v) {
+        g.hvac.derivedCov = v;
+    }),
+    row<HabinariParameter::AltitudeM>([](auto &g, auto v) {
+        g.hvac.altitudeM = static_cast<float>(v);
+    }),
+    row<HabinariParameter::ControllerDefaultEnable>([](auto &g, auto v) {
+        g.hvac.controllerDefaultEnable = (v != 0);
+    }),
+    row<HabinariParameter::DefaultHvacOperatingMode>([](auto &g, auto v) {
+        g.hvac.defaultHvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(v);
+    }),
+    row<HabinariParameter::DefaultControllerMode>([](auto &g, auto v) {
+        g.hvac.defaultControllerMode = static_cast<hvac_ns::ControllerMode>(v);
+    }),
+    row<HabinariParameter::HeatingEnabled>([](auto &g, auto v) {
+        g.hvac.heatingEnabled = (v != 0);
+    }),
+    row<HabinariParameter::CoolingEnabled>([](auto &g, auto v) {
+        g.hvac.coolingEnabled = (v != 0);
+    }),
+    row<HabinariParameter::HeatCoolChangeoverMode>([](auto &g, auto v) {
+        g.hvac.heatCoolChangeoverMode = static_cast<hvac_ns::HeatCoolChangeoverMode>(v);
+    }),
+    row<HabinariParameter::HeatCoolChangeoverPolarity>([](auto &g, auto v) {
+        g.hvac.heatCoolChangeoverPolarityInverted = (v != 0);
+    }),
+    row<HabinariParameter::MinimumHeatCoolChangeoverSeconds>([](auto &g, auto v) {
+        g.hvac.minimumHeatCoolChangeoverSeconds = static_cast<float>(v);
+    }),
+    row<HabinariParameter::WindowOpenBehavior>([](auto &g, auto v) {
+        g.hvac.windowOpenBehavior = static_cast<hvac_ns::WindowOpenBehavior>(v);
+    }),
+    row<HabinariParameter::PresenceBehavior>([](auto &g, auto v) {
+        g.hvac.presenceBehavior = static_cast<hvac_ns::PresenceBehavior>(v);
+    }),
+    row<HabinariParameter::SensorFaultBehavior>([](auto &g, auto v) {
+        g.hvac.sensorFaultBehavior = static_cast<hvac_ns::SensorFaultBehavior>(v);
+    }),
+    row<HabinariParameter::ComfortHeatingSetpoint>([](auto &g, auto v) {
+        g.hvac.comfortHeatingSetpointC = v;
+    }),
+    row<HabinariParameter::StandbyHeatingReduction>([](auto &g, auto v) {
+        g.hvac.standbyHeatingReductionK = v;
+    }),
+    row<HabinariParameter::EconomyHeatingReduction>([](auto &g, auto v) {
+        g.hvac.economyHeatingReductionK = v;
+    }),
+    row<HabinariParameter::ProtectionHeatingSetpoint>([](auto &g, auto v) {
+        g.hvac.protectionHeatingSetpointC = v;
+    }),
+    row<HabinariParameter::CoolingDeadband>([](auto &g, auto v) {
+        g.hvac.coolingDeadbandK = v;
+    }),
+    row<HabinariParameter::StandbyCoolingIncrease>([](auto &g, auto v) {
+        g.hvac.standbyCoolingIncreaseK = v;
+    }),
+    row<HabinariParameter::EconomyCoolingIncrease>([](auto &g, auto v) {
+        g.hvac.economyCoolingIncreaseK = v;
+    }),
+    row<HabinariParameter::ProtectionCoolingSetpoint>([](auto &g, auto v) {
+        g.hvac.protectionCoolingSetpointC = v;
+    }),
+    row<HabinariParameter::MinSetpoint>([](auto &g, auto v) {
+        g.hvac.minSetpointC = v;
+    }),
+    row<HabinariParameter::MaxSetpoint>([](auto &g, auto v) {
+        g.hvac.maxSetpointC = v;
+    }),
+    row<HabinariParameter::MaxSetpointShift>([](auto &g, auto v) {
+        g.hvac.maxSetpointShiftK = v;
+    }),
+    row<HabinariParameter::HeatingControlAlgorithm>([](auto &g, auto v) {
+        g.hvac.heatingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(v);
+    }),
+    row<HabinariParameter::HeatingKp>([](auto &g, auto v) {
+        g.hvac.heatingKp = v;
+    }),
+    row<HabinariParameter::HeatingTiSeconds>([](auto &g, auto v) {
+        g.hvac.heatingTiSeconds = static_cast<float>(v);
+    }),
+    row<HabinariParameter::HeatingTdSeconds>([](auto &g, auto v) {
+        g.hvac.heatingTdSeconds = static_cast<float>(v);
+    }),
+    row<HabinariParameter::HeatingMinimumOutputPercent>([](auto &g, auto v) {
+        g.hvac.heatingMinOutputPercent = v;
+    }),
+    row<HabinariParameter::HeatingMaximumOutputPercent>([](auto &g, auto v) {
+        g.hvac.heatingMaxOutputPercent = v;
+    }),
+    row<HabinariParameter::CoolingControlAlgorithm>([](auto &g, auto v) {
+        g.hvac.coolingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(v);
+    }),
+    row<HabinariParameter::CoolingKp>([](auto &g, auto v) {
+        g.hvac.coolingKp = v;
+    }),
+    row<HabinariParameter::CoolingTiSeconds>([](auto &g, auto v) {
+        g.hvac.coolingTiSeconds = static_cast<float>(v);
+    }),
+    row<HabinariParameter::CoolingTdSeconds>([](auto &g, auto v) {
+        g.hvac.coolingTdSeconds = static_cast<float>(v);
+    }),
+    row<HabinariParameter::CoolingMinimumOutputPercent>([](auto &g, auto v) {
+        g.hvac.coolingMinOutputPercent = v;
+    }),
+    row<HabinariParameter::CoolingMaximumOutputPercent>([](auto &g, auto v) {
+        g.hvac.coolingMaxOutputPercent = v;
+    }),
+    row<HabinariParameter::ThermostatHysteresis>([](auto &g, auto v) {
+        g.hvac.thermostatHysteresisC = v;
+    }),
+    row<HabinariParameter::BinaryDemandStrategy>([](auto &g, auto v) {
+        g.hvac.binaryDemandStrategy = static_cast<hvac_ns::BinaryDemandStrategy>(v);
+    }),
+    row<HabinariParameter::BinaryDemandThresholdPercent>([](auto &g, auto v) {
+        g.hvac.binaryDemandThresholdPercent = v;
+    }),
+    row<HabinariParameter::FrostAlarmTemperature>([](auto &g, auto v) {
+        g.hvac.frostAlarmTemperatureC = v;
+    }),
+    row<HabinariParameter::OverheatAlarmTemperature>([](auto &g, auto v) {
+        g.hvac.overheatAlarmTemperatureC = v;
+    }),
+    row<HabinariParameter::MaxFloorTemperature>([](auto &g, auto v) {
+        g.hvac.maxFloorTemperatureC = v;
+    }),
+    row<HabinariParameter::MinFloorTemperature>([](auto &g, auto v) {
+        g.hvac.minFloorTemperatureC = v;
+    }),
+    row<HabinariParameter::FloorHysteresis>([](auto &g, auto v) {
+        g.hvac.floorHysteresisK = v;
+    }),
+    row<HabinariParameter::FloorComfortOutputPercent>([](auto &g, auto v) {
+        g.hvac.floorComfortOutputPercent = v;
+    }),
+    row<HabinariParameter::DewPointSurfaceSource>([](auto &g, auto v) {
+        g.hvac.dewPointSurfaceSource = static_cast<hvac_ns::DewPointSurfaceSource>(v);
+    }),
+    row<HabinariParameter::DewPointMargin>([](auto &g, auto v) {
+        g.hvac.dewPointMarginK = v;
+    }),
+    row<HabinariParameter::DewPointHysteresis>([](auto &g, auto v) {
+        g.hvac.dewPointHysteresisK = v;
+    }),
+    row<HabinariParameter::BlockCoolingOnDewPointAlarm>([](auto &g, auto v) {
+        g.hvac.blockCoolingOnDewPointAlarm = (v != 0);
+    }),
+    row<HabinariParameter::FloorMoistureThreshold>([](auto &g, auto v) {
+        g.hvac.floorMoistureThresholdPct = v;
+    }),
+    row<HabinariParameter::FloorMoistureHysteresis>([](auto &g, auto v) {
+        g.hvac.floorMoistureHysteresisPct = v;
+    }),
+    row<HabinariParameter::FloorMoistureExcess>([](auto &g, auto v) {
+        g.hvac.floorMoistureExcessGm3 = v;
+    }),
+    row<HabinariParameter::VentilationSetpoint>([](auto &g, auto v) {
+        g.hvac.ventilationSetpointPpm = static_cast<float>(v);
+    }),
+    row<HabinariParameter::VentilationBand>([](auto &g, auto v) {
+        g.hvac.ventilationBandPpm = static_cast<float>(v);
+    }),
+    row<HabinariParameter::HumidityBoostThreshold>([](auto &g, auto v) {
+        g.hvac.humidityBoostPct = v;
+    }),
+    row<HabinariParameter::HumidityBoostBand>([](auto &g, auto v) {
+        g.hvac.humidityBandPct = v;
+    }),
+    row<HabinariParameter::VocBoostThreshold>([](auto &g, auto v) {
+        g.hvac.vocThresholdIndex = static_cast<float>(v);
+    }),
+    row<HabinariParameter::VocBoostBand>([](auto &g, auto v) {
+        g.hvac.vocBandIndex = static_cast<float>(v);
+    }),
+    row<HabinariParameter::VentilationBaseDemandPercent>([](auto &g, auto v) {
+        g.hvac.ventilationBaseDemandPercent = v;
+    }),
+    row<HabinariParameter::VentilationManualDemandPercent>([](auto &g, auto v) {
+        g.hvac.ventilationManualDemandPercent = v;
+    }),
+    row<HabinariParameter::SensorFilterSeconds>([](auto &g, auto v) {
+        g.fusion.filter_tau_seconds = static_cast<float>(v);
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::TemperatureCrossCheck>([](auto &g, auto v) {
+        g.fusion.temperature_cross_check_k = v;
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::HumidityCrossCheck>([](auto &g, auto v) {
+        g.fusion.humidity_cross_check_pct = v;
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::FireRateOfRise>([](auto &g, auto v) {
+        g.fusion.fire_rate_of_rise_k_per_min = v;
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::FireAbsoluteTemperature>([](auto &g, auto v) {
+        g.fusion.fire_absolute_alarm_c = v;
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::FireConfirmSeconds>([](auto &g, auto v) {
+        g.fusion.fire_confirm_seconds = static_cast<float>(v);
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::FireRequireAirQuality>([](auto &g, auto v) {
+        g.fusion.fire_require_air_quality = (v != 0);
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::Co2OccupancyEnabled>([](auto &g, auto v) {
+        g.fusion.co2_occupancy_enabled = (v != 0);
+        g.fusionConfigDirty = true;
+    }),
+    row<HabinariParameter::WindowDetectEnabled>([](auto &g, auto v) {
+        g.fusion.window_detect_enabled = (v != 0);
+        g.fusionConfigDirty = true;
+    })
+);
+
+template <typename BuilderT, HabinariParameter Id, typename Apply>
+void bindParameter(BuilderT &bindings, const ParameterRow<Id, Apply> &)
+{
+    bindings.template onParameterChanged<Id>([](ParameterValue<Id> value) {
+        LockGuard lock(g_state.mutex);
+        Apply{}(g_state, value);
+    });
+}
+
+template <typename BuilderT>
+void bindParameters(BuilderT &bindings)
+{
+    std::apply([&bindings](const auto &...rows) { (bindParameter(bindings, rows), ...); },
+               kParameterTable);
+}
+
+// The caller holds the control mutex.
+template <typename ParametersT, HabinariParameter Id, typename Apply>
+void loadParameter(const ParametersT &params, const ParameterRow<Id, Apply> &)
+{
+    Apply{}(g_state, params.template get<Id>());
+}
+
+template <typename ParametersT>
+void loadParameters(const ParametersT &params)
+{
+    std::apply([&params](const auto &...rows) { (loadParameter(params, rows), ...); },
+               kParameterTable);
+}
+
+// Tells knxAdapterStart() how start-up went: ESP_OK once the product is
+// running, or the error that stopped it — if it is still waiting. A result
+// nobody waits for any more is only logged, and only when it is a failure:
+// that is the case of a KNXnet/IP start that outlasted the boot sequence
+// waiting for Wi-Fi (see kKnxStartTimeoutMs).
+void reportStartResult(esp_err_t result)
+{
+    const TaskHandle_t waiter = g_knx.startWaiter.exchange(nullptr);
+    if (waiter != nullptr) {
+        (void)xTaskNotify(waiter, static_cast<uint32_t>(result), eSetValueWithOverwrite);
+    } else if (result != ESP_OK) {
+        KNX_LOGE(TAG, "KNX failed to start after boot had moved on: %s", esp_err_to_name(result));
+    }
+}
+
+esp_err_t toEspErr(util::ErrorCode error)
+{
+    // The detail is in the log line above this; the code only has to be
+    // something esp_err_to_name() can say and the registry can refuse on.
+    switch (error) {
+    case util::ErrorCode::Timeout:
+        return ESP_ERR_TIMEOUT;
+    case util::ErrorCode::OperationNotSupported:
+        return ESP_ERR_NOT_SUPPORTED;
+    default:
+        return ESP_FAIL;
+    }
+}
+
 void knxServiceTask(void *arg)
 {
     (void)arg;
+    // First, before anything that could lead to a notification: the control
+    // tick and the stack's work callback both look this up to wake us.
+    g_knx.taskHandle.store(xTaskGetCurrentTaskHandle());
 
     // DEBUG shows per-frame bus traffic (RX/TX dumps, DL-ACK diagnostics,
     // connection events) — the development default while the stack is being
-    // brought up. Switch to Info for production builds: INFO carries only
-    // state changes (address, lifecycle, load state) and WARN/ERROR faults.
+    // brought up. Info for production builds: INFO carries only state changes
+    // (address, lifecycle, load state) and WARN/ERROR faults. The esp_log
+    // levels this routes through are set for the whole image in main.c.
     knx::log::setLevel(knx::log::Level::Info);
-    // knx::log routes through esp_log, whose runtime default level (Info)
-    // would otherwise silently drop the Debug output enabled above.
-    esp_log_level_set("*", ESP_LOG_INFO);
-    // Suppress ModBus driver/infrastructure noise to focus on KNX application.
-    // esp_log matches these tags exactly (no prefix matching), so every
-    // component-specific tag needs its own entry.
-    esp_log_level_set("mb_port.event", ESP_LOG_WARN);
-    esp_log_level_set("mb_port.serial", ESP_LOG_WARN);
-    esp_log_level_set("mb_port.timer", ESP_LOG_WARN);
-    esp_log_level_set("mb_object.master", ESP_LOG_WARN);
-    esp_log_level_set("mb_object.slave", ESP_LOG_WARN);
-    esp_log_level_set("mb_transaction", ESP_LOG_WARN);
-    esp_log_level_set("mb_transp.rtu_master", ESP_LOG_WARN);
-    esp_log_level_set("mb_transp.rtu_slave", ESP_LOG_WARN);
 
     platform::Esp32Platform platform;
 
@@ -1009,20 +1417,31 @@ void knxServiceTask(void *arg)
         })
 
         // ---- Neighbour-device inputs ----
+        // A neighbour that reports invalid data has no reading, so its last
+        // one stops being used rather than being trusted indefinitely.
         .onStateWrite<HabinariPort::OutsideTemperature>([](float value) {
+            const bool usable = dpt9Usable(value, "outside temperature");
             LockGuard lock(g_state.mutex);
-            g_state.in.outsideTemperatureC = value;
-            g_state.in.outsideTemperatureValid = true;
+            if (usable) {
+                g_state.in.outsideTemperatureC = value;
+            }
+            g_state.in.outsideTemperatureValid = usable;
         })
         .onStateWrite<HabinariPort::OutsideHumidity>([](float value) {
+            const bool usable = dpt9Usable(value, "outside humidity");
             LockGuard lock(g_state.mutex);
-            g_state.in.outsideHumidityPct = hvac_ns::clampf(value, 0.0f, 100.0f);
-            g_state.in.outsideHumidityValid = true;
+            if (usable) {
+                g_state.in.outsideHumidityPct = hvac_ns::clampf(value, 0.0f, 100.0f);
+            }
+            g_state.in.outsideHumidityValid = usable;
         })
         .onStateWrite<HabinariPort::FlowTemperature>([](float value) {
+            const bool usable = dpt9Usable(value, "flow temperature");
             LockGuard lock(g_state.mutex);
-            g_state.in.flowTemperatureC = value;
-            g_state.in.flowTemperatureValid = true;
+            if (usable) {
+                g_state.in.flowTemperatureC = value;
+            }
+            g_state.in.flowTemperatureValid = usable;
         })
         .provideState<HabinariPort::FreeCoolingAvailable>([]() {
             LockGuard lock(g_state.mutex);
@@ -1035,16 +1454,17 @@ void knxServiceTask(void *arg)
 
         // ---- Mode and setpoints (FB RTSM) ----
         .onStateWrite<HabinariPort::ControllerOnOff>([](bool value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.controllerOnOff = value;
+            applyCommand(CONTROL_CMD_CONTROLLER_ON_OFF, value ? 1.0f : 0.0f, "controller on/off");
         })
         .provideState<HabinariPort::ControllerOnOff>([]() {
             LockGuard lock(g_state.mutex);
             return g_state.in.controllerOnOff;
         })
+        // The raw bus byte, unvalidated: control_state_write() refuses a code
+        // point OperatingPreset does not define instead of casting it in.
         .onStateWrite<HabinariPort::HvacMode>([](Dpt20Mode value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.hvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(value);
+            applyCommand(CONTROL_CMD_HVAC_MODE,
+                         static_cast<float>(static_cast<uint8_t>(value)), "hvac mode");
         })
         .provideState<HabinariPort::HvacModeStatus>([]() {
             LockGuard lock(g_state.mutex);
@@ -1053,8 +1473,9 @@ void knxServiceTask(void *arg)
         // The bus objects carry DPT 20.105 (HVACContrMode) code points; the
         // internal enum is compact. Map at the binding boundary only.
         .onStateWrite<HabinariPort::ContrMode>([](uint8_t value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.controllerMode = hvac_ns::controllerModeFromContrMode(value);
+            applyCommand(CONTROL_CMD_CONTROLLER_MODE,
+                         static_cast<float>(hvac_ns::controllerModeFromContrMode(value)),
+                         "controller mode");
         })
         .provideState<HabinariPort::ContrModeStatus>([]() {
             LockGuard lock(g_state.mutex);
@@ -1067,23 +1488,29 @@ void knxServiceTask(void *arg)
         // Base setpoint write from an HMI or Home Assistant's
         // target_temperature: this is the comfort heating anchor of the KNX
         // setpoint ladder, so writing it moves standby/economy/cooling with it.
+        // Clamped to the configured limits inside control_state_write(), the
+        // same as a write from any other adapter.
         .onStateWrite<HabinariPort::SetpointBase>([](float value) {
-            LockGuard lock(g_state.mutex);
-            const float clamped =
-                hvac_ns::clampf(value, g_state.hvac.minSetpointC, g_state.hvac.maxSetpointC);
-            if (std::fabs(g_state.hvac.comfortHeatingSetpointC - clamped) < 0.01f) {
+            if (!dpt9Usable(value, "base setpoint")) {
                 return;
             }
-            g_state.hvac.comfortHeatingSetpointC = clamped;
-            ESP_LOGI(TAG, "Base (comfort heating) setpoint updated to %.2f C", clamped);
+            const auto current = [] { return g_state.hvac.comfortHeatingSetpointC; };
+            const float before = readLocked(current);
+            if (applyCommand(CONTROL_CMD_SETPOINT_BASE, value, "base setpoint")) {
+                const float after = readLocked(current);
+                if (std::fabs(after - before) >= 0.01f) {
+                    ESP_LOGI(TAG, "Base (comfort heating) setpoint updated to %.2f C", after);
+                }
+            }
         })
         .provideState<HabinariPort::SetpointBase>([]() {
             LockGuard lock(g_state.mutex);
             return g_state.hvac.comfortHeatingSetpointC;
         })
         .onStateWrite<HabinariPort::SetpointShift>([](float value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.setpointShiftK = value;
+            if (dpt9Usable(value, "setpoint shift")) {
+                applyCommand(CONTROL_CMD_SETPOINT_SHIFT, value, "setpoint shift");
+            }
         })
         .provideState<HabinariPort::SetpointShiftStatus>([]() {
             LockGuard lock(g_state.mutex);
@@ -1104,14 +1531,10 @@ void knxServiceTask(void *arg)
 
         // ---- Room inputs (FB WOS / PRD / WCOS) ----
         .onStateWrite<HabinariPort::WindowStatus>([](bool value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.windowOpen = value;
-            g_state.in.windowStatusKnown = true;
+            applyCommand(CONTROL_CMD_WINDOW_STATUS, value ? 1.0f : 0.0f, "window status");
         })
         .onStateWrite<HabinariPort::PresenceStatus>([](bool value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.presence = value;
-            g_state.in.presenceKnown = true;
+            applyCommand(CONTROL_CMD_PRESENCE, value ? 1.0f : 0.0f, "presence");
         })
         .onStateWrite<HabinariPort::SwitchHeat>([](bool value) {
             LockGuard lock(g_state.mutex);
@@ -1162,12 +1585,17 @@ void knxServiceTask(void *arg)
 
         // ---- Ventilation / air quality ----
         .onStateWrite<HabinariPort::Co2Setpoint>([](float value) {
-            LockGuard lock(g_state.mutex);
-            if (std::fabs(g_state.hvac.ventilationSetpointPpm - value) < 0.5f) {
+            if (!dpt9Usable(value, "CO2 setpoint")) {
                 return;
             }
-            g_state.hvac.ventilationSetpointPpm = value;
-            ESP_LOGI(TAG, "CO2 setpoint updated to %.0f ppm", value);
+            const auto current = [] { return g_state.hvac.ventilationSetpointPpm; };
+            const float before = readLocked(current);
+            if (applyCommand(CONTROL_CMD_CO2_SETPOINT, value, "CO2 setpoint")) {
+                const float after = readLocked(current);
+                if (std::fabs(after - before) >= 0.5f) {
+                    ESP_LOGI(TAG, "CO2 setpoint updated to %.0f ppm", after);
+                }
+            }
         })
         .provideState<HabinariPort::Co2Setpoint>([]() {
             LockGuard lock(g_state.mutex);
@@ -1182,8 +1610,8 @@ void knxServiceTask(void *arg)
             return static_cast<uint8_t>(g_state.out.ventilationLevel);
         })
         .onStateWrite<HabinariPort::VentilationMode>([](uint8_t value) {
-            LockGuard lock(g_state.mutex);
-            g_state.in.ventilationMode = static_cast<hvac_ns::VentilationMode>(value);
+            applyCommand(CONTROL_CMD_VENTILATION_MODE, static_cast<float>(value),
+                         "ventilation mode");
         })
         .provideState<HabinariPort::VentilationMode>([]() {
             LockGuard lock(g_state.mutex);
@@ -1257,355 +1685,11 @@ void knxServiceTask(void *arg)
         // tick rather than here so the acknowledge and the detector state
         // change happen in one place, in the task that owns the detector.
         .onStateWrite<HabinariPort::AlarmAcknowledge>([](bool value) {
-            if (!value) {
-                return;
+            if (value) {
+                applyCommand(CONTROL_CMD_ACKNOWLEDGE_ALARMS, 1.0f, "alarm acknowledge");
             }
-            LockGuard lock(g_state.mutex);
-            g_state.acknowledgeAlarmsRequested = true;
         })
 
-        // ---- ETS parameters ----
-        // Fractional parameters arrive as Dpt9Float (KNX 2-byte half-float,
-        // implicitly convertible to float); counts and seconds as uint16_t;
-        // enumerations and percentages as uint8_t.
-        .onParameterChanged<HabinariParameter::MeasurementHeartbeatSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heartbeatSeconds = v;
-        })
-        .onParameterChanged<HabinariParameter::MeasurementMinRepTimeSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.minRepTimeSeconds = v;
-        })
-        .onParameterChanged<HabinariParameter::RoomTemperatureOffset>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.roomTemperatureOffsetK = v;
-        })
-        .onParameterChanged<HabinariParameter::RoomTemperatureCov>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.roomTemperatureCovK = v;
-        })
-        .onParameterChanged<HabinariParameter::RoomHumidityOffset>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.roomHumidityOffsetPct = v;
-        })
-        .onParameterChanged<HabinariParameter::RoomHumidityCov>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.roomHumidityCovPct = v;
-        })
-        .onParameterChanged<HabinariParameter::Co2Cov>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.co2CovPpm = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::PressureCov>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.pressureCovPa = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::AirQualityCov>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.airQualityCovIndex = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::FloorTemperatureOffset>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorTemperatureOffsetK = v;
-        })
-        .onParameterChanged<HabinariParameter::FloorTemperatureCov>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorTemperatureCovK = v;
-        })
-        .onParameterChanged<HabinariParameter::FloorHumidityCov>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorHumidityCovPct = v;
-        })
-        .onParameterChanged<HabinariParameter::DerivedValueCov>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.derivedCov = v;
-        })
-        .onParameterChanged<HabinariParameter::AltitudeM>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.altitudeM = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::ControllerDefaultEnable>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.controllerDefaultEnable = (v != 0);
-        })
-        .onParameterChanged<HabinariParameter::DefaultHvacOperatingMode>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.defaultHvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(v);
-        })
-        .onParameterChanged<HabinariParameter::DefaultControllerMode>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.defaultControllerMode = static_cast<hvac_ns::ControllerMode>(v);
-        })
-        .onParameterChanged<HabinariParameter::HeatingEnabled>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingEnabled = (v != 0);
-        })
-        .onParameterChanged<HabinariParameter::CoolingEnabled>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingEnabled = (v != 0);
-        })
-        .onParameterChanged<HabinariParameter::HeatCoolChangeoverMode>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatCoolChangeoverMode = static_cast<hvac_ns::HeatCoolChangeoverMode>(v);
-        })
-        .onParameterChanged<HabinariParameter::HeatCoolChangeoverPolarity>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatCoolChangeoverPolarityInverted = (v != 0);
-        })
-        .onParameterChanged<HabinariParameter::MinimumHeatCoolChangeoverSeconds>(
-            [](uint16_t v) {
-                LockGuard lock(g_state.mutex);
-                g_state.hvac.minimumHeatCoolChangeoverSeconds = static_cast<float>(v);
-            })
-        .onParameterChanged<HabinariParameter::WindowOpenBehavior>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.windowOpenBehavior = static_cast<hvac_ns::WindowOpenBehavior>(v);
-        })
-        .onParameterChanged<HabinariParameter::PresenceBehavior>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.presenceBehavior = static_cast<hvac_ns::PresenceBehavior>(v);
-        })
-        .onParameterChanged<HabinariParameter::SensorFaultBehavior>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.sensorFaultBehavior = static_cast<hvac_ns::SensorFaultBehavior>(v);
-        })
-        .onParameterChanged<HabinariParameter::ComfortHeatingSetpoint>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.comfortHeatingSetpointC = v;
-        })
-        .onParameterChanged<HabinariParameter::StandbyHeatingReduction>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.standbyHeatingReductionK = v;
-        })
-        .onParameterChanged<HabinariParameter::EconomyHeatingReduction>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.economyHeatingReductionK = v;
-        })
-        .onParameterChanged<HabinariParameter::ProtectionHeatingSetpoint>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.protectionHeatingSetpointC = v;
-        })
-        .onParameterChanged<HabinariParameter::CoolingDeadband>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingDeadbandK = v;
-        })
-        .onParameterChanged<HabinariParameter::StandbyCoolingIncrease>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.standbyCoolingIncreaseK = v;
-        })
-        .onParameterChanged<HabinariParameter::EconomyCoolingIncrease>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.economyCoolingIncreaseK = v;
-        })
-        .onParameterChanged<HabinariParameter::ProtectionCoolingSetpoint>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.protectionCoolingSetpointC = v;
-        })
-        .onParameterChanged<HabinariParameter::MinSetpoint>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.minSetpointC = v;
-        })
-        .onParameterChanged<HabinariParameter::MaxSetpoint>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.maxSetpointC = v;
-        })
-        .onParameterChanged<HabinariParameter::MaxSetpointShift>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.maxSetpointShiftK = v;
-        })
-        .onParameterChanged<HabinariParameter::HeatingControlAlgorithm>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(v);
-        })
-        .onParameterChanged<HabinariParameter::HeatingKp>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingKp = v;
-        })
-        .onParameterChanged<HabinariParameter::HeatingTiSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingTiSeconds = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::HeatingTdSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingTdSeconds = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::HeatingMinimumOutputPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingMinOutputPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::HeatingMaximumOutputPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.heatingMaxOutputPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::CoolingControlAlgorithm>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(v);
-        })
-        .onParameterChanged<HabinariParameter::CoolingKp>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingKp = v;
-        })
-        .onParameterChanged<HabinariParameter::CoolingTiSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingTiSeconds = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::CoolingTdSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingTdSeconds = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::CoolingMinimumOutputPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingMinOutputPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::CoolingMaximumOutputPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.coolingMaxOutputPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::ThermostatHysteresis>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.thermostatHysteresisC = v;
-        })
-        .onParameterChanged<HabinariParameter::BinaryDemandStrategy>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.binaryDemandStrategy = static_cast<hvac_ns::BinaryDemandStrategy>(v);
-        })
-        .onParameterChanged<HabinariParameter::BinaryDemandThresholdPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.binaryDemandThresholdPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::FrostAlarmTemperature>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.frostAlarmTemperatureC = v;
-        })
-        .onParameterChanged<HabinariParameter::OverheatAlarmTemperature>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.overheatAlarmTemperatureC = v;
-        })
-        .onParameterChanged<HabinariParameter::MaxFloorTemperature>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.maxFloorTemperatureC = v;
-        })
-        .onParameterChanged<HabinariParameter::MinFloorTemperature>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.minFloorTemperatureC = v;
-        })
-        .onParameterChanged<HabinariParameter::FloorHysteresis>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorHysteresisK = v;
-        })
-        .onParameterChanged<HabinariParameter::FloorComfortOutputPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorComfortOutputPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::DewPointSurfaceSource>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.dewPointSurfaceSource = static_cast<hvac_ns::DewPointSurfaceSource>(v);
-        })
-        .onParameterChanged<HabinariParameter::DewPointMargin>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.dewPointMarginK = v;
-        })
-        .onParameterChanged<HabinariParameter::DewPointHysteresis>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.dewPointHysteresisK = v;
-        })
-        .onParameterChanged<HabinariParameter::BlockCoolingOnDewPointAlarm>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.blockCoolingOnDewPointAlarm = (v != 0);
-        })
-        .onParameterChanged<HabinariParameter::FloorMoistureThreshold>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorMoistureThresholdPct = v;
-        })
-        .onParameterChanged<HabinariParameter::FloorMoistureHysteresis>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorMoistureHysteresisPct = v;
-        })
-        .onParameterChanged<HabinariParameter::FloorMoistureExcess>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.floorMoistureExcessGm3 = v;
-        })
-        .onParameterChanged<HabinariParameter::VentilationSetpoint>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.ventilationSetpointPpm = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::VentilationBand>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.ventilationBandPpm = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::HumidityBoostThreshold>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.humidityBoostPct = v;
-        })
-        .onParameterChanged<HabinariParameter::HumidityBoostBand>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.humidityBandPct = v;
-        })
-        .onParameterChanged<HabinariParameter::VocBoostThreshold>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.vocThresholdIndex = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::VocBoostBand>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.vocBandIndex = static_cast<float>(v);
-        })
-        .onParameterChanged<HabinariParameter::VentilationBaseDemandPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.ventilationBaseDemandPercent = v;
-        })
-        .onParameterChanged<HabinariParameter::VentilationManualDemandPercent>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.hvac.ventilationManualDemandPercent = v;
-        })
-
-        // ---- Sensor fusion and detection ----
-        // These land in the fusion config rather than in Settings and are
-        // pushed down to the acquisition side by the control tick.
-        .onParameterChanged<HabinariParameter::SensorFilterSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.filter_tau_seconds = static_cast<float>(v);
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::TemperatureCrossCheck>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.temperature_cross_check_k = v;
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::HumidityCrossCheck>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.humidity_cross_check_pct = v;
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::FireRateOfRise>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.fire_rate_of_rise_k_per_min = v;
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::FireAbsoluteTemperature>([](Dpt9Float v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.fire_absolute_alarm_c = v;
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::FireConfirmSeconds>([](uint16_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.fire_confirm_seconds = static_cast<float>(v);
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::FireRequireAirQuality>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.fire_require_air_quality = (v != 0);
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::Co2OccupancyEnabled>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.co2_occupancy_enabled = (v != 0);
-            g_state.fusionConfigDirty = true;
-        })
-        .onParameterChanged<HabinariParameter::WindowDetectEnabled>([](uint8_t v) {
-            LockGuard lock(g_state.mutex);
-            g_state.fusion.window_detect_enabled = (v != 0);
-            g_state.fusionConfigDirty = true;
-        })
         .onProgrammingModeChanged([](bool enabled) {
             KNX_LOGI(TAG, "Programming mode: %s", enabled ? "ON" : "OFF");
             // ETS can enter programming mode over the bus, not only via the
@@ -1626,11 +1710,14 @@ void knxServiceTask(void *arg)
                      static_cast<int>(info.code),
                      info.detail != nullptr ? info.detail : "");
         });
+    bindParameters(bindings);
 
     auto appResult = startProduct(platform, std::move(bindings));
 
     if (appResult.isError()) {
-        KNX_LOGE(TAG, "KNX start failed: %d", static_cast<int>(appResult.error()));
+        KNX_LOGE(TAG, "KNX start failed: %s", util::errorCodeToString(appResult.error()));
+        g_knx.taskHandle.store(nullptr);
+        reportStartResult(toEspErr(appResult.error()));
         vTaskDelete(nullptr);
         return;
     }
@@ -1677,7 +1764,7 @@ void knxServiceTask(void *arg)
         .minGapMs = 0,
     });
 
-    if (kEnableKnxDataSecure) {
+    {
         // Resolve the device-unique KNX Data Secure factory tool key and log it
         // in hex so an installer can capture it locally and enter it, together
         // with the serial number above, into ETS for secure commissioning.
@@ -1708,7 +1795,12 @@ void knxServiceTask(void *arg)
             // that does not use security could not commission it at all: ETS
             // opened the connection, sent A_Authorize_Request in the clear,
             // and the device dropped it without an answer.
-            const bool provisionedKeyInForce = app.hasEtsToolKey();
+            // hasEtsToolKey() is only "some tool key is set", which is also
+            // true of the factory key this firmware installed on an earlier
+            // boot. What decides whether the certificate below is still worth
+            // printing is whether the key in force IS the factory key.
+            const bool factoryKeyInForce = app.toolKeyInForceIs(toolKey);
+            const bool provisionedKeyInForce = app.hasEtsToolKey() && !factoryKeyInForce;
             const auto secureResult = provisionedKeyInForce
                                           ? util::Result<void>::ok()
                                           : app.installFactoryToolKey(toolKey);
@@ -1740,24 +1832,31 @@ void knxServiceTask(void *arg)
                              "below is only valid until then.");
                 }
 
-                // The certificate is the device's factory identity and is what
-                // an installer enters into ETS, so it is logged on every boot
-                // whether or not ETS has since installed a key of its own.
-                if (hasSerialNumber) {
+                // The certificate is only usable while the factory key is the
+                // one the device would actually accept. Printing it once ETS
+                // has installed a Tool Key of its own is worse than printing
+                // nothing: ETS answers an FDSK that is no longer in force with
+                // "Device is secured with a key not known within this project",
+                // and re-entering the same certificate can never change that.
+                if (!hasSerialNumber) {
+                    KNX_LOGW(TAG,
+                             "KNX Data Secure device certificate unavailable: no serial number");
+                } else if (provisionedKeyInForce) {
+                    KNX_LOGW(TAG,
+                             "KNX Data Secure device certificate NOT printed: the Tool Key in "
+                             "force was installed by ETS, so the factory certificate would not "
+                             "be accepted. Use the project that commissioned this device, or "
+                             "factory-reset it and use the certificate printed on the next boot.");
+                } else {
                     char certificate[habinari::identity::kCertificateBufferSize] = {};
                     formatDeviceCertificate(std::span<const uint8_t, 6>(serialNumber, 6),
                                             toolKey, certificate, sizeof(certificate));
                     KNX_LOGW(TAG,
                              "KNX Data Secure device certificate (enter in ETS): %s",
                              certificate);
-                } else {
-                    KNX_LOGW(TAG,
-                             "KNX Data Secure device certificate unavailable: no serial number");
                 }
             }
         }
-    } else {
-        KNX_LOGI(TAG, "KNX Data Secure disabled (plain commissioning)");
     }
 
     {
@@ -1773,137 +1872,15 @@ void knxServiceTask(void *arg)
 
     {
         LockGuard lock(g_state.mutex);
-        g_knx.taskHandle = xTaskGetCurrentTaskHandle();
-        // Seed engineering values from the ETS parameters. Every parameter has
-        // an onParameterChanged binding above for live re-parameterisation;
-        // this is the one-time load at startup, so the two lists must stay in
-        // step.
-        auto params = app.parameters();
-        auto &s = g_state.hvac;
-
-        s.heartbeatSeconds = params.get<HabinariParameter::MeasurementHeartbeatSeconds>();
-        s.minRepTimeSeconds = params.get<HabinariParameter::MeasurementMinRepTimeSeconds>();
-        s.roomTemperatureOffsetK = params.get<HabinariParameter::RoomTemperatureOffset>();
-        s.roomTemperatureCovK = params.get<HabinariParameter::RoomTemperatureCov>();
-        s.roomHumidityOffsetPct = params.get<HabinariParameter::RoomHumidityOffset>();
-        s.roomHumidityCovPct = params.get<HabinariParameter::RoomHumidityCov>();
-        s.co2CovPpm = static_cast<float>(params.get<HabinariParameter::Co2Cov>());
-        s.pressureCovPa = static_cast<float>(params.get<HabinariParameter::PressureCov>());
-        s.airQualityCovIndex = static_cast<float>(params.get<HabinariParameter::AirQualityCov>());
-        s.floorTemperatureOffsetK = params.get<HabinariParameter::FloorTemperatureOffset>();
-        s.floorTemperatureCovK = params.get<HabinariParameter::FloorTemperatureCov>();
-        s.floorHumidityCovPct = params.get<HabinariParameter::FloorHumidityCov>();
-        s.derivedCov = params.get<HabinariParameter::DerivedValueCov>();
-        s.altitudeM = static_cast<float>(params.get<HabinariParameter::AltitudeM>());
-
-        s.controllerDefaultEnable = params.get<HabinariParameter::ControllerDefaultEnable>() != 0;
-        s.defaultHvacOperatingMode = static_cast<hvac_ns::OperatingPreset>(
-            params.get<HabinariParameter::DefaultHvacOperatingMode>());
-        s.defaultControllerMode = static_cast<hvac_ns::ControllerMode>(
-            params.get<HabinariParameter::DefaultControllerMode>());
-        s.heatingEnabled = params.get<HabinariParameter::HeatingEnabled>() != 0;
-        s.coolingEnabled = params.get<HabinariParameter::CoolingEnabled>() != 0;
-        s.heatCoolChangeoverMode = static_cast<hvac_ns::HeatCoolChangeoverMode>(
-            params.get<HabinariParameter::HeatCoolChangeoverMode>());
-        s.heatCoolChangeoverPolarityInverted =
-            params.get<HabinariParameter::HeatCoolChangeoverPolarity>() != 0;
-        s.minimumHeatCoolChangeoverSeconds = static_cast<float>(
-            params.get<HabinariParameter::MinimumHeatCoolChangeoverSeconds>());
-        s.windowOpenBehavior = static_cast<hvac_ns::WindowOpenBehavior>(
-            params.get<HabinariParameter::WindowOpenBehavior>());
-        s.presenceBehavior = static_cast<hvac_ns::PresenceBehavior>(
-            params.get<HabinariParameter::PresenceBehavior>());
-        s.sensorFaultBehavior = static_cast<hvac_ns::SensorFaultBehavior>(
-            params.get<HabinariParameter::SensorFaultBehavior>());
-
-        s.comfortHeatingSetpointC = params.get<HabinariParameter::ComfortHeatingSetpoint>();
-        s.standbyHeatingReductionK = params.get<HabinariParameter::StandbyHeatingReduction>();
-        s.economyHeatingReductionK = params.get<HabinariParameter::EconomyHeatingReduction>();
-        s.protectionHeatingSetpointC = params.get<HabinariParameter::ProtectionHeatingSetpoint>();
-        s.coolingDeadbandK = params.get<HabinariParameter::CoolingDeadband>();
-        s.standbyCoolingIncreaseK = params.get<HabinariParameter::StandbyCoolingIncrease>();
-        s.economyCoolingIncreaseK = params.get<HabinariParameter::EconomyCoolingIncrease>();
-        s.protectionCoolingSetpointC = params.get<HabinariParameter::ProtectionCoolingSetpoint>();
-        s.minSetpointC = params.get<HabinariParameter::MinSetpoint>();
-        s.maxSetpointC = params.get<HabinariParameter::MaxSetpoint>();
-        s.maxSetpointShiftK = params.get<HabinariParameter::MaxSetpointShift>();
-
-        s.heatingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(
-            params.get<HabinariParameter::HeatingControlAlgorithm>());
-        s.heatingKp = params.get<HabinariParameter::HeatingKp>();
-        s.heatingTiSeconds = static_cast<float>(params.get<HabinariParameter::HeatingTiSeconds>());
-        s.heatingTdSeconds = static_cast<float>(params.get<HabinariParameter::HeatingTdSeconds>());
-        s.heatingMinOutputPercent = params.get<HabinariParameter::HeatingMinimumOutputPercent>();
-        s.heatingMaxOutputPercent = params.get<HabinariParameter::HeatingMaximumOutputPercent>();
-        s.coolingControlAlgorithm = static_cast<hvac_ns::ControlAlgorithm>(
-            params.get<HabinariParameter::CoolingControlAlgorithm>());
-        s.coolingKp = params.get<HabinariParameter::CoolingKp>();
-        s.coolingTiSeconds = static_cast<float>(params.get<HabinariParameter::CoolingTiSeconds>());
-        s.coolingTdSeconds = static_cast<float>(params.get<HabinariParameter::CoolingTdSeconds>());
-        s.coolingMinOutputPercent = params.get<HabinariParameter::CoolingMinimumOutputPercent>();
-        s.coolingMaxOutputPercent = params.get<HabinariParameter::CoolingMaximumOutputPercent>();
-        s.thermostatHysteresisC = params.get<HabinariParameter::ThermostatHysteresis>();
-        s.binaryDemandStrategy = static_cast<hvac_ns::BinaryDemandStrategy>(
-            params.get<HabinariParameter::BinaryDemandStrategy>());
-        s.binaryDemandThresholdPercent =
-            params.get<HabinariParameter::BinaryDemandThresholdPercent>();
-        s.frostAlarmTemperatureC = params.get<HabinariParameter::FrostAlarmTemperature>();
-        s.overheatAlarmTemperatureC = params.get<HabinariParameter::OverheatAlarmTemperature>();
-
-        s.maxFloorTemperatureC = params.get<HabinariParameter::MaxFloorTemperature>();
-        s.minFloorTemperatureC = params.get<HabinariParameter::MinFloorTemperature>();
-        s.floorHysteresisK = params.get<HabinariParameter::FloorHysteresis>();
-        s.floorComfortOutputPercent = params.get<HabinariParameter::FloorComfortOutputPercent>();
-
-        s.dewPointSurfaceSource = static_cast<hvac_ns::DewPointSurfaceSource>(
-            params.get<HabinariParameter::DewPointSurfaceSource>());
-        s.dewPointMarginK = params.get<HabinariParameter::DewPointMargin>();
-        s.dewPointHysteresisK = params.get<HabinariParameter::DewPointHysteresis>();
-        s.blockCoolingOnDewPointAlarm =
-            params.get<HabinariParameter::BlockCoolingOnDewPointAlarm>() != 0;
-
-        s.floorMoistureThresholdPct = params.get<HabinariParameter::FloorMoistureThreshold>();
-        s.floorMoistureHysteresisPct = params.get<HabinariParameter::FloorMoistureHysteresis>();
-        s.floorMoistureExcessGm3 = params.get<HabinariParameter::FloorMoistureExcess>();
-
-        s.ventilationSetpointPpm =
-            static_cast<float>(params.get<HabinariParameter::VentilationSetpoint>());
-        s.ventilationBandPpm =
-            static_cast<float>(params.get<HabinariParameter::VentilationBand>());
-        s.humidityBoostPct = params.get<HabinariParameter::HumidityBoostThreshold>();
-        s.humidityBandPct = params.get<HabinariParameter::HumidityBoostBand>();
-        s.vocThresholdIndex =
-            static_cast<float>(params.get<HabinariParameter::VocBoostThreshold>());
-        s.vocBandIndex = static_cast<float>(params.get<HabinariParameter::VocBoostBand>());
-        s.ventilationBaseDemandPercent =
-            params.get<HabinariParameter::VentilationBaseDemandPercent>();
-        s.ventilationManualDemandPercent =
-            params.get<HabinariParameter::VentilationManualDemandPercent>();
-
-        // Fusion tuning: start from the compiled-in defaults so the fields the
-        // ETS product does not expose (staleness, inter-sensor offsets) are
-        // populated, then overlay the ETS parameters that it does.
+        // Seed engineering values from the ETS parameters: the same table the
+        // onParameterChanged bindings use, applied once. Fusion tuning starts
+        // from the compiled-in defaults so the fields the ETS product does not
+        // expose (staleness, inter-sensor offsets) are populated, and the
+        // table then overlays the ones it does.
         sensor_fusion_default_config(&g_state.fusion);
-        g_state.fusion.filter_tau_seconds =
-            static_cast<float>(params.get<HabinariParameter::SensorFilterSeconds>());
-        g_state.fusion.temperature_cross_check_k =
-            params.get<HabinariParameter::TemperatureCrossCheck>();
-        g_state.fusion.humidity_cross_check_pct =
-            params.get<HabinariParameter::HumidityCrossCheck>();
-        g_state.fusion.fire_rate_of_rise_k_per_min =
-            params.get<HabinariParameter::FireRateOfRise>();
-        g_state.fusion.fire_absolute_alarm_c =
-            params.get<HabinariParameter::FireAbsoluteTemperature>();
-        g_state.fusion.fire_confirm_seconds =
-            static_cast<float>(params.get<HabinariParameter::FireConfirmSeconds>());
-        g_state.fusion.fire_require_air_quality =
-            params.get<HabinariParameter::FireRequireAirQuality>() != 0;
-        g_state.fusion.co2_occupancy_enabled =
-            params.get<HabinariParameter::Co2OccupancyEnabled>() != 0;
-        g_state.fusion.window_detect_enabled =
-            params.get<HabinariParameter::WindowDetectEnabled>() != 0;
+        loadParameters(app.parameters());
         g_state.fusionConfigDirty = true;
-
+        auto &s = g_state.hvac;
         // Seed the runtime mode/state inputs from their ETS defaults.
         g_state.in.controllerOnOff = s.controllerDefaultEnable;
         g_state.in.hvacOperatingMode = s.defaultHvacOperatingMode;
@@ -1922,19 +1899,23 @@ void knxServiceTask(void *arg)
             }
             // Runs on the default event loop, which must not block. Waking the
             // service task is enough; it republishes on its next pass.
-            auto *handle = static_cast<TaskHandle_t *>(ctx);
-            g_knx.ipIdentityDirty = true;
-            if (*handle != nullptr) {
-                xTaskNotifyGive(*handle);
+            auto *state = static_cast<KnxAdapterState *>(ctx);
+            if (state == nullptr) {
+                return;
+            }
+            state->ipIdentityDirty.store(true);
+            const TaskHandle_t handle = state->taskHandle.load();
+            if (handle != nullptr) {
+                xTaskNotifyGive(handle);
             }
         },
-        &g_knx.taskHandle);
+        &g_knx);
 
     // The association that beat the callback registration: it raised no event
     // anyone was listening for, and the socket's own join attempt had already
     // failed. Nothing else would ever ask for the membership again.
     if (g_knx.startedWithoutNetwork && wifi_service_is_connected()) {
-        g_knx.ipIdentityDirty = true;
+        g_knx.ipIdentityDirty.store(true);
     }
 
     KNX_LOGI(TAG, "ETS-commissionable KNXnet/IP sensor bridge started");
@@ -1966,7 +1947,7 @@ void knxServiceTask(void *arg)
     // ISR), so xTaskNotifyGive is correct; the notification latches, so a signal
     // raised while we are mid-loop is coalesced into the next wake, not lost.
     app.setWorkAvailableCallback([]() {
-        const TaskHandle_t handle = g_knx.taskHandle;  // set once at startup
+        const TaskHandle_t handle = g_knx.taskHandle.load();  // set once at startup
         if (handle != nullptr) {
             xTaskNotifyGive(handle);
         }
@@ -1982,8 +1963,7 @@ void knxServiceTask(void *arg)
     // Boot-storm mitigation: hold the first full publish for a per-device random
     // delay so a bus-wide power-up doesn't make every device transmit at t=0.
     // The rate limiter above additionally spreads whatever burst does occur.
-    const uint32_t startupJitterMs =
-        (kStartupPublishMaxJitterMs > 0) ? (esp_random() % (kStartupPublishMaxJitterMs + 1u)) : 0u;
+    const uint32_t startupJitterMs = esp_random() % (kStartupPublishMaxJitterMs + 1u);
     const TickType_t startupPublishReleaseTick =
         xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs);
     bool startupDelayLogged = false;
@@ -2001,12 +1981,13 @@ void knxServiceTask(void *arg)
              static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
              static_cast<unsigned>(kKnxServiceTaskStackSize));
 
+    reportStartResult(ESP_OK);
+
     for (;;) {
         app.loop();
 
 #if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
-        if (g_knx.ipIdentityDirty) {
-            g_knx.ipIdentityDirty = false;
+        if (g_knx.ipIdentityDirty.exchange(false)) {
             // The membership first, the identity second. The join is what makes
             // the device hear the group at all — it is established against
             // whichever interface exists when the routing socket opens, and on
@@ -2024,8 +2005,7 @@ void knxServiceTask(void *arg)
         }
 #endif
 
-        if (g_knx.controlTickPending) {
-            g_knx.controlTickPending = false;
+        if (g_knx.controlTickPending.exchange(false)) {
             // The transmit policy is derived from the configured COV deltas and
             // repetition times, so it is refreshed when a tick may have changed
             // them — same cadence as before, just driven from the other side.
@@ -2066,11 +2046,12 @@ void knxServiceTask(void *arg)
             if (control::takeProgrammingModeToggleRequest()) {
                 app.toggleProgrammingMode();
             }
-            const PublishSnapshot snapshot = takePublishSnapshot();
             // Offered unconditionally once per control tick; the per-object
-            // transmit policy decides what is actually worth a telegram.
+            // transmit policy decides what is actually worth a telegram. The
+            // snapshot is taken only then: it copies the whole state under the
+            // control mutex, and this loop also runs on every inbound frame.
             if (controlTickDue) {
-                publishAllState(app, snapshot);
+                publishAllState(app, takePublishSnapshot());
                 controlTickDue = false;
             }
         } else if (control::takeProgrammingModeToggleRequest()) {
@@ -2121,12 +2102,9 @@ void knxServiceTask(void *arg)
         // sleep short, and both latch, so neither is ever missed. The interval
         // is a ceiling now rather than a schedule — the control task owns the
         // cadence, and this only bounds how long we sleep if it stops.
-        TickType_t blockTicks = app.ownerWorkHint().hasImmediateWork()
+        const TickType_t blockTicks = app.ownerWorkHint().hasImmediateWork()
             ? kActiveWorkPollTicks
             : kControlIntervalTicks;
-        if (blockTicks == 0) {
-            blockTicks = 1;  // control tick already due — take it on the next tick
-        }
         (void)ulTaskNotifyTake(pdTRUE, blockTicks);
     }
 }
@@ -2179,10 +2157,44 @@ esp_err_t knxAdapterStart()
     }
 #endif
 
+    // Wait for the task to say whether the product actually started. Creating
+    // the task used to count as success, so a stack that then failed to come
+    // up deleted its task in silence and the required-adapter check never saw
+    // it. The task reports through this task's notification value.
+    (void)xTaskNotifyStateClear(nullptr);
+    (void)ulTaskNotifyValueClear(nullptr, UINT32_MAX);
+    g_knx.startWaiter.store(xTaskGetCurrentTaskHandle());
     const BaseType_t created = xTaskCreate(knxServiceTask, "knx_service",
-                                           kKnxServiceTaskStackSize, nullptr, 8, nullptr);
+                                           kKnxServiceTaskStackSize,
+                                           nullptr, 8, nullptr);
     if (created != pdPASS) {
+        g_knx.startWaiter.store(nullptr);
         return ESP_ERR_NO_MEM;
+    }
+
+    uint32_t result = 0;
+    TickType_t wait = pdMS_TO_TICKS(kKnxStartTimeoutMs);
+    while (xTaskNotifyWait(0, UINT32_MAX, &result, wait) != pdTRUE) {
+        if (g_knx.startWaiter.exchange(nullptr) == nullptr) {
+            // The task took the waiter just before we gave up; its report is
+            // on its way, so take it rather than return without it.
+            wait = portMAX_DELAY;
+            continue;
+        }
+#if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
+        if (g_knx.waitingForNetwork.load()) {
+            KNX_LOGW(TAG, "KNX start-up is waiting for Wi-Fi; carrying on with boot. "
+                          "A start-up failure from here on is only logged");
+            g_knx.started = true;
+            return ESP_OK;
+        }
+#endif
+        KNX_LOGE(TAG, "KNX did not report start-up within %u ms",
+                 static_cast<unsigned>(kKnxStartTimeoutMs));
+        return ESP_ERR_TIMEOUT;
+    }
+    if (static_cast<esp_err_t>(result) != ESP_OK) {
+        return static_cast<esp_err_t>(result);
     }
 
     g_knx.started = true;
@@ -2194,8 +2206,8 @@ esp_err_t knxAdapterStart()
 // on a bus with a 104 us bit cell.
 void knxAdapterOnControlTick(uint32_t)
 {
-    g_knx.controlTickPending = true;
-    const TaskHandle_t handle = g_knx.taskHandle;
+    g_knx.controlTickPending.store(true);
+    const TaskHandle_t handle = g_knx.taskHandle.load();
     if (handle != nullptr) {
         xTaskNotifyGive(handle);
     }

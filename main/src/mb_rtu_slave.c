@@ -464,144 +464,48 @@ static void mb_fill_control(mb_rtu_slave_t *slave, const control_state_t *state)
     mb_bit_set(bits, MB_DISCRETE_PROGRAMMING_MODE, state->programming_mode);
 }
 
-// Read back the writable registers from the device's own state, so a master
-// that reads them sees what was actually adopted rather than what it asked for
-// — a setpoint outside the ETS limits comes back clamped, and a change made
-// over KNX shows up here too.
-//
-// A register is only refreshed while it still holds what this task last wrote.
-// If it has changed, a master wrote it in the window between mb_apply_writes()
-// reading the block and this refresh; overwriting it there would silently
-// swallow that write. Leaving it alone lets the next cycle apply it.
-#define MB_REFRESH(field, value)                            \
-    do {                                                    \
-        if (h->field == slave->applied_holding.field) {     \
-            h->field = (value);                             \
-        }                                                   \
-    } while (0)
-
-static void mb_refresh_writables(mb_rtu_slave_t *slave, const control_state_t *state)
-{
-    mb_holding_registers_t *h = &slave->holding_regs;
-
-    MB_REFRESH(slave_address, slave->slave_address);
-    MB_REFRESH(baud_rate_code, slave->baud_code);
-    MB_REFRESH(config_commit, 0);
-    MB_REFRESH(comfort_setpoint,
-               mb_encode_signed(state->comfort_setpoint_c, true, MB_SCALE_TEMPERATURE));
-    MB_REFRESH(setpoint_shift,
-               mb_encode_signed(state->setpoint_shift_k, true, MB_SCALE_TEMPERATURE));
-    MB_REFRESH(hvac_mode, state->hvac_operating_mode);
-    MB_REFRESH(controller_mode, state->controller_mode);
-    MB_REFRESH(ventilation_mode, state->ventilation_mode);
-    MB_REFRESH(co2_setpoint, mb_encode_unsigned(state->co2_setpoint_ppm, true, 1));
-
-    for (unsigned coil = 0; coil < MB_COIL_COUNT; ++coil) {
-        if (mb_bit_get(slave->coil_bits, coil) != mb_bit_get(slave->applied_coils, coil)) {
-            continue;  // written since the last apply; leave it for the next cycle
-        }
-        switch (coil) {
-        case MB_COIL_CONTROLLER_ON:
-            mb_bit_set(slave->coil_bits, coil, state->controller_on);
-            break;
-        case MB_COIL_WINDOW_STATUS:
-            mb_bit_set(slave->coil_bits, coil, state->window_open);
-            break;
-        case MB_COIL_PRESENCE:
-            mb_bit_set(slave->coil_bits, coil, state->presence);
-            break;
-        case MB_COIL_ALARM_ACKNOWLEDGE:
-            mb_bit_set(slave->coil_bits, coil, false);  // momentary
-            break;
-        default:  // MB_COIL_IDENTIFY_LED is owned by the master
-            break;
-        }
-    }
-
-    slave->applied_holding = *h;
-    memcpy(slave->applied_coils, slave->coil_bits, sizeof(slave->applied_coils));
-}
-
-#undef MB_REFRESH
-
 // --- Applying master writes ------------------------------------------------
 
-// True when the master has changed this register since we last wrote it.
-#define MB_CHANGED(field) (current.field != slave->applied_holding.field)
+// control_state_write() is the validation gate; this only reports what it
+// refused. The register is not retried: the refresh writes the device's actual
+// value back over it, which is what the master reads to see it was not adopted.
+static esp_err_t mb_write_command(control_command_t command, float value, void *ctx)
+{
+    (void)ctx;
+    const esp_err_t err = control_state_write(command, value);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Master write refused (command %d, value %g): %s", (int)command,
+                 (double)value, esp_err_to_name(err));
+    }
+    return err;
+}
 
 static bool mb_apply_writes(mb_rtu_slave_t *slave, bool programming_mode)
 {
-    mb_holding_registers_t current;
-    uint8_t coils[MB_COIL_BYTES];
+    mb_writable_image_t current;
 
     if (mbc_slave_lock(slave->mbc_slave_handle) != ESP_OK) {
         return false;
     }
-    current = slave->holding_regs;
-    memcpy(coils, slave->coil_bits, sizeof(coils));
+    mb_sync_take_snapshot(&slave->holding_regs, slave->coil_bits, &current);
     mbc_slave_unlock(slave->mbc_slave_handle);
 
-    float value = 0.0f;
-    if (MB_CHANGED(comfort_setpoint)
-        && mb_decode_signed(current.comfort_setpoint, MB_SCALE_TEMPERATURE, &value)) {
-        control_state_write(CONTROL_CMD_SETPOINT_BASE, value);
-    }
-    if (MB_CHANGED(setpoint_shift)
-        && mb_decode_signed(current.setpoint_shift, MB_SCALE_TEMPERATURE, &value)) {
-        control_state_write(CONTROL_CMD_SETPOINT_SHIFT, value);
-    }
-    if (MB_CHANGED(hvac_mode)) {
-        control_state_write(CONTROL_CMD_HVAC_MODE, (float)current.hvac_mode);
-    }
-    if (MB_CHANGED(controller_mode)) {
-        control_state_write(CONTROL_CMD_CONTROLLER_MODE, (float)current.controller_mode);
-    }
-    if (MB_CHANGED(ventilation_mode)) {
-        control_state_write(CONTROL_CMD_VENTILATION_MODE, (float)current.ventilation_mode);
-    }
-    if (MB_CHANGED(co2_setpoint) && current.co2_setpoint != MB_INVALID_UNSIGNED) {
-        control_state_write(CONTROL_CMD_CO2_SETPOINT, (float)current.co2_setpoint);
-    }
-
-    for (unsigned coil = 0; coil < MB_COIL_COUNT; ++coil) {
-        const bool now = mb_bit_get(coils, coil);
-        if (now == mb_bit_get(slave->applied_coils, coil)) {
-            continue;
-        }
-        switch (coil) {
-        case MB_COIL_CONTROLLER_ON:
-            control_state_write(CONTROL_CMD_CONTROLLER_ON_OFF, now ? 1.0f : 0.0f);
-            break;
-        case MB_COIL_WINDOW_STATUS:
-            control_state_write(CONTROL_CMD_WINDOW_STATUS, now ? 1.0f : 0.0f);
-            break;
-        case MB_COIL_PRESENCE:
-            control_state_write(CONTROL_CMD_PRESENCE, now ? 1.0f : 0.0f);
-            break;
-        case MB_COIL_ALARM_ACKNOWLEDGE:
-            if (now) {
-                control_state_write(CONTROL_CMD_ACKNOWLEDGE_ALARMS, 1.0f);
-            }
-            break;
-        default:  // MB_COIL_IDENTIFY_LED is read back by main, not a command
-            break;
-        }
-    }
+    (void)mb_sync_apply_commands(&current, &slave->applied, mb_write_command, NULL);
 
     // A serial-number write selects this device, and only this device. It is
     // checked before the commit below so that one broadcast frame carrying both
     // — select and commit — is honoured in the order the master wrote it.
     const uint16_t selection[3] = {
-        current.serial_select_0,
-        current.serial_select_1,
-        current.serial_select_2,
+        current.holding.serial_select_0,
+        current.holding.serial_select_1,
+        current.holding.serial_select_2,
     };
     //
     // Detected as a change rather than as a write, because a memory-mapped
     // register area has no write callback and rewriting the same value looks
     // like nothing happening. The consequence is worth knowing: to re-arm an
     // expired selection, write zeros and then the serial again.
-    if (memcmp(selection, &slave->applied_holding.serial_select_0, sizeof(selection)) != 0) {
+    if (memcmp(selection, &slave->applied.holding.serial_select_0, sizeof(selection)) != 0) {
         if (mb_serial_selected(selection, slave->serial)) {
             slave->serial_select_expiry_us =
                 esp_timer_get_time() + (int64_t)MB_SERIAL_SELECT_TIMEOUT_S * 1000000;
@@ -614,6 +518,10 @@ static bool mb_apply_writes(mb_rtu_slave_t *slave, bool programming_mode)
         }
     }
 
+    // Everything in the snapshot has now been acted on, and only now: the
+    // selection check above still needed the previous record.
+    mb_sync_mark_applied(&current, &slave->applied);
+
     const mb_commissioning_inputs_t commissioning = {
         .assigned_address = slave->slave_address,
         .programming_mode = programming_mode,
@@ -625,7 +533,7 @@ static bool mb_apply_writes(mb_rtu_slave_t *slave, bool programming_mode)
     // the device you are mid-conversation with would drop the response to the
     // very write that requested it.
     bool reconfigure = false;
-    if (current.config_commit != 0) {
+    if (current.holding.config_commit != 0) {
         if (!allowed.accept_line_settings) {
             // Reachable is not the same as selected. Without this a stray or
             // mistargeted master write could re-address a device in a running
@@ -635,12 +543,12 @@ static bool mb_apply_writes(mb_rtu_slave_t *slave, bool programming_mode)
                      "Refused a line-settings commit: this device is not selected. Press the "
                      "programming button, or write its serial to registers 12..14 first.");
         } else {
-            const bool address_ok = mb_address_assignable(current.slave_address)
-                                    || current.slave_address == MB_SLAVE_ADDR_UNASSIGNED;
-            const bool baud_ok = current.baud_rate_code < MB_BAUD_CODE_COUNT;
+            const bool address_ok = mb_address_assignable(current.holding.slave_address)
+                                    || current.holding.slave_address == MB_SLAVE_ADDR_UNASSIGNED;
+            const bool baud_ok = current.holding.baud_rate_code < MB_BAUD_CODE_COUNT;
             if (address_ok && baud_ok) {
-                slave->slave_address = (uint8_t)current.slave_address;
-                slave->baud_code = current.baud_rate_code;
+                slave->slave_address = (uint8_t)current.holding.slave_address;
+                slave->baud_code = current.holding.baud_rate_code;
                 const esp_err_t err = mb_store_line_settings(slave);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to persist Modbus settings: %s", esp_err_to_name(err));
@@ -659,15 +567,13 @@ static bool mb_apply_writes(mb_rtu_slave_t *slave, bool programming_mode)
                 ESP_LOGW(TAG,
                          "Rejected invalid Modbus settings: address %u (allowed %u..%u, or %u to "
                          "unassign), baud code %u",
-                         current.slave_address, MB_SLAVE_ADDR_MIN, MB_SLAVE_ADDR_MAX,
-                         MB_SLAVE_ADDR_UNASSIGNED, current.baud_rate_code);
+                         current.holding.slave_address, MB_SLAVE_ADDR_MIN, MB_SLAVE_ADDR_MAX,
+                         MB_SLAVE_ADDR_UNASSIGNED, current.holding.baud_rate_code);
             }
         }
     }
     return reconfigure;
 }
-
-#undef MB_CHANGED
 
 // --- Task ------------------------------------------------------------------
 
@@ -680,11 +586,17 @@ static void mb_service_task(void *param)
         control_state_get(&state);
 
         const bool reconfigure = mb_apply_writes(slave, state.programming_mode);
+        // Read again: the refresh below writes this state back into the
+        // registers, and the copy taken above predates the writes just applied.
+        // With it, a master reading straight after a write saw its old value
+        // for one cycle.
+        control_state_get(&state);
 
         if (mbc_slave_lock(slave->mbc_slave_handle) == ESP_OK) {
             mb_fill_identity(slave);
             mb_fill_control(slave, &state);
-            mb_refresh_writables(slave, &state);
+            mb_sync_refresh(&slave->holding_regs, slave->coil_bits, &slave->applied, &state,
+                            slave->slave_address, slave->baud_code);
             mbc_slave_unlock(slave->mbc_slave_handle);
         }
 
@@ -702,9 +614,14 @@ static void mb_service_task(void *param)
             // Give the stack time to finish the response to the commit before
             // the line settings change underneath it.
             vTaskDelay(pdMS_TO_TICKS(100));
+            // Under the handle lock, so the sensor task's publish cannot be
+            // inside the controller while it is deleted and recreated.
+            xSemaphoreTake(slave->handle_mutex, portMAX_DELAY);
             mb_stack_stop(slave);
             slave->listen_address = want.listen_address;
-            if (mb_stack_start(slave) != ESP_OK) {
+            const esp_err_t restarted = mb_stack_start(slave);
+            xSemaphoreGive(slave->handle_mutex);
+            if (restarted != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to restart with the new settings; slave is offline");
                 break;
             }
@@ -729,7 +646,14 @@ esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave)
         return ESP_ERR_INVALID_STATE;
     }
 
+    // The handle lock outlives a stop, because the sensor task may still be
+    // holding it when one happens; only the first start creates it.
+    SemaphoreHandle_t handle_mutex = slave->handle_mutex;
     memset(slave, 0, sizeof(*slave));
+    slave->handle_mutex = handle_mutex != NULL ? handle_mutex : xSemaphoreCreateMutex();
+    if (slave->handle_mutex == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     mb_load_line_settings(slave);
 
     // The identity a master selects this device by, and the same six bytes the
@@ -756,7 +680,9 @@ esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave)
     // and the map has a way to say that. Zero would have claimed 0.0 °C.
     memset(&slave->input_regs, 0xFF, sizeof(slave->input_regs));
 
+    xSemaphoreTake(slave->handle_mutex, portMAX_DELAY);
     esp_err_t err = mb_stack_start(slave);
+    xSemaphoreGive(slave->handle_mutex);
     if (err != ESP_OK) {
         return err;
     }
@@ -766,7 +692,9 @@ esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave)
                     &slave->task_handle)
         != pdPASS) {
         ESP_LOGE(TAG, "Failed to create Modbus service task");
+        xSemaphoreTake(slave->handle_mutex, portMAX_DELAY);
         mb_stack_stop(slave);
+        xSemaphoreGive(slave->handle_mutex);
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -781,7 +709,11 @@ esp_err_t mb_rtu_slave_stop(mb_rtu_slave_t *slave)
     for (int waited_ms = 0; slave->task_handle != NULL && waited_ms < 1000; waited_ms += 50) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    mb_stack_stop(slave);
+    if (slave->handle_mutex != NULL) {
+        xSemaphoreTake(slave->handle_mutex, portMAX_DELAY);
+        mb_stack_stop(slave);
+        xSemaphoreGive(slave->handle_mutex);
+    }
     return ESP_OK;
 }
 
@@ -790,17 +722,29 @@ esp_err_t mb_rtu_slave_publish(mb_rtu_slave_t *slave, const sensor_data_t *data)
     if (slave == NULL || data == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (slave->mbc_slave_handle == NULL) {
+    // Not waited for: the only holder besides start/stop is the service task
+    // re-addressing the slave, and a sensor cycle skipped during that loses
+    // nothing — the next one is a few seconds away. The sensor task must not
+    // stall on a field bus.
+    if (slave->handle_mutex == NULL || xSemaphoreTake(slave->handle_mutex, 0) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;  // Modbus is optional; sampling continues
     }
+    // Checked under the lock: before it, the handle could be deleted between
+    // this test and its use.
+    if (slave->mbc_slave_handle == NULL) {
+        xSemaphoreGive(slave->handle_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
 
-    const esp_err_t err = mbc_slave_lock(slave->mbc_slave_handle);
+    esp_err_t err = mbc_slave_lock(slave->mbc_slave_handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to lock Modbus controller: %s", esp_err_to_name(err));
-        return err;
+    } else {
+        mb_fill_measurements(slave, data);
+        err = mbc_slave_unlock(slave->mbc_slave_handle);
     }
-    mb_fill_measurements(slave, data);
-    return mbc_slave_unlock(slave->mbc_slave_handle);
+    xSemaphoreGive(slave->handle_mutex);
+    return err;
 }
 
 bool mb_rtu_slave_led_requested(const mb_rtu_slave_t *slave)

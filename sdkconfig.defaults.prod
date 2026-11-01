@@ -1,6 +1,7 @@
-# Production/release overrides.
-# Layer this on top of sdkconfig.defaults:
-#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.prod" build
+# Production/release overrides. An overlay, not a variant: it is layered last,
+# on top of any personality's defaults:
+#   tools/build_variants.sh --prod             every variant, release-trimmed
+#   tools/build_variants.sh --prod modbus      one of them
 #
 # ── Section A: debug-strip (pure size, no functional change) ──────────────
 # Optimize for size (-Os) instead of debug (-Og).
@@ -11,6 +12,10 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
 # Quieter bootloader (drops INFO strings from the 2nd-stage bootloader).
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+# sdkconfig.defaults compiles the per-frame KNX_LOGD dumps in for bring-up.
+# A release keeps INFO and above, as the knxip overlay already does.
+# CONFIG_KNX_DEBUG_ENABLED is not set
+CONFIG_KNX_LOG_LEVEL=3
 
 # ── Section B: Modbus feature trim (functional — RTU-only device) ─────────
 # This board speaks Modbus RTU over serial only. Dropping TCP + ASCII + mDNS

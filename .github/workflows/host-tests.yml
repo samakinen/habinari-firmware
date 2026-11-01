@@ -1,22 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 Sami Mäkinen
 #
-# Builds and runs the portable parts of the firmware on the runner. No ESP-IDF
-# and no hardware, so it stays fast enough to gate every push.
+# Two jobs. host-tests builds and runs the portable parts of the firmware on the
+# runner: no ESP-IDF and no hardware, so it stays fast enough to gate every
+# push. firmware builds every image tools/build_variants.sh knows, so a change
+# that breaks one personality's configuration (or pushes knxip out of its
+# partition) fails here rather than on someone's desk.
 #
-# components/KNstaX is public now, so a target build is worth adding as a second
-# job:
-#
-#   firmware:
-#     runs-on: ubuntu-latest
-#     container: espressif/idf:release-v5.5
-#     steps:
-#       - uses: actions/checkout@v4
-#         with: { submodules: recursive }
-#       - run: . $IDF_PATH/export.sh && idf.py set-target esp32c6 build
-#
-# It is left out only because it is slower than the gate this file is meant to
-# be, not because anything blocks it.
+# The KNX stack's own suite (host CTest, sanitisers, interop) runs in the
+# KNstaX repository's CI, not here.
 
 name: host tests
 
@@ -51,3 +43,29 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build_host_tests --output-on-failure
+
+  firmware:
+    name: firmware (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    # The README's reference version. Keep it in step with what the project is
+    # developed against: KNstaX's IP Secure split depends on the mbedTLS major
+    # the IDF ships, so a different IDF builds a different image.
+    container: espressif/idf:v6.1
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [knx, knxip, modbus, modbus-ble, mqtt]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The ETS export is a nested host build with its own compiler
+      # requirements; it is not what this job checks.
+      - name: Build
+        shell: bash
+        env:
+          HABINARI_ETS_EXPORT: "OFF"
+        run: |
+          . "$IDF_PATH/export.sh"
+          tools/build_variants.sh ${{ matrix.variant }}

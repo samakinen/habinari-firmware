@@ -43,8 +43,10 @@ namespace control {
 namespace hvac_ns = ::habinari::hvac;
 
 // Factory defaults are the member initialisers below, so Settings{} is exactly
-// what an un-commissioned device runs on.
-using namespace ::habinari::config;
+// what an un-commissioned device runs on. An alias rather than a using-directive:
+// a directive here would pour every kDefault... name into habinari::control for
+// whoever includes this header.
+namespace cfg = ::habinari::config;
 
 // ---------------------------------------------------------------------------
 // Settings — the configured tuning. Snapshotted by the control tick each
@@ -55,103 +57,103 @@ struct Settings {
     // Generic reporting policy, not a KNX one: "resend at least this often",
     // "never faster than this", "report when it has moved by this much". The
     // MQTT adapter uses the identical three knobs.
-    uint32_t heartbeatSeconds{kDefaultMeasurementHeartbeatSeconds};
-    uint32_t minRepTimeSeconds{kDefaultMeasurementMinRepTimeSeconds};
-    float roomTemperatureOffsetK{kDefaultRoomTemperatureOffsetK};
-    float roomTemperatureCovK{kDefaultRoomTemperatureCovK};
-    float roomHumidityOffsetPct{kDefaultRoomHumidityOffsetPct};
-    float roomHumidityCovPct{kDefaultRoomHumidityCovPct};
-    float co2CovPpm{static_cast<float>(kDefaultCo2CovPpm)};
-    float pressureCovPa{static_cast<float>(kDefaultPressureCovPa)};
-    float airQualityCovIndex{static_cast<float>(kDefaultAirQualityCovIndex)};
-    float floorTemperatureOffsetK{kDefaultFloorTemperatureOffsetK};
-    float floorTemperatureCovK{kDefaultFloorTemperatureCovK};
-    float floorHumidityCovPct{kDefaultFloorHumidityCovPct};
-    float derivedCov{kDefaultDerivedCovK};
-    float altitudeM{static_cast<float>(kDefaultAltitudeM)};
+    uint32_t heartbeatSeconds{cfg::kDefaultMeasurementHeartbeatSeconds};
+    uint32_t minRepTimeSeconds{cfg::kDefaultMeasurementMinRepTimeSeconds};
+    float roomTemperatureOffsetK{cfg::kDefaultRoomTemperatureOffsetK};
+    float roomTemperatureCovK{cfg::kDefaultRoomTemperatureCovK};
+    float roomHumidityOffsetPct{cfg::kDefaultRoomHumidityOffsetPct};
+    float roomHumidityCovPct{cfg::kDefaultRoomHumidityCovPct};
+    float co2CovPpm{static_cast<float>(cfg::kDefaultCo2CovPpm)};
+    float pressureCovPa{static_cast<float>(cfg::kDefaultPressureCovPa)};
+    float airQualityCovIndex{static_cast<float>(cfg::kDefaultAirQualityCovIndex)};
+    float floorTemperatureOffsetK{cfg::kDefaultFloorTemperatureOffsetK};
+    float floorTemperatureCovK{cfg::kDefaultFloorTemperatureCovK};
+    float floorHumidityCovPct{cfg::kDefaultFloorHumidityCovPct};
+    float derivedCov{cfg::kDefaultDerivedCovK};
+    float altitudeM{static_cast<float>(cfg::kDefaultAltitudeM)};
 
     // --- Room control: general ---
-    bool controllerDefaultEnable{kDefaultControllerEnable != 0};
+    bool controllerDefaultEnable{cfg::kDefaultControllerEnable != 0};
     hvac_ns::OperatingPreset defaultHvacOperatingMode{
-        static_cast<hvac_ns::OperatingPreset>(kDefaultHvacOperatingMode)};
+        static_cast<hvac_ns::OperatingPreset>(cfg::kDefaultHvacOperatingMode)};
     hvac_ns::ControllerMode defaultControllerMode{
-        static_cast<hvac_ns::ControllerMode>(kDefaultControllerMode)};
-    bool heatingEnabled{kDefaultHeatingEnabled != 0};
-    bool coolingEnabled{kDefaultCoolingEnabled != 0};
+        static_cast<hvac_ns::ControllerMode>(cfg::kDefaultControllerMode)};
+    bool heatingEnabled{cfg::kDefaultHeatingEnabled != 0};
+    bool coolingEnabled{cfg::kDefaultCoolingEnabled != 0};
     hvac_ns::HeatCoolChangeoverMode heatCoolChangeoverMode{
-        static_cast<hvac_ns::HeatCoolChangeoverMode>(kDefaultHeatCoolChangeoverMode)};
-    bool heatCoolChangeoverPolarityInverted{kDefaultHeatCoolChangeoverPolarity != 0};
+        static_cast<hvac_ns::HeatCoolChangeoverMode>(cfg::kDefaultHeatCoolChangeoverMode)};
+    bool heatCoolChangeoverPolarityInverted{cfg::kDefaultHeatCoolChangeoverPolarity != 0};
     float minimumHeatCoolChangeoverSeconds{
-        static_cast<float>(kDefaultMinimumHeatCoolChangeoverSeconds)};
+        static_cast<float>(cfg::kDefaultMinimumHeatCoolChangeoverSeconds)};
     hvac_ns::WindowOpenBehavior windowOpenBehavior{
-        static_cast<hvac_ns::WindowOpenBehavior>(kDefaultWindowOpenBehavior)};
+        static_cast<hvac_ns::WindowOpenBehavior>(cfg::kDefaultWindowOpenBehavior)};
     hvac_ns::PresenceBehavior presenceBehavior{
-        static_cast<hvac_ns::PresenceBehavior>(kDefaultPresenceBehavior)};
+        static_cast<hvac_ns::PresenceBehavior>(cfg::kDefaultPresenceBehavior)};
     hvac_ns::SensorFaultBehavior sensorFaultBehavior{
-        static_cast<hvac_ns::SensorFaultBehavior>(kDefaultSensorFaultBehavior)};
+        static_cast<hvac_ns::SensorFaultBehavior>(cfg::kDefaultSensorFaultBehavior)};
 
     // --- Setpoint ladder ---
-    float comfortHeatingSetpointC{kDefaultComfortHeatingSetpointC};
-    float standbyHeatingReductionK{kDefaultStandbyHeatingReductionK};
-    float economyHeatingReductionK{kDefaultEconomyHeatingReductionK};
-    float protectionHeatingSetpointC{kDefaultProtectionHeatingSetpointC};
-    float coolingDeadbandK{kDefaultCoolingDeadbandK};
-    float standbyCoolingIncreaseK{kDefaultStandbyCoolingIncreaseK};
-    float economyCoolingIncreaseK{kDefaultEconomyCoolingIncreaseK};
-    float protectionCoolingSetpointC{kDefaultProtectionCoolingSetpointC};
-    float minSetpointC{kDefaultMinSetpointC};
-    float maxSetpointC{kDefaultMaxSetpointC};
-    float maxSetpointShiftK{kDefaultMaxSetpointShiftK};
+    float comfortHeatingSetpointC{cfg::kDefaultComfortHeatingSetpointC};
+    float standbyHeatingReductionK{cfg::kDefaultStandbyHeatingReductionK};
+    float economyHeatingReductionK{cfg::kDefaultEconomyHeatingReductionK};
+    float protectionHeatingSetpointC{cfg::kDefaultProtectionHeatingSetpointC};
+    float coolingDeadbandK{cfg::kDefaultCoolingDeadbandK};
+    float standbyCoolingIncreaseK{cfg::kDefaultStandbyCoolingIncreaseK};
+    float economyCoolingIncreaseK{cfg::kDefaultEconomyCoolingIncreaseK};
+    float protectionCoolingSetpointC{cfg::kDefaultProtectionCoolingSetpointC};
+    float minSetpointC{cfg::kDefaultMinSetpointC};
+    float maxSetpointC{cfg::kDefaultMaxSetpointC};
+    float maxSetpointShiftK{cfg::kDefaultMaxSetpointShiftK};
 
     // --- Heating / cooling loops ---
     hvac_ns::ControlAlgorithm heatingControlAlgorithm{
-        static_cast<hvac_ns::ControlAlgorithm>(kDefaultHeatingControlAlgorithm)};
-    float heatingKp{kDefaultHeatingKp};
-    float heatingTiSeconds{static_cast<float>(kDefaultHeatingTiSeconds)};
-    float heatingTdSeconds{static_cast<float>(kDefaultHeatingTdSeconds)};
-    uint8_t heatingMinOutputPercent{kDefaultHeatingMinimumOutputPercent};
-    uint8_t heatingMaxOutputPercent{kDefaultHeatingMaximumOutputPercent};
+        static_cast<hvac_ns::ControlAlgorithm>(cfg::kDefaultHeatingControlAlgorithm)};
+    float heatingKp{cfg::kDefaultHeatingKp};
+    float heatingTiSeconds{static_cast<float>(cfg::kDefaultHeatingTiSeconds)};
+    float heatingTdSeconds{static_cast<float>(cfg::kDefaultHeatingTdSeconds)};
+    uint8_t heatingMinOutputPercent{cfg::kDefaultHeatingMinimumOutputPercent};
+    uint8_t heatingMaxOutputPercent{cfg::kDefaultHeatingMaximumOutputPercent};
     hvac_ns::ControlAlgorithm coolingControlAlgorithm{
-        static_cast<hvac_ns::ControlAlgorithm>(kDefaultCoolingControlAlgorithm)};
-    float coolingKp{kDefaultCoolingKp};
-    float coolingTiSeconds{static_cast<float>(kDefaultCoolingTiSeconds)};
-    float coolingTdSeconds{static_cast<float>(kDefaultCoolingTdSeconds)};
-    uint8_t coolingMinOutputPercent{kDefaultCoolingMinimumOutputPercent};
-    uint8_t coolingMaxOutputPercent{kDefaultCoolingMaximumOutputPercent};
-    float thermostatHysteresisC{kDefaultThermostatHysteresisC};
+        static_cast<hvac_ns::ControlAlgorithm>(cfg::kDefaultCoolingControlAlgorithm)};
+    float coolingKp{cfg::kDefaultCoolingKp};
+    float coolingTiSeconds{static_cast<float>(cfg::kDefaultCoolingTiSeconds)};
+    float coolingTdSeconds{static_cast<float>(cfg::kDefaultCoolingTdSeconds)};
+    uint8_t coolingMinOutputPercent{cfg::kDefaultCoolingMinimumOutputPercent};
+    uint8_t coolingMaxOutputPercent{cfg::kDefaultCoolingMaximumOutputPercent};
+    float thermostatHysteresisC{cfg::kDefaultThermostatHysteresisC};
     hvac_ns::BinaryDemandStrategy binaryDemandStrategy{
-        static_cast<hvac_ns::BinaryDemandStrategy>(kDefaultBinaryDemandStrategy)};
-    uint8_t binaryDemandThresholdPercent{kDefaultBinaryDemandThresholdPercent};
-    float frostAlarmTemperatureC{kDefaultFrostAlarmTemperatureC};
-    float overheatAlarmTemperatureC{kDefaultOverheatAlarmTemperatureC};
+        static_cast<hvac_ns::BinaryDemandStrategy>(cfg::kDefaultBinaryDemandStrategy)};
+    uint8_t binaryDemandThresholdPercent{cfg::kDefaultBinaryDemandThresholdPercent};
+    float frostAlarmTemperatureC{cfg::kDefaultFrostAlarmTemperatureC};
+    float overheatAlarmTemperatureC{cfg::kDefaultOverheatAlarmTemperatureC};
 
     // --- Floor temperature ---
-    float maxFloorTemperatureC{kDefaultMaxFloorTemperatureC};
-    float minFloorTemperatureC{kDefaultMinFloorTemperatureC};
-    float floorHysteresisK{kDefaultFloorHysteresisK};
-    uint8_t floorComfortOutputPercent{kDefaultFloorComfortOutputPercent};
+    float maxFloorTemperatureC{cfg::kDefaultMaxFloorTemperatureC};
+    float minFloorTemperatureC{cfg::kDefaultMinFloorTemperatureC};
+    float floorHysteresisK{cfg::kDefaultFloorHysteresisK};
+    uint8_t floorComfortOutputPercent{cfg::kDefaultFloorComfortOutputPercent};
 
     // --- Condensation protection ---
     hvac_ns::DewPointSurfaceSource dewPointSurfaceSource{
-        static_cast<hvac_ns::DewPointSurfaceSource>(kDefaultDewPointSurfaceSource)};
-    float dewPointMarginK{kDefaultDewPointMarginK};
-    float dewPointHysteresisK{kDefaultDewPointHysteresisK};
-    bool blockCoolingOnDewPointAlarm{kDefaultBlockCoolingOnDewPointAlarm != 0};
+        static_cast<hvac_ns::DewPointSurfaceSource>(cfg::kDefaultDewPointSurfaceSource)};
+    float dewPointMarginK{cfg::kDefaultDewPointMarginK};
+    float dewPointHysteresisK{cfg::kDefaultDewPointHysteresisK};
+    bool blockCoolingOnDewPointAlarm{cfg::kDefaultBlockCoolingOnDewPointAlarm != 0};
 
     // --- Slab moisture ---
-    float floorMoistureThresholdPct{kDefaultFloorMoistureThresholdPct};
-    float floorMoistureHysteresisPct{kDefaultFloorMoistureHysteresisPct};
-    float floorMoistureExcessGm3{kDefaultFloorMoistureExcessGm3};
+    float floorMoistureThresholdPct{cfg::kDefaultFloorMoistureThresholdPct};
+    float floorMoistureHysteresisPct{cfg::kDefaultFloorMoistureHysteresisPct};
+    float floorMoistureExcessGm3{cfg::kDefaultFloorMoistureExcessGm3};
 
     // --- Ventilation / air quality ---
-    float ventilationSetpointPpm{static_cast<float>(kDefaultVentilationSetpointPpm)};
-    float ventilationBandPpm{static_cast<float>(kDefaultVentilationBandPpm)};
-    float humidityBoostPct{kDefaultHumidityBoostPct};
-    float humidityBandPct{kDefaultHumidityBandPct};
-    float vocThresholdIndex{static_cast<float>(kDefaultVocThresholdIndex)};
-    float vocBandIndex{static_cast<float>(kDefaultVocBandIndex)};
-    uint8_t ventilationBaseDemandPercent{kDefaultVentilationBaseDemandPercent};
-    uint8_t ventilationManualDemandPercent{kDefaultVentilationManualDemandPercent};
+    float ventilationSetpointPpm{static_cast<float>(cfg::kDefaultVentilationSetpointPpm)};
+    float ventilationBandPpm{static_cast<float>(cfg::kDefaultVentilationBandPpm)};
+    float humidityBoostPct{cfg::kDefaultHumidityBoostPct};
+    float humidityBandPct{cfg::kDefaultHumidityBandPct};
+    float vocThresholdIndex{static_cast<float>(cfg::kDefaultVocThresholdIndex)};
+    float vocBandIndex{static_cast<float>(cfg::kDefaultVocBandIndex)};
+    uint8_t ventilationBaseDemandPercent{cfg::kDefaultVentilationBaseDemandPercent};
+    uint8_t ventilationManualDemandPercent{cfg::kDefaultVentilationManualDemandPercent};
 };
 
 // ---------------------------------------------------------------------------
@@ -213,9 +215,9 @@ struct Outputs {
     bool heatCoolModeHeating{true};  // DPT 1.100: 1 = heat
     bool enableHeat{false};
     bool enableCool{false};
-    float activeSetpointC{kDefaultComfortHeatingSetpointC};
-    float heatingSetpointC{kDefaultComfortHeatingSetpointC};
-    float coolingSetpointC{kDefaultComfortHeatingSetpointC + kDefaultCoolingDeadbandK};
+    float activeSetpointC{cfg::kDefaultComfortHeatingSetpointC};
+    float heatingSetpointC{cfg::kDefaultComfortHeatingSetpointC};
+    float coolingSetpointC{cfg::kDefaultComfortHeatingSetpointC + cfg::kDefaultCoolingDeadbandK};
     float setpointShiftFeedbackK{0.0f};
     hvac_ns::OperatingPreset activePreset{hvac_ns::OperatingPreset::Comfort};
     hvac_ns::ControllerMode activeControllerMode{hvac_ns::ControllerMode::Auto};

@@ -9,6 +9,7 @@
  */
 #include "mqtt_payload.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,13 +94,67 @@ static void json_bool(json_writer_t *w, const char *key, bool value)
     json_raw(w, "\"%s\":%s", key, value ? "true" : "false");
 }
 
+static void json_key(json_writer_t *w, const char *key)
+{
+    json_sep(w);
+    json_raw(w, "\"%s\":", key);
+}
+
+/* String content, escaped as RFC 8259 section 7 requires: the quote, the
+ * backslash and the control characters. Everything else, UTF-8 included, goes
+ * through unchanged. Some of what goes into a document is typed by an
+ * installer, and a device name with a quote in it must not end the string
+ * early and leave Home Assistant with a configuration it cannot parse. */
+static void json_escaped(json_writer_t *w, const char *value)
+{
+    if (value == NULL) {
+        return;
+    }
+    for (const unsigned char *p = (const unsigned char *)value; *p != '\0' && !w->overflow; ++p) {
+        switch (*p) {
+        case '"':  json_raw(w, "\\\""); break;
+        case '\\': json_raw(w, "\\\\"); break;
+        case '\n': json_raw(w, "\\n"); break;
+        case '\r': json_raw(w, "\\r"); break;
+        case '\t': json_raw(w, "\\t"); break;
+        default:
+            if (*p < 0x20) {
+                json_raw(w, "\\u%04x", (unsigned)*p);
+            } else {
+                json_raw(w, "%c", *p);
+            }
+            break;
+        }
+    }
+}
+
+/* A quoted string value. NULL is written as "", so a missing field in a fixed
+ * layout costs an empty string rather than a malformed document. */
+static void json_quoted(json_writer_t *w, const char *value)
+{
+    json_raw(w, "\"");
+    json_escaped(w, value != NULL ? value : "");
+    json_raw(w, "\"");
+}
+
 static void json_str(json_writer_t *w, const char *key, const char *value)
 {
     if (value == NULL) {
         return;
     }
-    json_sep(w);
-    json_raw(w, "\"%s\":\"%s\"", key, value);
+    json_key(w, key);
+    json_quoted(w, value);
+}
+
+/* Ends a document: its length, or -1 and an empty buffer if any write would
+ * have overflowed, so a truncated document can never be sent by mistake. */
+static int json_finish(json_writer_t *w)
+{
+    if (w->overflow) {
+        w->buf[0] = '\0';
+        return -1;
+    }
+    return (int)w->used;
 }
 
 /* An invalid measurement is omitted, never published as 0. The redundancy layer
@@ -223,12 +278,117 @@ int mqtt_payload_state_json(char *buf, size_t buf_len, const control_state_t *st
     json_int(&w, "air_quality_status", state->air_quality_status);
 
     json_raw(&w, "}");
+    return json_finish(&w);
+}
 
-    if (w.overflow) {
-        buf[0] = '\0';
+/* --- Home Assistant discovery --------------------------------------------- */
+
+/* The device block every entity repeats, so Home Assistant groups them under
+ * one device card rather than scattering unrelated entities. */
+static void json_discovery_device(json_writer_t *w, const mqtt_discovery_device_t *device)
+{
+    json_key(w, "dev");
+    json_raw(w, "{\"ids\":[");
+    json_quoted(w, device->device_id);
+    json_raw(w, "],\"name\":");
+    json_quoted(w, device->device_name);
+    json_raw(w, ",\"mf\":");
+    json_quoted(w, device->manufacturer);
+    json_raw(w, ",\"mdl\":");
+    json_quoted(w, device->model);
+    json_raw(w, "}");
+    json_str(w, "avty_t", device->availability_topic);
+}
+
+/* "<base>/cmd/<command>", the topic the service subscribes to. */
+static void json_command_topic(json_writer_t *w, const char *key,
+                               const mqtt_discovery_device_t *device, const char *command)
+{
+    json_key(w, key);
+    json_raw(w, "\"");
+    json_escaped(w, device->command_base);
+    json_raw(w, "/cmd/");
+    json_escaped(w, command);
+    json_raw(w, "\"");
+}
+
+/* A Home Assistant value template reading one key of the state document. The
+ * measurements default to '' because the state document omits an invalid one
+ * (see json_measurement); the climate fields are always present. */
+static void json_value_template(json_writer_t *w, const char *key, const char *value_key,
+                                bool default_empty)
+{
+    json_key(w, key);
+    json_raw(w, "\"{{value_json.");
+    json_escaped(w, value_key);
+    json_raw(w, "%s", default_empty ? "|default('')}}\"" : "}}\"");
+}
+
+int mqtt_payload_discovery_sensor(char *buf, size_t buf_len, const mqtt_discovery_device_t *device,
+                                  const char *object_id, const char *name,
+                                  const char *device_class, const char *unit,
+                                  const char *value_key)
+{
+    if (buf == NULL || buf_len == 0 || device == NULL || object_id == NULL || name == NULL
+        || value_key == NULL) {
         return -1;
     }
-    return (int)w.used;
+
+    json_writer_t w = {.buf = buf, .len = buf_len, .used = 0, .overflow = false, .first = true};
+    json_raw(&w, "{");
+    json_key(&w, "uniq_id");
+    json_raw(&w, "\"");
+    json_escaped(&w, device->device_id);
+    json_raw(&w, "_");
+    json_escaped(&w, object_id);
+    json_raw(&w, "\"");
+    json_str(&w, "name", name);
+    json_str(&w, "stat_t", device->state_topic);
+    json_value_template(&w, "val_tpl", value_key, true);
+    json_str(&w, "dev_cla", device_class);
+    if (unit != NULL) {
+        json_str(&w, "unit_of_meas", unit);
+        json_str(&w, "stat_cla", "measurement");
+    }
+    json_discovery_device(&w, device);
+    json_raw(&w, "}");
+    return json_finish(&w);
+}
+
+int mqtt_payload_discovery_climate(char *buf, size_t buf_len, const mqtt_discovery_device_t *device)
+{
+    if (buf == NULL || buf_len == 0 || device == NULL) {
+        return -1;
+    }
+
+    json_writer_t w = {.buf = buf, .len = buf_len, .used = 0, .overflow = false, .first = true};
+    json_raw(&w, "{");
+    json_key(&w, "uniq_id");
+    json_raw(&w, "\"");
+    json_escaped(&w, device->device_id);
+    json_raw(&w, "_thermostat\"");
+    json_str(&w, "name", "Room thermostat");
+    json_str(&w, "stat_t", device->state_topic);
+    json_value_template(&w, "curr_temp_tpl", "temperature", true);
+    json_value_template(&w, "curr_hum_tpl", "humidity", true);
+    json_value_template(&w, "temp_stat_tpl", "setpoint", false);
+    json_command_topic(&w, "temp_cmd_t", device, "setpoint");
+    json_value_template(&w, "mode_stat_tpl", "mode", false);
+    json_command_topic(&w, "mode_cmd_t", device, "mode");
+    json_key(&w, "modes");
+    json_raw(&w, "[\"off\",\"heat\",\"cool\",\"auto\"]");
+    json_value_template(&w, "act_tpl", "action", false);
+    json_value_template(&w, "pr_mode_stat_tpl", "preset", false);
+    json_command_topic(&w, "pr_mode_cmd_t", device, "preset");
+    json_key(&w, "pr_modes");
+    json_raw(&w, "[\"comfort\",\"standby\",\"eco\",\"away\"]");
+    json_int(&w, "min_temp", 7);
+    json_int(&w, "max_temp", 35);
+    json_num(&w, "temp_step", 0.5, 1);
+    json_str(&w, "temp_unit", "C");
+    json_discovery_device(&w, device);
+    json_raw(&w, "}");
+    return json_finish(&w);
 }
 
 /* --- Command parsing ----------------------------------------------------- */
@@ -327,6 +487,10 @@ static bool parse_boolish(const char *token, float *out)
     return false;
 }
 
+/* strtod accepts "nan", "inf" and "infinity", and a finite double such as
+ * 1e300 becomes inf on the way to float. None of those is a number a command
+ * can mean, so they are refused here. control_state_write() refuses them too
+ * and is the gate that counts; this only avoids handing it one. */
 static bool parse_number(const char *token, float *out)
 {
     char *end = NULL;
@@ -334,7 +498,11 @@ static bool parse_number(const char *token, float *out)
     if (end == token || *end != '\0') {
         return false;
     }
-    *out = (float)value;
+    const float narrowed = (float)value;
+    if (!isfinite(value) || !isfinite(narrowed)) {
+        return false;
+    }
+    *out = narrowed;
     return true;
 }
 

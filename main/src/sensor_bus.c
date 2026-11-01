@@ -26,6 +26,7 @@ esp_err_t sensor_bus_init(sensor_bus_handle_t sensor_bus)
     }
     sensor_bus->hdc302x_device_handle = NULL;
     sensor_bus->scd4x_device_handle = NULL;
+    sensor_bus->present_mask = 0;
     if (sensor_bus->bme68x_mutex == NULL)
     {
         sensor_bus->bme68x_mutex = xSemaphoreCreateMutex();
@@ -59,7 +60,15 @@ static esp_err_t init_bme68x(sensor_bus_handle_t sensor_bus_handle)
         ESP_LOGE(TAG, "Failed to create BME68x device: %s", esp_err_to_name(ret));
         return ret;
     }
-    bme68x_init(&sensor_bus_handle->bme68x_dev);
+    // The first transaction with the part: a BME688 that is not fitted fails
+    // here, and its device handle has to go back to the bus with it.
+    int8_t rslt = bme68x_init(&sensor_bus_handle->bme68x_dev);
+    if (rslt != BME68X_OK)
+    {
+        ESP_LOGE(TAG, "BME68x init failed: %d", rslt);
+        bme68x_device_delete_i2c(&sensor_bus_handle->bme68x_dev);
+        return ESP_FAIL;
+    }
     ESP_LOGI(TAG, "BME68x device created");
     struct bme68x_conf conf;
     conf.filter = BME68X_FILTER_OFF;
@@ -67,10 +76,11 @@ static esp_err_t init_bme68x(sensor_bus_handle_t sensor_bus_handle)
     conf.os_hum = BME68X_OS_8X;
     conf.os_pres = BME68X_OS_16X;
     conf.os_temp = BME68X_OS_8X;
-    int8_t rslt = bme68x_set_conf(&conf, &sensor_bus_handle->bme68x_dev);
+    rslt = bme68x_set_conf(&conf, &sensor_bus_handle->bme68x_dev);
     if (rslt != BME68X_OK)
     {
         ESP_LOGE(TAG, "Failed to set BME68x conf: %d", rslt);
+        bme68x_device_delete_i2c(&sensor_bus_handle->bme68x_dev);
         return ESP_FAIL;
     }
     bme68x_get_conf(&conf, &sensor_bus_handle->bme68x_dev);
@@ -101,11 +111,6 @@ esp_err_t sensor_bus_enable(sensor_bus_handle_t sensor_bus_handle)
 {
     esp_err_t ret;
     ESP_LOGI(TAG, "Enabling sensor bus...");
-    ret = sensor_bus_reg_enable();
-    if (ret != ESP_OK)
-    {
-        return ret;
-    }
     if (sensor_bus_handle == NULL)
     {
         return ESP_ERR_INVALID_ARG;
@@ -114,39 +119,80 @@ esp_err_t sensor_bus_enable(sensor_bus_handle_t sensor_bus_handle)
     {
         return ESP_ERR_INVALID_STATE;
     }
+    sensor_bus_handle->present_mask = 0;
+    ret = sensor_bus_reg_enable();
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
     ret = i2c_bus_init(&sensor_bus_handle->bus_handle,
             PIN_SDA,
             PIN_SCL,
             true);
+    if (ret != ESP_OK)
+    {
+        // The one failure that is the bus's rather than a part's: with no bus
+        // there is nothing to degrade to.
+        ESP_LOGE(TAG, "Failed to create the sensor I2C bus: %s", esp_err_to_name(ret));
+        sensor_bus_handle->bus_handle = NULL;
+        sensor_bus_reg_disable();
+        return ret;
+    }
+
+    // Each part from here on is optional. A missing or dead one used to fail
+    // the whole enable, and main.c turned that into a reboot loop; now it is
+    // left out, and the fusion layer reports what it measured as unavailable
+    // while everything else keeps working.
     sensor_bus_handle->hdc302x_device_handle = hdc302x_device_create(
                                                 sensor_bus_handle->bus_handle,
                                                 HDC203X_ADDR_0,
                                                 SENSOR_BUS_SPEED);
-    if (sensor_bus_handle->hdc302x_device_handle == NULL)
+    if (sensor_bus_handle->hdc302x_device_handle != NULL)
     {
-        return ESP_FAIL;
+        sensor_bus_handle->present_mask |= SENSOR_BUS_PRESENT_HDC302X;
     }
+    else
+    {
+        ESP_LOGE(TAG, "HDC302x unavailable: its temperature and humidity will not be read");
+    }
+
     sensor_bus_handle->scd4x_device_handle = scd4x_device_create(
                                                 sensor_bus_handle->bus_handle,
                                                 SCD4X_ADDR_0,
                                                 SENSOR_BUS_SPEED);
-    if (sensor_bus_handle->scd4x_device_handle == NULL)
+    if (sensor_bus_handle->scd4x_device_handle != NULL)
     {
-        return ESP_FAIL;
+        ret = scd4x_start_low_power_periodic_measurement(sensor_bus_handle->scd4x_device_handle);
+        if (ret == ESP_OK)
+        {
+            sensor_bus_handle->present_mask |= SENSOR_BUS_PRESENT_SCD4X;
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to start SCD4x measurement: %s", esp_err_to_name(ret));
+            scd4x_device_delete(sensor_bus_handle->scd4x_device_handle);
+            sensor_bus_handle->scd4x_device_handle = NULL;
+        }
     }
-    ret = scd4x_start_low_power_periodic_measurement(sensor_bus_handle->scd4x_device_handle);
-    if (ret != ESP_OK)
+    if ((sensor_bus_handle->present_mask & SENSOR_BUS_PRESENT_SCD4X) == 0)
     {
-        ESP_LOGE(TAG, "Failed to start SCD4x measurement: %s", esp_err_to_name(ret));
-        return ret;
+        ESP_LOGE(TAG, "SCD4x unavailable: CO2 will be reported as unavailable");
     }
 
-    ret = init_bme68x(sensor_bus_handle);
-    if (ret != ESP_OK)
+    if (init_bme68x(sensor_bus_handle) == ESP_OK)
     {
-        return ret;
+        sensor_bus_handle->present_mask |= SENSOR_BUS_PRESENT_BME68X;
     }
-    ESP_LOGI(TAG, "Sensor bus enabled");
+    else
+    {
+        ESP_LOGE(TAG, "BME68x unavailable: pressure and air quality will be reported as "
+                      "unavailable");
+    }
+
+    ESP_LOGI(TAG, "Sensor bus enabled (present: HDC302x %s, SCD4x %s, BME68x %s)",
+             (sensor_bus_handle->present_mask & SENSOR_BUS_PRESENT_HDC302X) ? "yes" : "no",
+             (sensor_bus_handle->present_mask & SENSOR_BUS_PRESENT_SCD4X) ? "yes" : "no",
+             (sensor_bus_handle->present_mask & SENSOR_BUS_PRESENT_BME68X) ? "yes" : "no");
     return ESP_OK;
 }
 
@@ -190,6 +236,7 @@ esp_err_t sensor_bus_disable(sensor_bus_handle_t sensor_bus_handle)
         }
         sensor_bus_handle->bus_handle = NULL;
     }
+    sensor_bus_handle->present_mask = 0;
     sensor_bus_reg_disable();
     ESP_LOGI(TAG, "Sensor bus disabled");
     return ESP_OK;
@@ -213,27 +260,39 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
     // gets stack garbage rather than a zero it can recognise.
     memset(results, 0, sizeof(*results));
 
-    ret = hdc302x_start_measurement(sensor_bus_handle->hdc302x_device_handle);
-    if (ret != ESP_OK)
+    // A part that did not come up in sensor_bus_enable() is skipped, not
+    // counted as an error every cycle: its absence was reported once, and its
+    // measurands go unavailable through the fusion layer's staleness window.
+    const uint8_t present = sensor_bus_handle->present_mask;
+
+    if (present & SENSOR_BUS_PRESENT_HDC302X)
     {
-        ESP_LOGW(TAG, "Failed to start HDC302x measurement: %s", esp_err_to_name(ret));
-        results->error_count++;
+        ret = hdc302x_start_measurement(sensor_bus_handle->hdc302x_device_handle);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGW(TAG, "Failed to start HDC302x measurement: %s", esp_err_to_name(ret));
+            results->error_count++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(25)); // wait for measurement to complete
+        ret = hdc302x_read_measurement(
+                sensor_bus_handle->hdc302x_device_handle,
+                &results->hdc302x_temperature,
+                &results->hdc302x_humidity);
+        if (ret == ESP_OK)
+        {
+            results->updated_mask |= SENSOR_BUS_HDC302X_TEMPERATURE | SENSOR_BUS_HDC302X_HUMIDITY;
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to read HDC302x: %s", esp_err_to_name(ret));
+            results->error_count++;
+        }
     }
-    vTaskDelay(pdMS_TO_TICKS(25)); // wait for measurement to complete
-    ret = hdc302x_read_measurement(
-            sensor_bus_handle->hdc302x_device_handle,
-            &results->hdc302x_temperature,
-            &results->hdc302x_humidity);
-    if (ret == ESP_OK)
+    if ((present & SENSOR_BUS_PRESENT_BME68X) == 0)
     {
-        results->updated_mask |= SENSOR_BUS_HDC302X_TEMPERATURE | SENSOR_BUS_HDC302X_HUMIDITY;
+        // No BME688: no T/H/P, no air quality, and no BSEC task to ask.
     }
-    else
-    {
-        ESP_LOGW(TAG, "Failed to read HDC302x: %s", esp_err_to_name(ret));
-        results->error_count++;
-    }
-    if (bsec_integration_available())
+    else if (bsec_integration_available())
     {
         // BSEC owns the BME688 and produces fused T/H/P + air-quality outputs on
         // its own cadence; just snapshot the latest here.
@@ -288,7 +347,7 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
         }
     }
 
-    if (results->updated_mask & SENSOR_BUS_BME68X_PRESSURE)
+    if ((present & SENSOR_BUS_PRESENT_SCD4X) && (results->updated_mask & SENSOR_BUS_BME68X_PRESSURE))
     {
         ret = scd4x_set_ambient_pressure(sensor_bus_handle->scd4x_device_handle,
                 (uint16_t)((float)results->bme68x_pressure / 100.0f));
@@ -302,7 +361,8 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
     // legitimately find no new sample. That is not an error and must not be
     // counted as one — the fusion layer's staleness window is what decides when
     // the CO2 reading has actually gone quiet.
-    if (scd4x_data_ready_status(sensor_bus_handle->scd4x_device_handle))
+    if ((present & SENSOR_BUS_PRESENT_SCD4X)
+        && scd4x_data_ready_status(sensor_bus_handle->scd4x_device_handle))
     {
         ret = scd4x_read_measurement(
                 sensor_bus_handle->scd4x_device_handle,
