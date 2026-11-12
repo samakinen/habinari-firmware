@@ -657,3 +657,19 @@ clearing the table) is accepted and not applied. knx 961,824 B (−13 KB),
 knxip 1,656,848 B (−9 KB). **Bench:** property enumeration by index in ETS6
 (order changed, index 0 now exists), an ETS6 download (GOT PID 23 now
 exists), and a Data Secure download over the extended services.
+
+**3.2 and 3.3 done.** TPUART backend removed (TP1 is bit-bang only; the
+Kconfig choice leaves room for an NCN5120 driver). `KNX_IP_TUNNELING`
+guards the KNXnet/IP client role, so knxip links no tunnelling client; CI
+builds a tunnelling-off host configuration. knx 954,096 B, knxip
+1,645,424 B.
+
+**3.4 done.** The unused platform UART abstraction is removed (knx
+950,640 B, knxip 1,643,856 B). `VirtualPlatform` runs tasks as fibres on a
+single-threaded scheduler driven by virtual time: no wall-clock waits, no
+`until-fail` repeat, no flake label (this supersedes the F3 note above).
+2,000 runs of each former flake under load: 0 failures, 6–25× faster.
+Follow-up: the ASan/UBSan host build reports about 460 `-Wconversion`
+warnings in untouched headers, apparently GCC's UBSan instrumentation noise;
+the sanitiser CI job does not use `-Werror`, but this should be confirmed
+against a baseline and then silenced for that build only.
