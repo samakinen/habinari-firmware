@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "device_config.h"
 #include "esp_err.h"
 #include "esp_netif.h"
 
@@ -17,11 +18,9 @@ extern "C" {
  * @file wifi_service.h
  * @brief Joining a Wi-Fi network, for whichever personality needs one.
  *
- * This used to live inside the MQTT adapter, which was fine while MQTT was the
- * only thing on the board that needed a radio. KNXnet/IP needs the same
- * network, the same credentials and the same "wait until we actually have an
- * address" behaviour, and two copies of that would be two things to get subtly
- * different.
+ * MQTT and KNXnet/IP need the same network, the same credentials and the same
+ * "wait until we actually have an address" behaviour, and two copies of that
+ * would be two things to get subtly different.
  *
  * It owns the SSID and the passphrase — and only those. The MQTT broker URI and
  * its credentials stay with the adapter that uses them, because a KNXnet/IP
@@ -96,6 +95,19 @@ void wifi_service_set_event_callback(wifi_service_event_cb_t callback, void *ctx
  * Safe to call more than once.
  */
 esp_err_t wifi_service_register_config(void);
+
+/** The NVS namespace that holds the device's network settings: the SSID and
+ * passphrase here, the MQTT broker settings in mqtt_service.c. */
+#define NETCFG_NAMESPACE "netcfg"
+
+/**
+ * device_config hooks for a string stored in NETCFG_NAMESPACE, the NVS key
+ * passed in item->ctx. A secret item reads back only as set or unset. Shared
+ * with the MQTT adapter, whose broker settings live in the same namespace.
+ */
+esp_err_t wifi_service_netcfg_get(const device_config_item_t *item, device_config_value_t *out);
+esp_err_t wifi_service_netcfg_set(const device_config_item_t *item,
+                                  const device_config_value_t *value);
 
 #ifdef __cplusplus
 }

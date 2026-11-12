@@ -196,34 +196,34 @@ still open are listed there in section 8. KNstaX paths are relative to
 ## 2. Unused or unneeded code
 
 Unused anywhere, or only by tests:
-- [ ] `CMakeLists.standalone.txt`, which references files that don't exist.
-- [ ] `ManchesterCodec` (TP1 isn't Manchester-coded), `Tp1FrameCodec`, and
+- [x] `CMakeLists.standalone.txt`, which references files that don't exist.
+- [x] `ManchesterCodec` (TP1 isn't Manchester-coded), `Tp1FrameCodec`, and
   `timer_gpio_hal_virtual.cpp`, which is compiled into the ESP image.
-- [ ] `RoutingTable` and the NetworkLayer forwarding path (which also gets hop count 7 wrong).
-- [ ] The async transport receive path (`transport_layer_receive.cpp:74-160, 247-326`),
+- [x] `RoutingTable` and the NetworkLayer forwarding path (which also gets hop count 7 wrong).
+- [x] The async transport receive path (`transport_layer_receive.cpp:74-160, 247-326`),
   a diverging copy of `handleNumberedData`.
-- [ ] `DataSecureSession` crypto, and `KeyDerivation::deriveSessionKey`/`deriveBilateralKeys`.
+- [x] `DataSecureSession` crypto, and `KeyDerivation::deriveSessionKey`/`deriveBilateralKeys`.
 - [ ] `application::PropertyStore`/`PropertyStoreManager`, a shadow property model
   that still drives some access decisions (`src/bau/bau.cpp:429-452`,
   `property_ext_services.cpp:135-148, 272-283`).
-- [ ] About 25 static `encode*`/`decode*` service codecs used only by tests.
+- [x] About 25 static `encode*`/`decode*` service codecs used only by tests.
   `RestartService` already disagrees with the production parser.
-- [ ] `Esp32Memory`, which allocates 4 KB eagerly, and the whole SPI abstraction
+- [x] `Esp32Memory`, which allocates 4 KB eagerly, and the whole SPI abstraction
   (drags `esp_driver_spi` into REQUIRES).
 - [ ] Headers included nowhere: `knx.hpp`, `enum_string.hpp` (doesn't compile),
   `allocation_tracker.hpp`.
-- [ ] Unused `ApplicationLayer` members: `sendToGroup`, `setPropertyWriteConsumer`,
+- [x] Unused `ApplicationLayer` members: `sendToGroup`, `setPropertyWriteConsumer`,
   `defaultSendOptions`, `serviceResponseSendOptions`, `propertyStoreManager`,
   and the receive queue (about 2.2 KB of RAM).
-- [ ] `BusAccessUnit::beginRequestGroupObjectValue`;
+- [x] `BusAccessUnit::beginRequestGroupObjectValue`;
   `GroupObjectTableObject::findByAddress`/`hasAddress` (tests only).
 - [x] Kconfig options never read: `KNX_PRODUCTION_BUILD`, `KNX_USE_NVS`,
   `KNX_SECURITY_KEY_SIZE`, `KNX_IP_MULTICAST_ADDR`,
   `KNX_ENABLE_DEVICE_DESCRIPTOR`, `KNX_ENABLE_PROPERTY_SERVICES`.
   `CONFIG_KNX_MEDIUM_RF` is still offered; `CONFIG_KNX_VIRTUAL_BUS` has no entry.
-- [ ] About 20 unused `config.hpp` constants, including `ENABLE_ROUTING` and
+- [x] About 20 unused `config.hpp` constants, including `ENABLE_ROUTING` and
   `RX_TASK_PRIORITY`, which Habinari sets for nothing.
-- [ ] `main/`: `sensor_fusion_reset`, `sensor_bus_deinit`,
+- [x] `main/`: `sensor_fusion_reset`, `sensor_bus_deinit`,
   `control_service_generation`, `deriveBlePasskey`, `FilteredChannel::rawValue`,
   `TrendMonitor::ratePerHour`, `mqtt_service_connected`/`_provision`,
   `mb_rtu_slave_stop`, `oob_service_advertising`/`_client_connected`.
@@ -285,7 +285,7 @@ Compiled into the firmware but not needed:
 - [ ] Seven single-implementation `LowerStack*` interfaces
   (`bau_stack_port.cpp:120-204`); `createTp1StackPort` is also used for IP.
   The TP1 RX chain is six layers deep; fold `Tp1MacController` into `Tp1MacPhysical`.
-- [ ] Duplication:
+- [x] Duplication:
   - classic vs extended property services;
   - `tunneling_session_client` vs `secure_tunneling_client`;
   - the 6-byte sequence encoder (three copies);
@@ -298,7 +298,7 @@ Compiled into the firmware but not needed:
   discarded with `(void)`.
 - [x] `FixedVector` never destroys elements and has no tests; `back()` on an
   empty vector indexes -1.
-- [ ] `CMakeLists.txt` is 2.4k lines, about 2,000 of them hand-written test
+- [x] `CMakeLists.txt` is 2.4k lines, about 2,000 of them hand-written test
   targets. Add a `knx_add_test()` helper. Replace `CMAKE_SOURCE_DIR` with
   `CMAKE_CURRENT_SOURCE_DIR` (8 places); fix the undefined
   `${PYTHON_EXECUTABLE}` (`:640`); `BUILD_TESTS=OFF` still builds all tests.
@@ -325,7 +325,7 @@ Compiled into the firmware but not needed:
 - [x] The standalone build can't produce the shipping knxip configuration
   (TP1 off, NETIP + SECURE on, tunnelling off): `CMakeLists.txt:350-352` forces
   secure tunnelling on.
-- [ ] Seven unregistered test files (about 3k lines): `test_linux_platform.cpp`,
+- [x] Seven unregistered test files (about 3k lines): `test_linux_platform.cpp`,
   `test_linux_uart_spi.cpp`, `test_cemi_golden.cpp`, `test_ets_integration.cpp`,
   `test_linux_uart_spi_real.cpp`, `test/integration/test_transport_connection.cpp`
   (stale duplicate), `test_esp32_hardware_validation.cpp`. Also

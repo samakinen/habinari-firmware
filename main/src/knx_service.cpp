@@ -98,7 +98,7 @@ static constexpr uint32_t kKnxStartTimeoutMs = 5000u;
 //      sends (coalescing each object to its latest value) and drains them from
 //      loop(), so even the initial burst and later change storms are spread
 //      over time with nothing dropped. Requires a monotonic time source, which
-//      also enables the cyclic status heartbeats (previously never armed).
+//      also enables the cyclic status heartbeats.
 static constexpr uint32_t kStartupPublishMaxJitterMs = 8000;
 static constexpr uint32_t kMaxUnsolicitedTelegramsPerWindow = 5;
 static constexpr uint32_t kTelegramRateWindowMs = 1000;
@@ -266,36 +266,16 @@ struct PublishSnapshot {
 // nothing here fires for unused datapoints; see reportUnlinkedPorts for the
 // one-shot inventory of those. Anything that does reach this log is a genuine
 // send failure, printed by name because the bare enum value was unreadable.
-template <typename AppT>
-void publishPort(AppT &app, HabinariPort port, float value, const char *label)
+// The value types the product's ports carry. Listing them keeps a call site
+// from reaching app.publish() with a type it was never meant to (an int, a
+// double) through template deduction; convert explicitly at the call instead.
+template <typename AppT, typename T>
+void publishPort(AppT &app, HabinariPort port, T value, const char *label)
 {
-    const auto result = app.publish(port, value);
-    if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
-    }
-}
-
-template <typename AppT>
-void publishPort(AppT &app, HabinariPort port, bool value, const char *label)
-{
-    const auto result = app.publish(port, value);
-    if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
-    }
-}
-
-template <typename AppT>
-void publishPort(AppT &app, HabinariPort port, uint8_t value, const char *label)
-{
-    const auto result = app.publish(port, value);
-    if (result.isError()) {
-        KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
-    }
-}
-
-template <typename AppT>
-void publishPort(AppT &app, HabinariPort port, uint16_t value, const char *label)
-{
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, bool> ||
+                      std::is_same_v<T, uint8_t> || std::is_same_v<T, uint16_t> ||
+                      std::is_same_v<T, Dpt20Mode>,
+                  "publishPort: unsupported port value type");
     const auto result = app.publish(port, value);
     if (result.isError()) {
         KNX_LOGW(TAG, "%s publish failed: %s", label, util::errorCodeToString(result.error()));
@@ -830,16 +810,10 @@ void publishAllState(AppT &app, const PublishSnapshot &snapshot)
     // --- Mode and setpoints (FB RTSM) ---
     publishPort(app, HabinariPort::ControllerOnOff, snapshot.controllerOnOff,
                 "controller on/off");
-    {
-        // HvacModeStatus reports the mode the controller resolved to, which
-        // window/presence handling can move away from the requested one.
-        const auto result = app.publish(HabinariPort::HvacModeStatus,
-                                        static_cast<Dpt20Mode>(out.activePreset));
-        if (result.isError()) {
-            KNX_LOGW(TAG, "hvac mode status publish failed: %s",
-                     util::errorCodeToString(result.error()));
-        }
-    }
+    // HvacModeStatus reports the mode the controller resolved to, which
+    // window/presence handling can move away from the requested one.
+    publishPort(app, HabinariPort::HvacModeStatus, static_cast<Dpt20Mode>(out.activePreset),
+                "hvac mode status");
     publishPort(app, HabinariPort::ContrModeStatus,
                 hvac_ns::controllerModeToContrMode(out.activeControllerMode), "contr mode status");
     publishPort(app, HabinariPort::ContrModeSecondary,
@@ -2114,9 +2088,9 @@ void knxServiceTask(void *arg)
 // ---------------------------------------------------------------------------
 // The adapter descriptor — this file's entire public surface.
 //
-// It used to be five knx_service_* entry points that main.c called directly,
-// including NVS init and factory reset, which is what made KNX structurally
-// mandatory. What is left is the mapping and nothing else.
+// NVS initialisation and factory reset belong to main.c and the control
+// service, so KNX is one optional adapter among several; what is here is the
+// mapping and nothing else.
 // ---------------------------------------------------------------------------
 
 namespace {

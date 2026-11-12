@@ -18,8 +18,7 @@ extern "C" {
  * Home Assistant device card) prefers the installer-configured `dev.name`
  * (see device_config.h) and falls back to this when none is set. The literal
  * lives once, in CONFIG_HABINARI_DEVICE_NAME_PREFIX, instead of once per
- * channel — see the git history of mqtt_service.c and oob_ble.c for what that
- * looked like before.
+ * channel.
  */
 
 /**
@@ -29,6 +28,14 @@ extern "C" {
  * advertisement buffer. Keep the prefix short if it needs to survive there.
  */
 void device_default_name(const uint8_t mac_tail[3], char *out, size_t out_len);
+
+/**
+ * @brief The name a channel shows: the configured `dev.name` when it is set and
+ * fits in @p out_len, otherwise device_default_name(). The BLE advertisement
+ * and the Home Assistant device card both use it, so they agree on a name
+ * until somebody sets one.
+ */
+void device_display_name(const uint8_t mac_tail[3], char *out, size_t out_len);
 
 #ifdef __cplusplus
 }

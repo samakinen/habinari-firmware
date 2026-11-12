@@ -531,3 +531,72 @@ for a frame other than the outstanding one arrives without the repeat flag
 a frame the device already repeated could now end an ETS session, where before
 it was ignored. Watch for "T_ACK seq=… while waiting for seq=… - disconnecting"
 in the log during downloads over KNXnet/IP.
+
+### Phase 2 progress
+
+**F1 done** (uncommitted): about 7,500 lines of dead code removed from KNstaX
+and `main/`, plus the Kconfig options that only fed the removed constants
+(and their lines in `sdkconfig.defaults*`). KNstaX host tests 147/147 (the 8
+deleted targets only covered removed code), `main/` 12/12, no warnings. knx
+976,464 B (−25 KB), knxip 1,667,456 B (−20 KB). `mb_rtu_slave_stop` went
+with it, so nothing stops the Modbus task, as before.
+
+**F2 found a real inconsistency** before anything was moved. Comparing the
+shadow `PropertyStore` with `InterfaceObjectManager::describeProperty` over
+every object and PID:
+
+- The extended property services (`A_PropertyExt*`) run on the store, which
+  orders properties by PID; the classic services use the live model's order.
+  For the Device, Application Program, Security and KNXnet/IP Parameter
+  objects, the two service families return different PIDs for the same
+  property index.
+- Group Object Table PID 9 (TableData) is read-only with the full element
+  count in the manifest (and so in the store and the extended services), but
+  writeable with one element in the live model (the classic services).
+
+Deleting the store outright would change what ETS sees through the extended
+services, so F2 is done in two steps: the classic services and the Data
+Secure policy move off the store now, with no change on the wire; the
+extended services stay on it until the index order and the TableData access
+are decided against 03_03_07 / 03_05_01 and checked with ETS6 on the bench.
+
+**F2 step one done:** the classic property services and the Data Secure
+access check no longer read `PropertyStore`; only the extended services do
+(see above). No change on the wire. knx 974,800 B, knxip 1,666,192 B.
+
+**F3 done:** six orphaned test files deleted (stale copies, gtest leftovers,
+code that no longer exists, one ESP32-only hardware app), `test_linux_platform`
+rewritten for Unity and registered, `test_exporter_medium.py` registered.
+Test targets go through `knx_add_test()` (cmake/knx_testing.cmake);
+`CMakeLists.txt` 2,345 → 992 lines with every test's command, labels,
+timeouts and compile/link lines identical before and after. Four integration
+tests that never carried the `integration` label now do. The three
+virtual-time tests keep `until-fail:3` and the `sdk-flake-candidate` label:
+a deterministic fix needs fibres behind `createTask` or the stack's tasks as
+step functions, which is a rewrite. One real race (VTRUN_002) fixed.
+
+**F4/F5 done:** one 48-bit sequence encoder, one `clampf` (now NaN-safe in
+the fusion code too), one `device_display_name()`, shared `netcfg_*` hooks,
+one templated `publishPort`, named methods for the BAU property write, and a
+per-tag cache in `resolveEffectiveLevel` (keyed by tag pointer: tags must be
+static strings, as they are). Sensor scaling stays separate on purpose: Modbus
+(×10, saturating), BLE (×100, invalid marker) and MQTT (plain floats) are
+different wire contracts. Stale and history-only comments fixed. The fusion
+logic moved into `habinari::fusion::Pipeline` so it is host-tested
+(`test_sensor_fusion_service`, 14 cases).
+
+**After phase 2:** KNstaX host 149/149, `main/` host 13/13, no warnings.
+
+| Variant | Before phase 2 | After phase 2 |
+|---|---|---|
+| knx | 1,001,664 B | 975,040 B |
+| knxip | 1,687,616 B | 1,666,224 B |
+| modbus | 349,360 B | 348,992 B |
+| modbus-ble | 797,472 B | 797,296 B |
+| mqtt | 1,666,432 B | 1,665,808 B |
+
+**Open after phase 2:** the extended property services on `PropertyStore`
+(index order, Group Object Table TableData access), the filter table (C2.5),
+client-side tunnelling, the three flaky virtual-time tests, the structural
+items deferred in section 3, and the bench checks in section 7 plus the E09
+risk above.

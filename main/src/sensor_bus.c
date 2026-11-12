@@ -385,8 +385,3 @@ esp_err_t sensor_bus_read(sensor_bus_handle_t sensor_bus_handle, sensor_bus_resu
 
     return results->updated_mask != 0 ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
-
-esp_err_t sensor_bus_deinit(sensor_bus_handle_t sensor_bus_handle)
-{
-    return sensor_bus_disable(sensor_bus_handle);
-}

@@ -290,19 +290,4 @@ uint32_t blePasskeyFromDigest(const Digest &digest)
     return head % kBlePasskeyModulus;
 }
 
-bool deriveBlePasskey(const RootSecret &root, Serial serial, uint32_t &out)
-{
-    std::array<uint8_t, kBlePasskeyMessageBytes> message{};
-    buildBlePasskeyMessage(serial, message);
-
-    Digest digest{};
-    if (!hmacSha256(std::span<const uint8_t>(root.data(), root.size()),
-                    std::span<const uint8_t>(message.data(), message.size()), digest)) {
-        return false;
-    }
-    out = blePasskeyFromDigest(digest);
-    mbedtls_platform_zeroize(digest.data(), digest.size());
-    return true;
-}
-
 } // namespace habinari::secret

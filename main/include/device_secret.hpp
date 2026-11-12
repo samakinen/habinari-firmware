@@ -172,9 +172,6 @@ void buildBlePasskeyMessage(Serial serial, std::array<uint8_t, kBlePasskeyMessag
  */
 uint32_t blePasskeyFromDigest(const Digest &digest);
 
-/// Reference (software) derivation of the BLE pairing passkey.
-bool deriveBlePasskey(const RootSecret &root, Serial serial, uint32_t &out);
-
 // --- Platform layer (device_secret_esp.cpp) -------------------------------
 
 enum class RootSecretState {

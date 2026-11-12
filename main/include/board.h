@@ -11,8 +11,6 @@
 #define PIN_PROBE_EN GPIO_NUM_0
 #define PIN_2V8_EN GPIO_NUM_1
 #define PIN_KNX_OK GPIO_NUM_3
-#define PIN_KNX_TX GPIO_NUM_4
-#define PIN_KNX_RX GPIO_NUM_5
 #define PIN_SDA GPIO_NUM_6
 #define PIN_SCL GPIO_NUM_7
 #define PIN_PROG_BTN GPIO_NUM_9
@@ -24,11 +22,8 @@
 #define PIN_PROBE_SDA GPIO_NUM_19
 #define PIN_LED GPIO_NUM_20
 #define PIN_RS485_TEN GPIO_NUM_21
-#define PIN_UNUSED_1 GPIO_NUM_22
-#define PIN_UNUSED_2 GPIO_NUM_23
 
 #define MODBUS_RTU_UART_NUM UART_NUM_1
-#define MODBUS_RTU_UART_BAUDRATE 9600
 
 // Time to wait for the probe to stabilize
 #define PROBE_STABILIZE_TIME 250

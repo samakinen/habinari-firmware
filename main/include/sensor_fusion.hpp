@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "float_clamp.hpp"
+
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -44,10 +46,7 @@
 namespace habinari {
 namespace fusion {
 
-inline float clampf(float value, float lo, float hi)
-{
-    return value < lo ? lo : (value > hi ? hi : value);
-}
+using ::habinari::clampf;
 
 // ---------------------------------------------------------------------------
 // Per-source signal conditioning
@@ -120,9 +119,6 @@ public:
 
     // Filtered value. Only meaningful while valid().
     float value() const { return filtered_; }
-    // Last accepted reading before smoothing — what an alarm path that must not
-    // lag (fire detection) should look at alongside the filtered trend.
-    float rawValue() const { return lastRaw_; }
     bool valid() const { return valid_; }
     float ageSeconds() const { return ageSeconds_; }
     uint32_t acceptedSamples() const { return acceptedSamples_; }
@@ -135,7 +131,6 @@ public:
     {
         valid_ = false;
         filtered_ = 0.0f;
-        lastRaw_ = 0.0f;
         ageSeconds_ = 0.0f;
         consecutiveRejects_ = 0;
         acceptedSamples_ = 0;
@@ -176,7 +171,6 @@ private:
             }
         }
 
-        lastRaw_ = raw;
         if (!valid_ || resync || config_.filterTauSeconds <= 0.0f || elapsed <= 0.0f) {
             filtered_ = raw;  // first sample, or filtering disabled: adopt it
         } else {
@@ -193,7 +187,6 @@ private:
 
     ChannelConfig config_{};
     float filtered_{0.0f};
-    float lastRaw_{0.0f};
     float ageSeconds_{0.0f};
     uint32_t acceptedSamples_{0};
     uint32_t rejectedSamples_{0};
@@ -456,7 +449,6 @@ public:
     }
 
     float ratePerMinute() const { return ratePerSecond() * 60.0f; }
-    float ratePerHour() const { return ratePerSecond() * 3600.0f; }
 
     float spanSeconds() const
     {

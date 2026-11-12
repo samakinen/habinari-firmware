@@ -945,32 +945,6 @@ static bool radio_stop(void)
 
 /* --- Public lifecycle ----------------------------------------------------- */
 
-static void build_device_name(void)
-{
-    /* A configured name wins, because in a corridor of identical boards the one
-     * the commissioner labelled is the one they are looking for. Otherwise
-     * device_default_name() — the same fallback mqtt_service.c uses, so a
-     * board's BLE advertisement and its Home Assistant device card agree on a
-     * name until somebody sets one. */
-    const device_config_item_t *item = device_config_find("dev.name");
-    if (item != NULL) {
-        char configured[DEVICE_CONFIG_STRING_MAX + 16];
-        const int written = device_config_get_text(item, configured, sizeof(configured));
-        /* The item bounds itself well inside device_name, but the registry is
-         * the only thing enforcing that and it is in another file. Checking the
-         * length here means a later relaxation of that bound produces a fallback
-         * name rather than a silently halved one. */
-        if (written > 0 && (size_t)written < sizeof(s_ctx.device_name)) {
-            memcpy(s_ctx.device_name, configured, (size_t)written + 1u);
-            return;
-        }
-        if (written >= (int)sizeof(s_ctx.device_name)) {
-            ESP_LOGW(TAG, "Configured device name is too long to advertise; using the fallback");
-        }
-    }
-    device_default_name(&s_ctx.serial[3], s_ctx.device_name, sizeof(s_ctx.device_name));
-}
-
 esp_err_t oob_service_start(void)
 {
     if (s_ctx.armed) {
@@ -980,7 +954,7 @@ esp_err_t oob_service_start(void)
     if (esp_read_mac(s_ctx.serial, ESP_MAC_BASE) != ESP_OK) {
         ESP_LOGW(TAG, "esp_read_mac failed; device name and serial will be zeros");
     }
-    build_device_name();
+    device_display_name(&s_ctx.serial[3], s_ctx.device_name, sizeof(s_ctx.device_name));
     s_ctx.provisioned = load_provisioned();
     device_secret_ble_passkey(&s_ctx.passkey, &s_ctx.passkey_from_efuse);
 
@@ -1089,16 +1063,6 @@ void oob_service_loop(void)
         ESP_LOGI(TAG, "Programming mode ended: taking the BLE radio down");
     }
     (void)radio_stop();  /* Failure leaves radio_up set; the next pass retries. */
-}
-
-bool oob_service_advertising(void)
-{
-    return s_ctx.radio_up && (s_ctx.advertising || s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE);
-}
-
-bool oob_service_client_connected(void)
-{
-    return s_ctx.conn_handle != BLE_HS_CONN_HANDLE_NONE && s_ctx.authenticated;
 }
 
 bool oob_service_identify_active(void)

@@ -4,9 +4,8 @@
 #pragma once
 
 #include "esp_err.h"
-#include "ext_probe.h"
-#include "sensor_bus.h"
 #include "sensor_data.h"
+#include "sensor_readings.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,16 +16,17 @@ extern "C" {
  * @brief C entry point to the fusion layer in sensor_fusion.hpp.
  *
  * The fusion algorithms are header-only C++ so they can be host-tested without
- * ESP-IDF (main/test/test_sensor_fusion.cpp). This is the thin, stateful glue
- * that owns one instance of them, maps the board's four physical sensors onto
- * the redundant measurands, and produces the sensor_data_t the rest of the
- * firmware consumes.
+ * ESP-IDF (main/test/test_sensor_fusion.cpp). This is the stateful glue that
+ * owns one instance of them, maps the board's four physical sensors onto the
+ * redundant measurands, and produces the sensor_data_t the rest of the firmware
+ * consumes. The glue itself is platform-free too (sensor_fusion_pipeline.hpp,
+ * main/test/test_sensor_fusion_service.cpp); only the lock is not.
  *
  * Threading: sensor_fusion_init() runs once, before any task uses the layer
  * (control_service_start() calls it). After that every entry point may be
  * called from any task: sensor_fusion_update() holds the fusion lock for the
- * whole cycle, and configure, reset and acknowledge take the same lock, so none
- * of them can land in the middle of an update and leave it half-configured.
+ * whole cycle, and configure and acknowledge take the same lock, so neither can
+ * land in the middle of an update and leave it half-configured.
  */
 
 /// Runtime tuning. Everything an integrator can reach from ETS ends up here;
@@ -82,9 +82,6 @@ void sensor_fusion_default_config(sensor_fusion_config_t *out);
 /// Apply new tuning. Safe to call at any time and from any task; takes effect
 /// on the next sampling cycle without disturbing filter or detector state.
 void sensor_fusion_configure(const sensor_fusion_config_t *config);
-
-/// Drop all conditioning and detector state (filters, trends, latched alarms).
-void sensor_fusion_reset(void);
 
 /// Clear latched alarms (currently the fire alarm) without disturbing the
 /// filters or trends. This is what a bus acknowledge or a button press does.

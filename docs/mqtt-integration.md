@@ -63,9 +63,6 @@ python "$IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen
 esptool.py write_flash 0x9000 netcfg.bin
 ```
 
-…or call `mqtt_service_provision()` **from the console** at bring-up; it stores
-the settings and reboots.
-
 ---
 
 ## 2. Topics

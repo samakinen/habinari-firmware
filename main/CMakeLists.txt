@@ -10,6 +10,7 @@ set(app_srcs
     "src/sensor_bus.c"
     "src/sensor_service.c"
     "src/sensor_fusion_service.cpp"
+    "src/sensor_fusion_pipeline.cpp"
     "src/control_service.cpp"
     "src/protocol_registry.c"
     "src/device_config.c"

@@ -74,9 +74,6 @@ typedef mb_rtu_slave_t *mb_rtu_slave_handle_t;
 /// keeps the registers in step with control_state.
 esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave);
 
-/// Stop the task and release the Modbus controller.
-esp_err_t mb_rtu_slave_stop(mb_rtu_slave_t *slave);
-
 /// Publish a fresh measurement record. Called from the sensor task; the rest of
 /// the register image is refreshed by the slave's own task from control_state.
 esp_err_t mb_rtu_slave_publish(mb_rtu_slave_t *slave, const sensor_data_t *data);

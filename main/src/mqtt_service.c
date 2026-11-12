@@ -40,10 +40,8 @@
 static const char *TAG = "mqtt";
 
 /* One firmware image, many sites: credentials are provisioned into NVS, never
- * compiled in. See docs/mqtt-integration.md for the keys. */
-#define NETCFG_NAMESPACE "netcfg"
-#define NETCFG_KEY_SSID "ssid"
-#define NETCFG_KEY_PASSWORD "pass"
+ * compiled in, in NETCFG_NAMESPACE (wifi_service.h). See docs/mqtt-integration.md
+ * for the keys. */
 #define NETCFG_KEY_BROKER "broker"
 #define NETCFG_KEY_MQTT_USER "mq_user"
 #define NETCFG_KEY_MQTT_PASS "mq_pass"
@@ -62,7 +60,7 @@ typedef struct {
     TaskHandle_t task;
 
     char device_id[DEVICE_ID_MAX];
-    char device_name[DEVICE_NAME_MAX]; /* HA display name; see build_device_name() */
+    char device_name[DEVICE_NAME_MAX]; /* HA display name; see device_display_name() */
     char base[BASE_MAX];       /* "<prefix>/<device-id>" */
     char topic_state[TOPIC_MAX];
     char topic_avail[TOPIC_MAX];
@@ -104,62 +102,18 @@ static esp_err_t nvs_get_string(nvs_handle_t handle, const char *key, char *out,
 
 /* --- Out-of-band configuration --------------------------------------------
  *
- * The other circular one, and the worse of the two: these five strings decide
- * whether the device has a network at all, and nothing on the network can write
- * them until they are already right. Registered before the adapter tries to
- * associate, precisely so that the failure path — no credentials — still leaves
+ * Circular, like the Wi-Fi credentials: these strings decide whether the
+ * adapter reaches its broker at all, and nothing on the network can write them
+ * until they are already right. Registered before the adapter tries to
+ * connect, precisely so that the failure path — no credentials — still leaves
  * them reachable from the service channel (oob_service.h).
  *
- * One hook pair serves all five; the NVS key travels in item->ctx.
+ * The broker settings only. The SSID and passphrase belong to wifi_service.c:
+ * they are the device's connection to a network, not this adapter's
+ * connection to a broker, and a KNX IP image should not offer settings for a
+ * broker it does not have. Both use the same hook pair, the NVS key travelling
+ * in item->ctx.
  */
-
-static esp_err_t netcfg_cfg_get(const device_config_item_t *item, device_config_value_t *out)
-{
-    out->str[0] = '\0';
-
-    nvs_handle_t handle;
-    if (nvs_open(NETCFG_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return ESP_OK; /* nothing provisioned yet is a valid answer, not an error */
-    }
-
-    char stored[DEVICE_CONFIG_STRING_MAX] = {0};
-    size_t len = sizeof(stored);
-    if (nvs_get_str(handle, (const char *)item->ctx, stored, &len) == ESP_OK) {
-        if ((item->flags & DEVICE_CONFIG_FLAG_SECRET) != 0u) {
-            /* Only the fact, never the value — device_config_format() renders
-             * this as <set>/<unset>. The secret never reaches a buffer that a
-             * transport could decide to send. */
-            out->str[0] = (stored[0] != '\0') ? 'x' : '\0';
-            out->str[1] = '\0';
-        } else {
-            snprintf(out->str, sizeof(out->str), "%s", stored);
-        }
-    }
-    memset(stored, 0, sizeof(stored));
-    nvs_close(handle);
-    return ESP_OK;
-}
-
-static esp_err_t netcfg_cfg_set(const device_config_item_t *item,
-                                const device_config_value_t *value)
-{
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NETCFG_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nvs_set_str(handle, (const char *)item->ctx, value->str);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
-    nvs_close(handle);
-    return err;
-}
-
-/* The broker settings only. The SSID and passphrase moved to wifi_service.c
- * when KNXnet/IP started needing the same network: they are the device's
- * connection to a network, not this adapter's connection to a broker, and a
- * KNX IP image should not offer settings for a broker it does not have. */
 static const device_config_item_t netcfg_config_items[] = {
     {
         .key = "net.broker",
@@ -167,8 +121,8 @@ static const device_config_item_t netcfg_config_items[] = {
         .type = DEVICE_CONFIG_TYPE_STRING,
         .flags = DEVICE_CONFIG_FLAG_REBOOT,
         .max = 127.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
+        .get = wifi_service_netcfg_get,
+        .set = wifi_service_netcfg_set,
         .ctx = (void *)NETCFG_KEY_BROKER,
     },
     {
@@ -177,8 +131,8 @@ static const device_config_item_t netcfg_config_items[] = {
         .type = DEVICE_CONFIG_TYPE_STRING,
         .flags = DEVICE_CONFIG_FLAG_REBOOT,
         .max = 63.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
+        .get = wifi_service_netcfg_get,
+        .set = wifi_service_netcfg_set,
         .ctx = (void *)NETCFG_KEY_MQTT_USER,
     },
     {
@@ -187,8 +141,8 @@ static const device_config_item_t netcfg_config_items[] = {
         .type = DEVICE_CONFIG_TYPE_STRING,
         .flags = DEVICE_CONFIG_FLAG_SECRET | DEVICE_CONFIG_FLAG_REBOOT,
         .max = 63.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
+        .get = wifi_service_netcfg_get,
+        .set = wifi_service_netcfg_set,
         .ctx = (void *)NETCFG_KEY_MQTT_PASS,
     },
 };
@@ -466,29 +420,12 @@ static void mqtt_task(void *arg)
 
 /* --- Adapter -------------------------------------------------------------- */
 
-static void build_device_name(mqtt_ctx_t *ctx, const uint8_t mac_tail[3])
-{
-    const device_config_item_t *item = device_config_find("dev.name");
-    if (item != NULL) {
-        char configured[DEVICE_CONFIG_STRING_MAX];
-        const int written = device_config_get_text(item, configured, sizeof(configured));
-        if (written > 0 && (size_t)written < sizeof(ctx->device_name)) {
-            memcpy(ctx->device_name, configured, (size_t)written + 1u);
-            return;
-        }
-        if (written >= (int)sizeof(ctx->device_name)) {
-            ESP_LOGW(TAG, "Configured device name is too long; using the fallback");
-        }
-    }
-    device_default_name(mac_tail, ctx->device_name, sizeof(ctx->device_name));
-}
-
 static void build_topics(mqtt_ctx_t *ctx)
 {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(ctx->device_id, sizeof(ctx->device_id), "%02x%02x%02x", mac[3], mac[4], mac[5]);
-    build_device_name(ctx, &mac[3]);
+    device_display_name(&mac[3], ctx->device_name, sizeof(ctx->device_name));
 
     snprintf(ctx->base, sizeof(ctx->base), "%s/%s", CONFIG_HABINARI_MQTT_BASE_TOPIC,
              ctx->device_id);
@@ -597,44 +534,6 @@ static void mqtt_adapter_on_control_tick(uint32_t generation)
     if (s_ctx.task != NULL && atomic_load(&s_ctx.connected)) {
         xTaskNotifyGive(s_ctx.task);
     }
-}
-
-bool mqtt_service_connected(void)
-{
-    return atomic_load(&s_ctx.connected);
-}
-
-esp_err_t mqtt_service_provision(const char *ssid, const char *password, const char *broker_uri)
-{
-    /* Still writes the Wi-Fi pair even though wifi_service.c owns them now:
-     * they share the "netcfg" namespace, and this is the one call a console
-     * user makes to bring an unprovisioned board onto a network and a broker in
-     * a single step. Splitting it would trade one obvious entry point for two. */
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NETCFG_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        return err;
-    }
-    if (ssid != NULL) {
-        err = nvs_set_str(handle, NETCFG_KEY_SSID, ssid);
-    }
-    if (err == ESP_OK && password != NULL) {
-        err = nvs_set_str(handle, NETCFG_KEY_PASSWORD, password);
-    }
-    if (err == ESP_OK && broker_uri != NULL) {
-        err = nvs_set_str(handle, NETCFG_KEY_BROKER, broker_uri);
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
-    nvs_close(handle);
-
-    if (err != ESP_OK) {
-        return err;
-    }
-    ESP_LOGW(TAG, "Network settings stored — rebooting");
-    esp_restart();
-    return ESP_OK;
 }
 
 const protocol_adapter_t mqtt_protocol_adapter = {

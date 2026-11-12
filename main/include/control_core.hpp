@@ -306,9 +306,9 @@ public:
      *
      * Pure with respect to the outside world: it reads nothing but its
      * arguments and writes nothing but its return value and its own controller
-     * state. All the I/O the old in-KNX version did inline — reconfiguring the
-     * fusion layer, acknowledging alarms — is the caller's job now, which is
-     * what makes this callable from a host test.
+     * state. The I/O around a cycle — reconfiguring the fusion layer,
+     * acknowledging alarms — is the caller's job, which is what makes this
+     * callable from a host test.
      *
      * @param settings    configured tuning, as of this instant
      * @param inputs      installation inputs, as of this instant

@@ -77,6 +77,23 @@ target_compile_options(test_sensor_fusion PRIVATE -Wall -Wextra)
 
 add_test(NAME test_sensor_fusion COMMAND test_sensor_fusion)
 
+# The fusion glue: which sensor backs which measurand, what each cycle exports
+# into sensor_data_t, the health masks and the alarm acknowledge. The service
+# around it only adds the FreeRTOS lock, so the pipeline is built on its own;
+# host_stubs supplies esp_err.h for the C header it shares with the service.
+add_executable(test_sensor_fusion_service
+    test_sensor_fusion_service.cpp
+    "${MAIN_DIR}/src/sensor_fusion_pipeline.cpp"
+)
+target_include_directories(test_sensor_fusion_service PRIVATE
+    "${MAIN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs"
+)
+target_link_libraries(test_sensor_fusion_service PRIVATE unity)
+target_compile_options(test_sensor_fusion_service PRIVATE -Wall -Wextra)
+
+add_test(NAME test_sensor_fusion_service COMMAND test_sensor_fusion_service)
+
 # Modbus register map: scaling, "no reading" sentinels and the register
 # addresses that docs/modbus-register-map.md publishes as the wire contract.
 add_executable(test_modbus_registers test_modbus_registers.cpp)

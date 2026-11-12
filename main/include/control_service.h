@@ -61,10 +61,6 @@ void control_service_set_programming_mode(bool active);
 /// Erase all persisted state and reboot. Does not return.
 void control_service_factory_reset(void);
 
-/// Ticks completed since boot. Increments once per control cycle; adapters get
-/// the same number in on_control_tick().
-uint32_t control_service_generation(void);
-
 /// Notification callback for programming-mode changes (drives the board LED).
 typedef void (*control_programming_mode_callback_t)(bool active);
 void control_service_set_programming_mode_callback(control_programming_mode_callback_t callback);

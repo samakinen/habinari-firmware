@@ -12,6 +12,7 @@ extern "C" {
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "sensor_readings.h"
 
 typedef enum {
     EXT_PROBE_NOT_INITIALIZED = 0,
@@ -37,11 +38,6 @@ typedef struct {
 } ext_probe_t;
 
 typedef ext_probe_t *ext_probe_handle_t;
-
-typedef struct {
-    float temperature;
-    float humidity;
-} ext_probe_results_t;
 
 esp_err_t ext_probe_init(ext_probe_handle_t probe_handle);
 esp_err_t ext_probe_read(ext_probe_handle_t probe_handle, ext_probe_results_t *results);

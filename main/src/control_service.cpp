@@ -190,8 +190,8 @@ void serviceProgrammingMode()
 
 /// One control cycle: snapshot under the lock, compute outside it, store back.
 ///
-/// The two side effects the old in-KNX version did inline — reconfiguring the
-/// fusion layer and acknowledging alarms — happen here rather than in Core::tick
+/// The two side effects of a tick — reconfiguring the fusion layer and
+/// acknowledging alarms — happen here rather than in Core::tick
 /// so that the core stays a pure function and can be driven from a host test.
 void runControlTick(float dtSeconds)
 {
@@ -412,16 +412,6 @@ extern "C" void control_service_set_programming_mode_callback(
     auto &s = ctrl::state();
     ctrl::LockGuard lock(s.mutex);
     s.programmingModeCallback = callback;
-}
-
-extern "C" uint32_t control_service_generation(void)
-{
-    auto &s = ctrl::state();
-    if (s.mutex == nullptr) {
-        return 0;
-    }
-    ctrl::LockGuard lock(s.mutex);
-    return s.generation;
 }
 
 extern "C" void control_service_factory_reset(void)

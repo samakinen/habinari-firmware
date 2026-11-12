@@ -14,7 +14,6 @@ CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 # sdkconfig.defaults compiles the per-frame KNX_LOGD dumps in for bring-up.
 # A release keeps INFO and above, as the knxip overlay already does.
-# CONFIG_KNX_DEBUG_ENABLED is not set
 CONFIG_KNX_LOG_LEVEL=3
 
 # ── Section B: Modbus feature trim (functional — RTU-only device) ─────────

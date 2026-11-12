@@ -4,9 +4,8 @@
 /*
  * Station-mode Wi-Fi, shared by every personality that needs a network.
  *
- * Extracted from mqtt_service.c when KNXnet/IP arrived and needed exactly the
- * same association, the same credentials and the same waiting. The behaviour is
- * unchanged from that version; what is new is that two callers can ask for it.
+ * MQTT and KNXnet/IP need exactly the same association, the same credentials
+ * and the same waiting, so both ask this file for it.
  */
 #include "wifi_service.h"
 
@@ -28,8 +27,8 @@ static const char *TAG = "wifi";
 
 /* One firmware image, many sites: credentials are provisioned into NVS, never
  * compiled in. The namespace is shared with the MQTT adapter's own settings —
- * it is the device's network configuration, not any one protocol's. */
-#define NETCFG_NAMESPACE "netcfg"
+ * it is the device's network configuration, not any one protocol's
+ * (NETCFG_NAMESPACE, wifi_service.h). */
 #define NETCFG_KEY_SSID "ssid"
 #define NETCFG_KEY_PASSWORD "pass"
 
@@ -56,7 +55,7 @@ static portMUX_TYPE s_callback_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* --- Out-of-band configuration -------------------------------------------- */
 
-static esp_err_t netcfg_cfg_get(const device_config_item_t *item, device_config_value_t *out)
+esp_err_t wifi_service_netcfg_get(const device_config_item_t *item, device_config_value_t *out)
 {
     out->str[0] = '\0';
 
@@ -83,8 +82,8 @@ static esp_err_t netcfg_cfg_get(const device_config_item_t *item, device_config_
     return ESP_OK;
 }
 
-static esp_err_t netcfg_cfg_set(const device_config_item_t *item,
-                                const device_config_value_t *value)
+esp_err_t wifi_service_netcfg_set(const device_config_item_t *item,
+                                  const device_config_value_t *value)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NETCFG_NAMESPACE, NVS_READWRITE, &handle);
@@ -109,8 +108,8 @@ static const device_config_item_t wifi_config_items[] = {
         .type = DEVICE_CONFIG_TYPE_STRING,
         .flags = DEVICE_CONFIG_FLAG_REBOOT,
         .max = 32.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
+        .get = wifi_service_netcfg_get,
+        .set = wifi_service_netcfg_set,
         .ctx = (void *)NETCFG_KEY_SSID,
     },
     {
@@ -119,8 +118,8 @@ static const device_config_item_t wifi_config_items[] = {
         .type = DEVICE_CONFIG_TYPE_STRING,
         .flags = DEVICE_CONFIG_FLAG_SECRET | DEVICE_CONFIG_FLAG_REBOOT,
         .max = 63.0f,
-        .get = netcfg_cfg_get,
-        .set = netcfg_cfg_set,
+        .get = wifi_service_netcfg_get,
+        .set = wifi_service_netcfg_set,
         .ctx = (void *)NETCFG_KEY_PASSWORD,
     },
 };

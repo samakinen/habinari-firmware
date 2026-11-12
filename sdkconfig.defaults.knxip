@@ -30,7 +30,6 @@ CONFIG_HABINARI_KNXIP_WIFI_WAIT_S=30
 # would not compile the routing endpoint at all.
 # CONFIG_KNX_MEDIUM_TP1 is not set
 CONFIG_KNX_MEDIUM_IP=y
-CONFIG_KNX_ENABLE_ROUTING=y
 # Tunnelling is the client role — this device connecting out to a gateway —
 # and a KNX IP device does not do that. Off keeps it out of the image.
 # CONFIG_KNX_ENABLE_TUNNELING is not set
@@ -71,7 +70,6 @@ CONFIG_KNX_RX_TASK_STACK_SIZE=8192
 # For bus-level debugging, build with sdkconfig.defaults.knxip alone and raise
 # these again — an image with them on does not fit, so do it on a 8 MB board
 # or with one of the other personalities off.
-# CONFIG_KNX_DEBUG_ENABLED is not set
 CONFIG_KNX_LOG_LEVEL=3
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y

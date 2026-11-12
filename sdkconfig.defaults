@@ -74,9 +74,8 @@ CONFIG_GPTIMER_ISR_CACHE_SAFE=y
 CONFIG_KNX_RX_TASK_STACK_SIZE=8192
 # Bring-up default: compile in KNX_LOGD so the per-frame RX/TX dumps exist.
 # The runtime level is already set to Debug in knx_service.cpp; without this
-# compile-time gate at 4 those calls expand to ((void)0) and nothing is logged.
-# Production (sdkconfig.defaults.prod) turns debug off and drops it back to 3.
-CONFIG_KNX_DEBUG_ENABLED=y
+# compile-time gate at 4 those calls are compiled out and nothing is logged.
+# Production (sdkconfig.defaults.prod) drops it back to 3.
 CONFIG_KNX_LOG_LEVEL=4
 # Every variant layers its overlay on top of this file, so the flash size and
 # partition table are stated here only.

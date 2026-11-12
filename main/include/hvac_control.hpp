@@ -21,24 +21,15 @@
 
 #pragma once
 
+#include "float_clamp.hpp"
+
 #include <cmath>
 #include <cstdint>
 
 namespace habinari {
 namespace hvac {
 
-// NaN fails both comparisons, so without the first test it would come straight
-// back out and into a PID integrator, which never recovers from it. The low
-// bound is the safe answer for every caller here: no demand, lowest setpoint.
-// control_state_write() refuses non-finite commands; this is the last line of
-// defence behind it, not the gate.
-inline float clampf(float value, float lo, float hi)
-{
-    if (std::isnan(value)) {
-        return lo;
-    }
-    return value < lo ? lo : (value > hi ? hi : value);
-}
+using ::habinari::clampf;
 
 // ---------------------------------------------------------------------------
 // Psychrometrics: the quantities the board can derive from the raw

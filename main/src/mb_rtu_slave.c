@@ -37,8 +37,6 @@ static const char *TAG = "modbus_rtu_slave";
 
 #define MB_DEVICE_NAME "Habinari Room HVAC Sensor/Controller"
 
-#define MB_REG_OFFSET(type, field) ((uint16_t)(offsetof(type, field) / 2))
-
 // --- Line settings ---------------------------------------------------------
 
 static void mb_load_line_settings(mb_rtu_slave_t *slave)
@@ -646,8 +644,8 @@ esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave)
         return ESP_ERR_INVALID_STATE;
     }
 
-    // The handle lock outlives a stop, because the sensor task may still be
-    // holding it when one happens; only the first start creates it.
+    // Nothing stops the slave, so a handle lock already here can only come from
+    // an earlier start that failed part-way; keep it rather than create a second.
     SemaphoreHandle_t handle_mutex = slave->handle_mutex;
     memset(slave, 0, sizeof(*slave));
     slave->handle_mutex = handle_mutex != NULL ? handle_mutex : xSemaphoreCreateMutex();
@@ -696,23 +694,6 @@ esp_err_t mb_rtu_slave_start(mb_rtu_slave_t *slave)
         mb_stack_stop(slave);
         xSemaphoreGive(slave->handle_mutex);
         return ESP_FAIL;
-    }
-    return ESP_OK;
-}
-
-esp_err_t mb_rtu_slave_stop(mb_rtu_slave_t *slave)
-{
-    if (slave == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    slave->stop_requested = true;
-    for (int waited_ms = 0; slave->task_handle != NULL && waited_ms < 1000; waited_ms += 50) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    if (slave->handle_mutex != NULL) {
-        xSemaphoreTake(slave->handle_mutex, portMAX_DELAY);
-        mb_stack_stop(slave);
-        xSemaphoreGive(slave->handle_mutex);
     }
     return ESP_OK;
 }
