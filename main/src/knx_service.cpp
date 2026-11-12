@@ -455,27 +455,13 @@ void applyTransmitPolicies(AppT &app, const Settings &settings)
 
 util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platform::Esp32Platform &platform)
 {
-    physical::Tp1BackendSelection selection{};
-
-#if defined(CONFIG_KNX_TP1_TPUART)
-    selection.family = physical::Tp1BackendFamily::Tpuart;
-#elif defined(CONFIG_KNX_TP1_BITBANG)
-    selection.family = physical::Tp1BackendFamily::Bitbang;
-#else
-    return util::ErrorCode::OperationNotSupported;
-#endif
-
-    physical::Tp1PlatformDependencies dependencies{};
-    dependencies.platform = &platform;
-    dependencies.uart = platform.uart();
-
-#if defined(CONFIG_KNX_TP1_BITBANG)
     static physical::BitBangDriverTimerIsrEspIdf bitbangDriver;
+    physical::Tp1PlatformDependencies dependencies{};
     dependencies.bitbangDriver = &bitbangDriver;
     dependencies.bitbangTp1Driver = &bitbangDriver;
-#endif
+    dependencies.platform = &platform;
 
-    auto physicalResult = physical::createTp1PhysicalForPlatform(selection, dependencies);
+    auto physicalResult = physical::createTp1PhysicalForPlatform(dependencies);
     if (physicalResult.isOk() && physicalResult.value()) {
         // STKNX drives PIN_KNX_OK (GPIO3) while the bus supply is good. The
         // stack uses it to stop transmitting into a dead bus; here it is only

@@ -18,11 +18,9 @@ CONFIG_IDF_TARGET="esp32c6"
 CONFIG_HABINARI_DEVICE_NAME_PREFIX="Habinari"
 
 # The board's KNX physical layer is the STKNX transceiver driven by the
-# bit-banging backend, not a TPUART. Bit-bang is also the KNX_TP1_PHYSICAL
-# default now that TPUART is marked broken, but it is stated anyway: without it
-# every CONFIG_KNX_TP1_BITBANG_* option below would be a child of a disabled
-# parent, silently dropped, and the build would fail on the first reference to
-# one of them.
+# bit-banging backend. Bit-bang is the only KNX_TP1_PHYSICAL choice, but it is
+# stated anyway: every CONFIG_KNX_TP1_BITBANG_* option below depends on it, and
+# would be silently dropped if a future backend became the default.
 CONFIG_KNX_MEDIUM_TP1=y
 CONFIG_KNX_TP1_BITBANG=y
 CONFIG_KNX_TP1_BITBANG_TX_PIN=4
