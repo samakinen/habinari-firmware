@@ -600,3 +600,60 @@ logic moved into `habinari::fusion::Pipeline` so it is host-tested
 client-side tunnelling, the three flaky virtual-time tests, the structural
 items deferred in section 3, and the bench checks in section 7 plus the E09
 risk above.
+
+## 9. Phase 3: the remaining open items (12 November 2026)
+
+Phases 1 and 2 are committed on branch `review-2026-10-fixes` (KNstaX
+`2cda699`, firmware `c8e89ba`). The product is still greenfield, so the
+items deferred earlier as "large change, no behaviour gain" are now in
+scope: the aim is the right long-term design, not the smallest patch.
+
+**Settled without code:** the E09 risk noted in section 8. The transport
+layer as built is Style 3 of 03_03_04 §5.4.3 for the T_ACK/T_NAK events
+(T_ACK in OPEN_IDLE ignored, wrong-sequence T_NAK ignored, wrong-sequence
+T_ACK in OPEN_WAIT closes). Style 3 is a defined style, and a duplicate
+T_ACK can only hit OPEN_WAIT if it arrives after the device has sent its
+next frame, which ETS's request/response ordering makes unlikely.
+
+Work, one package at a time, each with tests and a full build:
+
+1. **One property model.** Settle the property order by index and the
+   Group Object Table TableData access against 03_05_01 / 03_03_07, make
+   `InterfaceObjectManager` the single source for every property service
+   (classic and extended), and delete `PropertyStore` and the duplicate
+   manifest data that disagrees with it.
+2. **Remove the TPUART backend.** It is broken (section 2, B9), cannot be
+   tested without the chip, and Habinari uses bit-bang. A correct NCN5120
+   driver is new work for when a product needs one.
+3. **Build the KNXnet/IP client role only with tunnelling enabled** (E3):
+   guard the five call sites so knxip links no tunnelling client (about
+   12 KB).
+4. **Deterministic virtual time.** Replace the thread-per-task model in
+   `VirtualPlatform` so the three flaky tests become deterministic and the
+   `until-fail` repeat goes.
+5. **Split `knxServiceTask`** in `main/src/knx_service.cpp` into units with
+   one job each (product construction, parameter binding, group-object
+   publication, diagnostics).
+6. **Routing multicast address from ETS.** Apply a downloaded
+   PID_ROUTING_MULTICAST_ADDRESS, and treat a change as E11 (mc_timer reset)
+   as 03_08_09 requires.
+7. **A_Key_Write** (03_03_07 §3.5.8), so access levels can be keyed by ETS.
+8. **Structural KNstaX work** from section 3: fold the single-implementation
+   `LowerStack*` interfaces, one error-result type, split `BusAccessUnit` and
+   `ApplicationLayer`, re-measure the 32 KB KNX task stack, and the
+   `InterfaceObjectManager` map and callable types. Planned in detail once
+   1–7 are in, since they change the same code.
+9. **Filter table** (C2.5) and the client-side tunnelling fixes (A10), both
+   for the library's coupler and client roles, which no Habinari image uses.
+
+### Phase 3 progress
+
+**3.1 done.** One property model: `InterfaceObjectManager` serves the
+classic and extended property services; `PropertyStore`, the core manifest
+and its compliance tables are deleted. Property index = rank by PID
+(PID_OBJECT_TYPE is index 0); Group Object Table PID_TABLE is PID 23,
+PDT_GENERIC_02[], writeable through both families, and a length write (ETS
+clearing the table) is accepted and not applied. knx 961,824 B (−13 KB),
+knxip 1,656,848 B (−9 KB). **Bench:** property enumeration by index in ETS6
+(order changed, index 0 now exists), an ETS6 download (GOT PID 23 now
+exists), and a Data Secure download over the extended services.
