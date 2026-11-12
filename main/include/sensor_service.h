@@ -22,7 +22,7 @@ extern "C" {
  * The task samples fast (SENSOR_SERVICE_SAMPLE_INTERVAL_MS) because that is
  * what makes averaging, rate-of-change and fault detection work at all; what
  * reaches the KNX bus is decided much later by the per-object transmit policy
- * (send-on-change plus heartbeat, see knx_service.cpp). Sampling faster
+ * (send-on-change plus heartbeat, see knx_publish.cpp). Sampling faster
  * therefore costs I2C traffic and nothing on the bus.
  */
 

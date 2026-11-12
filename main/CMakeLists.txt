@@ -33,7 +33,21 @@ set(app_srcs
 # archives. A KNX image still contains no radio code, which is the property that
 # actually matters — see the build-time guard in src/protocol_registry.c.
 if(CONFIG_HABINARI_PROTOCOL_KNX)
-    list(APPEND app_srcs "src/knx_service.cpp")
+    # One task, split by job; src/knx_service_internal.hpp lists what each does.
+    list(APPEND app_srcs
+        "src/knx_service.cpp"
+        "src/knx_group_reads.cpp"
+        "src/knx_group_writes.cpp"
+        "src/knx_parameters.cpp"
+        "src/knx_publish.cpp"
+        "src/knx_data_secure.cpp"
+    )
+    # The transport is the only part that differs by medium.
+    if(CONFIG_HABINARI_KNX_MEDIUM_IP)
+        list(APPEND app_srcs "src/knx_medium_ip.cpp")
+    else()
+        list(APPEND app_srcs "src/knx_medium_tp1.cpp")
+    endif()
 endif()
 
 # Address parsing for the KNXnet/IP routing group. Portable C with no ESP-IDF

@@ -15,7 +15,7 @@
  * callers pass measurements and a dt, so the logic is host-testable. Enum
  * values below match the raw wire bytes documented next to the corresponding
  * `HabinariPort`/`HabinariParameter` entries in knx_product.hpp; the
- * KNX binding layer (knx_service.cpp) is responsible for casting between
+ * KNX binding layer (knx_group_writes.hpp, knx_group_reads.cpp) is responsible for casting between
  * KNstaX DPT types (e.g. `Dpt20Mode`) and these plain enums.
  */
 

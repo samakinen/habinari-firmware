@@ -122,7 +122,7 @@ inline esp_err_t applyCommand(control_command_t command,
     case CONTROL_CMD_CONTROLLER_MODE:
         // Compact ControllerMode code points, the same ones control_state_t
         // reports back, so read-modify-write round-trips. KNX DPT 20.105 is
-        // translated at the KNX edge (knx_service.cpp), not here.
+        // translated at the KNX edge (knx_group_writes.hpp), not here.
         inputs.controllerMode = static_cast<hvac_ns::ControllerMode>(static_cast<uint8_t>(value));
         break;
     case CONTROL_CMD_SETPOINT_BASE:

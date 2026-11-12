@@ -192,6 +192,39 @@ target_compile_options(test_service_helpers PRIVATE -Wall -Wextra)
 
 add_test(NAME test_service_helpers COMMAND test_service_helpers)
 
+# The KNX adapter's decisions, without the adapter: where each ETS parameter
+# lands (against the real product schema and the stack's own ParameterState),
+# which control command an inbound group write is — DPT 9 "invalid data"
+# included — and when the service loop publishes. Header-only on the KNstaX
+# side, so the stack is compiled in the shape the ETS export builds it
+# (tools/ets_export) and nothing of it is linked; the fusion pipeline supplies
+# the compiled-in fusion defaults the parameter rows overlay.
+add_executable(test_knx_adapter
+    test_knx_adapter.cpp
+    "${MAIN_DIR}/src/sensor_fusion_pipeline.cpp"
+)
+target_include_directories(test_knx_adapter PRIVATE
+    "${MAIN_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_stubs"
+)
+# SYSTEM: the stack's headers are held to its own warning set, not this suite's.
+target_include_directories(test_knx_adapter SYSTEM PRIVATE
+    "${REPO_ROOT}/components/KNstaX/include"
+)
+target_compile_definitions(test_knx_adapter PRIVATE
+    KNX_SECURE_ENABLED=0
+    KNX_IP_TUNNELING=0
+    KNX_SECURE_IP_TUNNELING=0
+    KNX_HAS_ZLIB=0
+    KNX_FEATURE_NETIP=1
+    KNX_FEATURE_TP1=1
+    KNX_ENABLE_TEST_HOOKS=0
+)
+target_link_libraries(test_knx_adapter PRIVATE unity)
+target_compile_options(test_knx_adapter PRIVATE -Wall -Wextra)
+
+add_test(NAME test_knx_adapter COMMAND test_knx_adapter)
+
 # The browser commissioning client (docs/webui/index.html) decodes the same GATT
 # characteristics by hand, in JavaScript, at fixed offsets — and nothing in any
 # build links the two, so a field inserted into oob_status_t would leave it

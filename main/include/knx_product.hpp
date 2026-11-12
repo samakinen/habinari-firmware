@@ -823,7 +823,7 @@ inline constexpr auto kHabinariProduct =
                 .schemaVersion = 2,
                 .persistKnxState = true,
             },
-            // Must stay in step with knx_service.cpp, which always installs a
+            // Must stay in step with knx_data_secure.cpp, which always installs a
             // factory tool key. This is only what the ETS catalogue entry
             // advertises, and a device that claims Data Secure but cannot
             // honour it fails commissioning. No per-object requirement, so enabling Data
