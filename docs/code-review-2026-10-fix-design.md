@@ -701,3 +701,25 @@ xknx on the new group; backbone-key download taking effect without a
 reboot; ETS reads of the KNXnet/IP Parameter Object; BCU key write and
 re-authorisation; an unkeyed device staying at level 0 throughout a
 download.
+
+### 3.8 plan (structural KNstaX work)
+
+From a read-only survey at KNstaX `987a00c`. None of it may change what ETS6
+or Home Assistant see: a test whose expected bytes change is a regression.
+
+Latent bugs found: `InterfaceObjectManager`, `BusAccessUnit` and
+`CommissionedProductRuntime` are movable although they hand out `this` and
+self-pointers (nothing moves them today; delete the moves); the `knx_tp1_rx`
+task stack (8 KB, top of its Kconfig range, runs Data Secure decryption and
+management dispatch) has never been measured.
+
+| # | Package |
+|---|---|
+| 3.8a | One concrete stack port instead of `BusAccessStackPort` + seven single-implementation `LowerStack*` interfaces; `TransmissionProgressState` = `util::OperationProgressState`; dead stubs |
+| 3.8b | Fold `Tp1MacController` into `Tp1MacPhysical`; delete the unimplemented `Tp1PhysicalLayer` and update ARCHITECTURE/guidelines |
+| 3.8c | `InterfaceObjectManager`: drop the test-only registered-instance path, `FixedVector` of kernel objects, delete the moves (and the BAU's) |
+| 3.8d | One error type: `util::Result<T>` everywhere internally (`PersistenceResult`, `PropertyAccessResult`, `MemoryAccessResult` go); wire return codes stay value types with one mapping; audit discarded results on persistence/send paths |
+| 3.8e/f | Split `BusAccessUnit` into `DeviceModel`, `GroupRuntime` and `DeviceManagement` behind the existing facets |
+| 3.8g | Split `ApplicationLayer` into receive/dispatch, `ManagementServer` and `ASendPipeline`, with an explicit request context |
+| 3.8h | Stack high-water logging for `knx_service` and `knx_tp1_rx`, a static stack report (`-fstack-usage`), and a bench procedure with a sizing rule |
+| 3.8i | Delete the `CommissionedProductRuntime` move constructor; optionally move template-independent product code to a .cpp |
