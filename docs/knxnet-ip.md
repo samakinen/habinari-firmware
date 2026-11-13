@@ -270,7 +270,7 @@ Run-time, through the settings registry (BLE, or any future service channel):
 
 | Key | What it is |
 |---|---|
-| `knx.mcast` | Routing group, overriding the compiled-in default. Takes effect on the next boot. |
+| `knx.mcast` | Routing group, overriding the compiled-in default and any group ETS set before. Takes effect on the next boot. |
 | `net.ssid`, `net.pass` | Wi-Fi credentials. |
 
 `knx.mcast` is validated on write: a value outside `224.0.0.0/4` is refused
@@ -278,6 +278,19 @@ rather than stored. The device joins the group at start-up, so accepting a bad
 one produces a board that reboots and is never seen again — refusing the write
 is the last point at which that is recoverable without a cable.
 (`main/src/knx_ip_addr.c`, host-tested.)
+
+ETS can move the device to another group too, by writing
+`PID_ROUTING_MULTICAST_ADDRESS` (or the Domain Address by serial number, which
+on KNX IP is the same value). The stack stores it and, as 03_08_03 §2.5.17
+requires, routes on it from the next restart — ETS restarts the device at the
+end of a download, so in practice that is when it moves. Until then the device
+stays on the group the download is running over. Whichever side changed the
+group last wins: a `knx.mcast` write is applied at the next boot even over a
+group ETS set, and an ETS write is kept over `knx.mcast` until `knx.mcast` is
+written again. Reading `knx.mcast` back shows the service-channel value, not
+necessarily the group in force; the boot log line "Routing group in force"
+does. A Factory Reset (erase code 02h) returns to `knx.mcast` or, without one,
+the compiled-in default.
 
 ---
 

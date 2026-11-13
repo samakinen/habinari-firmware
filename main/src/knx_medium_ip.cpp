@@ -52,10 +52,18 @@ namespace {
 // value because that change happens on site, and the service channel is how a
 // device that has not joined the right group yet can still be reached.
 //
+// ETS can set it too (PID_ROUTING_MULTICAST_ADDRESS, or the Domain Address
+// written by serial number), and the stack persists what ETS wrote. The two
+// are reconciled as "latest change wins": a service-channel write also leaves
+// kKnxIpNvsMulticastPending behind, the next start hands the group to the
+// stack as overriding what it has stored, and the flag is cleared once the
+// stack has taken it. Without a pending change the stored group stands.
+//
 // Everything else about the device — the individual address, the group object
 // bindings, the parameters — is ETS's, and does not belong here.
 constexpr const char *kKnxIpNvsNamespace = "knxip";
 constexpr const char *kKnxIpNvsMulticast = "mcast";
+constexpr const char *kKnxIpNvsMulticastPending = "mcast_new";
 
 esp_err_t knxIpConfigGet(const device_config_item_t *item, device_config_value_t *out)
 {
@@ -92,10 +100,38 @@ esp_err_t knxIpConfigSet(const device_config_item_t *item, const device_config_v
     }
     err = nvs_set_str(handle, static_cast<const char *>(item->ctx), value->str);
     if (err == ESP_OK) {
+        err = nvs_set_u8(handle, kKnxIpNvsMulticastPending, 1u);
+    }
+    if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
     nvs_close(handle);
     return err;
+}
+
+// Whether the service channel changed the group since the stack last took it.
+bool multicastChangePending()
+{
+    nvs_handle_t handle = 0;
+    if (nvs_open(kKnxIpNvsNamespace, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+    uint8_t pending = 0;
+    const bool set = nvs_get_u8(handle, kKnxIpNvsMulticastPending, &pending) == ESP_OK && pending != 0u;
+    nvs_close(handle);
+    return set;
+}
+
+void clearMulticastChangePending()
+{
+    nvs_handle_t handle = 0;
+    if (nvs_open(kKnxIpNvsNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    if (nvs_erase_key(handle, kKnxIpNvsMulticastPending) == ESP_OK) {
+        (void)nvs_commit(handle);
+    }
+    nvs_close(handle);
 }
 
 const device_config_item_t kKnxIpConfigItems[] = {
@@ -154,6 +190,8 @@ std::string resolveFriendlyName()
     return std::string(fallback);
 }
 
+// The product's default group: the service-channel setting, else Kconfig. The
+// stack uses it when it has none stored, or when multicastChangePending().
 IpAddress resolveMulticastGroup()
 {
     char configured[DEVICE_CONFIG_STRING_MAX] = {0};
@@ -168,10 +206,11 @@ IpAddress resolveMulticastGroup()
 }
 
 // Publish what the device currently answers on into the KNXnet/IP Parameter
-// Object. ETS reads its address, its name and its multicast group from there,
-// and none of it is knowable before the interface has a lease — so this runs
-// after start and again whenever the address changes.
-void publishIpIdentity(HabinariApp &app, IpAddress multicastGroup)
+// Object. ETS reads its address and its name from there, and none of it is
+// knowable before the interface has a lease — so this runs after start and
+// again whenever the address changes. The routing group is not part of it:
+// the stack owns PID_ROUTING_MULTICAST_ADDRESS (see the settings above).
+void publishIpIdentity(HabinariApp &app)
 {
     esp_netif_ip_info_t info{};
     if (wifi_service_ip_info(&info) != ESP_OK || info.ip.addr == 0) {
@@ -183,7 +222,6 @@ void publishIpIdentity(HabinariApp &app, IpAddress multicastGroup)
     config.currentIpAddress = IpAddress(info.ip.addr);
     config.currentSubnetMask = IpAddress(info.netmask.addr);
     config.currentDefaultGateway = IpAddress(info.gw.addr);
-    config.routingMulticastAddress = multicastGroup;
     config.timeToLive = static_cast<uint8_t>(CONFIG_HABINARI_KNXIP_TTL);
     config.ipAssignmentMethod = netip::ip_assignment::kDhcp;
     // Only what this build actually contains. Claiming Tunnelling here would
@@ -260,14 +298,16 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
 
     IpRoutingOptions options{};
     options.multicastGroup = resolveMulticastGroup();
+    options.multicastGroupOverridesStored = multicastChangePending();
     options.port = NetIpPort(CONFIG_HABINARI_KNXIP_PORT);
     options.timeToLive = static_cast<uint8_t>(CONFIG_HABINARI_KNXIP_TTL);
     options.friendlyName = resolveFriendlyName();
 
     char groupText[16] = {0};
     options.multicastGroup.toString(groupText);
-    KNX_LOGI(TAG, "KNXnet/IP routing on %s:%d (TTL %d), announced as \"%s\"",
-             groupText, CONFIG_HABINARI_KNXIP_PORT, CONFIG_HABINARI_KNXIP_TTL,
+    KNX_LOGI(TAG, "KNXnet/IP routing, default group %s%s, port %d (TTL %d), announced as \"%s\"",
+             groupText, options.multicastGroupOverridesStored ? " (set on the service channel)" : "",
+             CONFIG_HABINARI_KNXIP_PORT, CONFIG_HABINARI_KNXIP_TTL,
              options.friendlyName.c_str());
 
     return startCommissionedProduct(platform, kHabinariProduct, std::move(bindings),
@@ -276,10 +316,21 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
 
 void mediumStarted(HabinariApp &app)
 {
+    // The stack has stored the service channel's group by now (it saves it
+    // before start returns), so the request has been carried out.
+    if (multicastChangePending()) {
+        clearMulticastChangePending();
+    }
+    {
+        char groupText[16] = {0};
+        app.routingMulticastAddress().toString(groupText);
+        KNX_LOGI(TAG, "Routing group in force: %s", groupText);
+    }
+
     // The address is published now and again on every change: a DHCP renewal
     // that moves the device would otherwise leave ETS reading back an address
     // it no longer answers on.
-    publishIpIdentity(app, resolveMulticastGroup());
+    publishIpIdentity(app);
     wifi_service_set_event_callback(
         [](bool connected, void *ctx) {
             if (!connected) {
@@ -325,7 +376,7 @@ void serviceMedium(HabinariApp &app)
         } else {
             KNX_LOGI(TAG, "Rejoined the routing group on the current interface");
         }
-        publishIpIdentity(app, resolveMulticastGroup());
+        publishIpIdentity(app);
     }
 
 #if defined(CONFIG_HABINARI_KNXIP_LINK_DIAGNOSTICS)

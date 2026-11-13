@@ -673,3 +673,31 @@ Follow-up: the ASan/UBSan host build reports about 460 `-Wconversion`
 warnings in untouched headers, apparently GCC's UBSan instrumentation noise;
 the sanitiser CI job does not use `-Werror`, but this should be confirmed
 against a baseline and then silenced for that build only.
+
+**3.5 done.** `knx_service.cpp` split into units with one job each (2,215 →
+427 lines; the task is 101 lines); parameter table, group-write mapping
+and publish schedule host-tested; ETS export byte-identical. Follow-up
+fixes: group reads now answer exactly the published value (or DPT 9 7FFFh
+with no valid reading), and the unlinked-object report runs on every entry
+into Operational, including boot and the programming button.
+
+**3.6 done.** PID_ROUTING_MULTICAST_ADDRESS written by ETS (or by
+A_DomainAddressSerialNumber_Write) is validated (224.0.0.0/4), persisted
+and becomes the routing group at the next start, as 03_08_03 §2.5.17
+requires ("shall become active after a reset"); a different value is E11
+(sync restarted), the same value E12. Factory reset 02h restores the
+product default. This supersedes the section 8 note that E11 cannot occur.
+Fixed on the way: the KNXnet/IP Parameter and Router Object seeds and the
+backbone-key write observer were installed before the objects existed, so
+a run-time key download only took effect after a reboot.
+
+**3.7 done.** A_Key_Write (03_03_07 §3.5.8): one key per access level 0–14,
+FFFFFFFFh = no key, persisted, reset by Master Reset 02h/07h for the
+requester's level and below. A device with no keys keeps every partner at
+level 0. This supersedes the section 8 note that A_Key_Write is missing.
+
+**Bench (3.6/3.7):** ETS6 multicast-address change plus restart, seen by
+xknx on the new group; backbone-key download taking effect without a
+reboot; ETS reads of the KNXnet/IP Parameter Object; BCU key write and
+re-authorisation; an unkeyed device staying at level 0 throughout a
+download.
