@@ -10,9 +10,8 @@
 
 #include "control_core.hpp"
 #include "control_service.hpp"
-#include "hvac_control.hpp"
+#include "knx_port_values.hpp"
 #include "knx_product.hpp"
-#include "sensor_data.h"
 
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -30,11 +29,9 @@ namespace habinari_knx::service {
 
 namespace {
 
-namespace hvac_ns = habinari::hvac;
 namespace control = habinari::control;
 using control::LockGuard;
 using Settings = control::Settings;
-using Outputs = control::Outputs;
 
 // --- Bus-citizenship: boot-storm mitigation -------------------------------
 // On a bus-wide power-up (line powered on) every device would otherwise dump
@@ -51,36 +48,13 @@ constexpr uint32_t kStartupPublishMaxJitterMs = 8000;
 constexpr uint32_t kMaxUnsolicitedTelegramsPerWindow = 5;
 constexpr uint32_t kTelegramRateWindowMs = 1000;
 
-// The per-port "has this changed?" bookkeeping this snapshot used to carry is
-// gone: the stack's GroupObjectTransmitPolicy already decides Send / Defer /
-// Suppress per object from the COV delta, the minimum repetition time and the
-// heartbeat (see applyTransmitPolicies), which is the same model the KNX sensor
-// FBs specify. So the loop publishes every port every tick and lets the policy
-// layer drop what has not moved — one place deciding, instead of two that could
-// disagree.
-struct PublishSnapshot {
-    sensor_data_t sensorData{};
-    Settings settings{};
-    Outputs out{};
-    hvac_ns::OperatingPreset hvacOperatingMode{hvac_ns::OperatingPreset::Comfort};
-    hvac_ns::ControllerMode controllerMode{hvac_ns::ControllerMode::Auto};
-    hvac_ns::VentilationMode ventilationMode{hvac_ns::VentilationMode::Auto};
-    bool controllerOnOff{true};
-};
-
-PublishSnapshot takePublishSnapshot()
-{
-    PublishSnapshot snapshot;
-    LockGuard lock(g_state.mutex);
-    snapshot.sensorData = g_state.latestSensorData;
-    snapshot.settings = g_state.hvac;
-    snapshot.out = g_state.out;
-    snapshot.hvacOperatingMode = g_state.in.hvacOperatingMode;
-    snapshot.controllerMode = g_state.in.controllerMode;
-    snapshot.ventilationMode = g_state.in.ventilationMode;
-    snapshot.controllerOnOff = g_state.in.controllerOnOff;
-    return snapshot;
-}
+// The per-port "has this changed?" bookkeeping a publish snapshot used to
+// carry is gone: the stack's GroupObjectTransmitPolicy already decides Send /
+// Defer / Suppress per object from the COV delta, the minimum repetition time
+// and the heartbeat (see applyTransmitPolicies), which is the same model the KNX
+// sensor FBs specify. So the loop publishes every port every tick and lets the
+// policy layer drop what has not moved — one place deciding, instead of two
+// that could disagree.
 
 // The value types the product's ports carry. Listing them keeps a call site
 // from reaching app.publish() with a type it was never meant to (an int, a
@@ -228,158 +202,18 @@ void applyTransmitPolicies(HabinariApp &app, const Settings &settings)
     }
 }
 
-// Publish every transmitting port. The transmit policy decides what actually
-// reaches the bus (see applyTransmitPolicies), so an unchanged value costs a
-// compare and nothing else; a port the ETS project left unlinked is a no-op.
-void publishSnapshot(HabinariApp &app, const PublishSnapshot &snapshot)
+// Offer every transmitting port its value (knx_port_values.hpp). The transmit
+// policy decides what actually reaches the bus (see applyTransmitPolicies), so
+// an unchanged value costs a compare and nothing else; a port the ETS project
+// left unlinked is a no-op; a measurement with no valid reading is not offered
+// at all, so a dead sensor's last value never goes out.
+void publishValues(HabinariApp &app, const PortValues &values)
 {
-    const auto &out = snapshot.out;
-    const auto &sensors = snapshot.sensorData;
-    const control::CorrectedReadings readings = control::correctReadings(sensors, snapshot.settings);
-
-    // --- Room air measurements (FB RTS / RRHS / RAQS) ---
-    if (readings.roomTemperatureValid) {
-        publishPort(app, HabinariPort::RoomTemperature, readings.roomTemperatureC,
-                    "room temperature");
-    }
-    if (readings.roomHumidityValid) {
-        publishPort(app, HabinariPort::RoomHumidity, readings.roomHumidityPct, "room humidity");
-    }
-    if (readings.co2Valid) {
-        publishPort(app, HabinariPort::RoomCo2, readings.co2Ppm, "room co2");
-    }
-    if (readings.pressureValid) {
-        publishPort(app, HabinariPort::RoomAirPressure, readings.pressurePa, "air pressure");
-        publishPort(app, HabinariPort::RoomAirPressureSeaLevel, out.seaLevelPressurePa,
-                    "sea-level pressure");
-    }
-    if (readings.iaqValid) {
-        publishPort(app, HabinariPort::RoomAirQualityIndex,
-                    static_cast<uint16_t>(readings.iaqIndex + 0.5f), "air quality index");
-        publishPort(app, HabinariPort::AirQualityAccuracy, sensors.air_quality_accuracy,
-                    "air quality accuracy");
-    }
-    if (sensors.co2_equivalent.valid) {
-        publishPort(app, HabinariPort::RoomCo2Equivalent, sensors.co2_equivalent.value,
-                    "co2 equivalent");
-    }
-    if (sensors.voc_equivalent.valid) {
-        publishPort(app, HabinariPort::RoomVocEquivalent, sensors.voc_equivalent.value,
-                    "voc equivalent");
-    }
-
-    // --- Derived room air values ---
-    if (readings.roomAirValid()) {
-        publishPort(app, HabinariPort::RoomDewPoint, out.roomDewPointC, "room dew point");
-        publishPort(app, HabinariPort::RoomAbsoluteHumidity, out.roomAbsoluteHumidityGm3,
-                    "room absolute humidity");
-    }
-
-    // --- Floor probe (FB FTS + slab moisture) ---
-    if (readings.floorTemperatureValid) {
-        publishPort(app, HabinariPort::FloorTemperature, readings.floorTemperatureC,
-                    "floor temperature");
-    }
-    if (readings.floorHumidityValid) {
-        publishPort(app, HabinariPort::FloorHumidity, readings.floorHumidityPct,
-                    "floor humidity");
-    }
-    if (readings.floorProbeValid()) {
-        publishPort(app, HabinariPort::FloorAbsoluteHumidity, out.floorAbsoluteHumidityGm3,
-                    "floor absolute humidity");
-    }
-    publishPort(app, HabinariPort::FloorMoistureAlarm, out.floorMoistureAlarm,
-                "floor moisture alarm");
-    publishPort(app, HabinariPort::FloorLimitActive, out.floorLimitActive, "floor limit active");
-    publishPort(app, HabinariPort::FloorComfortActive, out.floorComfortActive,
-                "floor comfort active");
-
-    // --- Condensation protection (FB DPS) ---
-    publishPort(app, HabinariPort::DewPointAlarm, out.dewPointAlarm, "dew point alarm");
-    publishPort(app, HabinariPort::DewPointMargin, out.dewPointMarginK, "dew point margin");
-    publishPort(app, HabinariPort::FreeCoolingAvailable, out.freeCoolingAvailable,
-                "free cooling available");
-    publishPort(app, HabinariPort::FreeDryingAvailable, out.freeDryingAvailable,
-                "free drying available");
-
-    // --- Mode and setpoints (FB RTSM) ---
-    publishPort(app, HabinariPort::ControllerOnOff, snapshot.controllerOnOff,
-                "controller on/off");
-    // HvacModeStatus reports the mode the controller resolved to, which
-    // window/presence handling can move away from the requested one.
-    publishPort(app, HabinariPort::HvacModeStatus, static_cast<Dpt20Mode>(out.activePreset),
-                "hvac mode status");
-    publishPort(app, HabinariPort::ContrModeStatus,
-                hvac_ns::controllerModeToContrMode(out.activeControllerMode), "contr mode status");
-    publishPort(app, HabinariPort::ContrModeSecondary,
-                hvac_ns::controllerModeToContrMode(out.activeControllerMode),
-                "contr mode secondary");
-    publishPort(app, HabinariPort::SetpointBase, snapshot.settings.comfortHeatingSetpointC,
-                "base setpoint");
-    publishPort(app, HabinariPort::SetpointShiftStatus, out.setpointShiftFeedbackK,
-                "setpoint shift status");
-    publishPort(app, HabinariPort::SetpointStatus, out.activeSetpointC, "active setpoint");
-    publishPort(app, HabinariPort::SetpointHeatingStatus, out.heatingSetpointC,
-                "heating setpoint");
-    publishPort(app, HabinariPort::SetpointCoolingStatus, out.coolingSetpointC,
-                "cooling setpoint");
-
-    // --- Controller outputs (FB RTC) ---
-    publishPort(app, HabinariPort::HeatingControlValue, out.heatingControlPercent,
-                "heating control value");
-    publishPort(app, HabinariPort::CoolingControlValue, out.coolingControlPercent,
-                "cooling control value");
-    publishPort(app, HabinariPort::HeatingRequest, out.heatingRequest, "heating request");
-    publishPort(app, HabinariPort::CoolingRequest, out.coolingRequest, "cooling request");
-    publishPort(app, HabinariPort::HeatCoolModeStatus, out.heatCoolModeHeating,
-                "heat/cool mode status");
-    publishPort(app, HabinariPort::EnableHeatStatus, out.enableHeat, "enable heat status");
-    publishPort(app, HabinariPort::EnableCoolStatus, out.enableCool, "enable cool status");
-    publishPort(app, HabinariPort::ControllerStatus, out.controllerStatus, "controller status");
-
-    // --- Ventilation / air quality ---
-    publishPort(app, HabinariPort::Co2Setpoint, snapshot.settings.ventilationSetpointPpm,
-                "co2 setpoint");
-    publishPort(app, HabinariPort::VentilationDemand, out.ventilationDemandPercent,
-                "ventilation demand");
-    publishPort(app, HabinariPort::VentilationStage, static_cast<uint8_t>(out.ventilationLevel),
-                "ventilation stage");
-    publishPort(app, HabinariPort::VentilationMode,
-                static_cast<uint8_t>(snapshot.ventilationMode), "ventilation mode");
-    publishPort(app, HabinariPort::VentilationBoostRequest, out.ventilationBoostRequest,
-                "ventilation boost request");
-    publishPort(app, HabinariPort::DehumidifyRequest, out.dehumidifyRequest,
-                "dehumidify request");
-    publishPort(app, HabinariPort::AirQualityStatus, out.airQualityStatus,
-                "air quality status");
-
-    // --- Device diagnostics ---
-    publishPort(app, HabinariPort::DeviceFault, out.deviceFault, "device fault");
-    publishPort(app, HabinariPort::RoomSensorStatus, out.roomSensorStatus, "room sensor status");
-    publishPort(app, HabinariPort::FloorProbeStatus, out.floorProbeStatus, "floor probe status");
-    publishPort(app, HabinariPort::AirQualitySensorStatus, out.airQualitySensorStatus,
-                "air quality sensor status");
-    publishPort(app, HabinariPort::SensorHealthMask, out.sensorHealthMask, "sensor health mask");
-    publishPort(app, HabinariPort::SensorDisagreementAlarm, out.sensorDisagreement,
-                "sensor disagreement");
-
-    // --- Derived events ---
-    // The alarms are published unconditionally so a cleared alarm is reported
-    // too; the measured trend only once its window has filled, because a
-    // half-filled regression is not a trend.
-    publishPort(app, HabinariPort::FireAlarm, sensors.events.fire_alarm, "fire alarm");
-    publishPort(app, HabinariPort::FirePreAlarm, sensors.events.fire_pre_alarm,
-                "fire pre-alarm");
-    if (sensors.trends.temperature.valid) {
-        publishPort(app, HabinariPort::TemperatureTrend,
-                    sensors.trends.temperature.per_minute * 60.0f, "temperature trend");
-    }
-    publishPort(app, HabinariPort::OccupancyDetected, sensors.events.occupancy_detected,
-                "occupancy detected");
-    publishPort(app, HabinariPort::EstimatedOccupants, sensors.events.estimated_occupants,
-                "estimated occupants");
-    publishPort(app, HabinariPort::WindowOpenDetected, sensors.events.window_open_detected,
-                "window open detected");
+    forEachTransmitPort([&]<HabinariPort Port>(const char *label) {
+        if (const auto value = values.template get<Port>()) {
+            publishPort(app, Port, *value, label);
+        }
+    });
 }
 
 }  // namespace
@@ -387,7 +221,8 @@ void publishSnapshot(HabinariApp &app, const PublishSnapshot &snapshot)
 // One-shot inventory of transmitting communication objects that the ETS project
 // linked no group address to. Publishing on them is a silent no-op, so without
 // this the integrator has no way to tell "configured off" from "broken". Logged
-// once per transition into Operational (i.e. after every download).
+// on every transition into Operational (PublishSchedule): each boot of a
+// commissioned device, and each return from programming mode or a download.
 void reportUnlinkedPorts(HabinariApp &app)
 {
     const auto &compiled = app.compiledEndpoint();
@@ -443,11 +278,26 @@ void refreshTransmitPolicies(HabinariApp &app)
     applyTransmitPolicies(app, settings);
 }
 
+PortValues currentPortValues()
+{
+    PortState state;
+    {
+        LockGuard lock(g_state.mutex);
+        state.sensorData = g_state.latestSensorData;
+        state.settings = g_state.hvac;
+        state.out = g_state.out;
+        state.ventilationMode = g_state.in.ventilationMode;
+        state.controllerOnOff = g_state.in.controllerOnOff;
+    }
+    return PortValues(state);
+}
+
 void publishAllState(HabinariApp &app)
 {
-    // The snapshot is taken only here: it copies the whole state under the
-    // control mutex, and the service loop also runs on every inbound frame.
-    publishSnapshot(app, takePublishSnapshot());
+    // The state is copied only here, once per control tick: it is the whole
+    // state under the control mutex, and the service loop also runs on every
+    // inbound frame.
+    publishValues(app, currentPortValues());
 }
 
 uint32_t startupPublishJitterMs()

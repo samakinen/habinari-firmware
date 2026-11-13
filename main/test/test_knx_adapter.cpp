@@ -12,7 +12,10 @@
  *     defaults are the ones ETS exports.
  *   - knx_group_writes.hpp: which control command an inbound group write is,
  *     how its bus value maps, and the DPT 9 7FFFh "invalid data" code.
- *   - knx_publish_schedule.hpp: when the service loop publishes.
+ *   - knx_publish_schedule.hpp: when the service loop publishes, and when it
+ *     reports the objects ETS left unlinked.
+ *   - knx_port_values.hpp: what each transmitting port carries — and that a
+ *     read response answers exactly what publication sends.
  */
 
 #include "control_command.hpp"
@@ -20,14 +23,17 @@
 #include "knx_dpt9.hpp"
 #include "knx_group_writes.hpp"
 #include "knx_parameter_table.hpp"
+#include "knx_port_values.hpp"
 #include "knx_product.hpp"
 #include "knx_publish_schedule.hpp"
 #include "sensor_fusion_service.h"
 
+#include "knx/application/dpt.hpp"
 #include "knx/product/commissioned_product.hpp"
 
 #include <unity.h>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -339,100 +345,284 @@ void test_a_neighbour_reporting_invalid_data_stops_being_used()
 // Publish schedule
 // ---------------------------------------------------------------------------
 
+// end() is gone: each pass takes the lifecycle read at its top, before the loop
+// acts on the button. These helpers drive one pass the way the loop does.
+PublishSchedule::Pass pass(PublishSchedule &schedule, uint32_t tick, bool operational)
+{
+    return schedule.begin(tick, operational);
+}
+
 void test_nothing_is_published_outside_operational()
 {
-    PublishSchedule schedule(0, false);
+    PublishSchedule schedule(0);
     for (uint32_t tick = 0; tick < 5; ++tick) {
         schedule.controlTick();
-        const auto pass = schedule.begin(tick, false);
-        TEST_ASSERT_FALSE(pass.publish);
-        TEST_ASSERT_FALSE(pass.announceHold);
-        TEST_ASSERT_FALSE(pass.reportUnlinkedPorts);
-        schedule.end(false);
+        const auto p = pass(schedule, tick, false);
+        TEST_ASSERT_FALSE(p.publish);
+        TEST_ASSERT_FALSE(p.announceHold);
+        TEST_ASSERT_FALSE(p.reportUnlinkedPorts);
     }
 }
 
 void test_the_startup_gate_holds_then_publishes_once_per_tick()
 {
-    PublishSchedule schedule(100, true);
+    PublishSchedule schedule(100);
 
     // Held: announced once, nothing published, however many ticks arrive.
-    auto pass = schedule.begin(10, true);
-    TEST_ASSERT_TRUE(pass.announceHold);
-    TEST_ASSERT_FALSE(pass.publish);
-    schedule.end(true);
+    auto p = pass(schedule, 10, true);
+    TEST_ASSERT_TRUE(p.announceHold);
+    TEST_ASSERT_FALSE(p.publish);
     schedule.controlTick();
-    pass = schedule.begin(99, true);
-    TEST_ASSERT_FALSE(pass.announceHold);
-    TEST_ASSERT_FALSE(pass.publish);
-    schedule.end(true);
+    p = pass(schedule, 99, true);
+    TEST_ASSERT_FALSE(p.announceHold);
+    TEST_ASSERT_FALSE(p.publish);
 
     // Released: the first pass publishes what accumulated, once.
-    pass = schedule.begin(100, true);
-    TEST_ASSERT_TRUE(pass.publish);
-    schedule.end(true);
-    pass = schedule.begin(101, true);
-    TEST_ASSERT_FALSE(pass.publish);
-    schedule.end(true);
+    TEST_ASSERT_TRUE(pass(schedule, 100, true).publish);
+    TEST_ASSERT_FALSE(pass(schedule, 101, true).publish);
 
     // Then once per control tick, not once per pass.
     schedule.controlTick();
-    TEST_ASSERT_TRUE(schedule.begin(102, true).publish);
-    schedule.end(true);
-    TEST_ASSERT_FALSE(schedule.begin(103, true).publish);
-    schedule.end(true);
+    TEST_ASSERT_TRUE(pass(schedule, 102, true).publish);
+    TEST_ASSERT_FALSE(pass(schedule, 103, true).publish);
 }
 
 void test_the_first_open_pass_publishes_without_waiting_for_a_tick()
 {
-    PublishSchedule schedule(0, true);
-    TEST_ASSERT_TRUE(schedule.begin(0, true).publish);
+    PublishSchedule schedule(0);
+    TEST_ASSERT_TRUE(pass(schedule, 0, true).publish);
 }
 
 void test_the_startup_gate_survives_tick_wraparound()
 {
-    const uint32_t release = 5;            // wrapped past zero
-    const uint32_t before = 0xFFFFFFF0u;   // 21 ticks earlier
-    PublishSchedule schedule(release, true);
-    TEST_ASSERT_FALSE(schedule.begin(before, true).publish);
-    schedule.end(true);
-    TEST_ASSERT_TRUE(schedule.begin(release, true).publish);
+    const uint32_t release = 5;           // wrapped past zero
+    const uint32_t before = 0xFFFFFFF0u;  // 21 ticks earlier
+    PublishSchedule schedule(release);
+    TEST_ASSERT_FALSE(pass(schedule, before, true).publish);
+    TEST_ASSERT_TRUE(pass(schedule, release, true).publish);
 
     TEST_ASSERT_FALSE(PublishSchedule::released(0xFFFFFFFFu, 0));
     TEST_ASSERT_TRUE(PublishSchedule::released(0, 0xFFFFFFFFu));
 }
 
-void test_unlinked_ports_are_reported_on_entering_operational()
+void test_a_commissioned_device_reports_unlinked_ports_on_every_boot()
 {
-    // A device that starts Operational made no transition.
-    PublishSchedule commissioned(0, true);
-    TEST_ASSERT_FALSE(commissioned.begin(0, true).reportUnlinkedPorts);
-    commissioned.end(true);
-
-    // Leaving and re-entering (a download in programming mode) does.
-    TEST_ASSERT_FALSE(commissioned.begin(1, false).reportUnlinkedPorts);
-    commissioned.end(false);
-    TEST_ASSERT_TRUE(commissioned.begin(2, true).reportUnlinkedPorts);
-    commissioned.end(true);
-    TEST_ASSERT_FALSE(commissioned.begin(3, true).reportUnlinkedPorts);
-    commissioned.end(true);
-
-    // A fresh device is reported once ETS gives it an address.
-    PublishSchedule fresh(0, false);
-    TEST_ASSERT_FALSE(fresh.begin(0, false).reportUnlinkedPorts);
-    fresh.end(false);
-    TEST_ASSERT_TRUE(fresh.begin(1, true).reportUnlinkedPorts);
+    // Nothing has been observed before the first pass, so a device that
+    // boots Operational has just become Operational — once.
+    PublishSchedule schedule(0);
+    TEST_ASSERT_TRUE(pass(schedule, 0, true).reportUnlinkedPorts);
+    TEST_ASSERT_FALSE(pass(schedule, 1, true).reportUnlinkedPorts);
+    TEST_ASSERT_FALSE(pass(schedule, 2, true).reportUnlinkedPorts);
 }
 
-void test_the_transition_is_measured_from_the_end_of_the_pass()
+void test_a_fresh_device_reports_once_ets_gives_it_an_address()
 {
-    // The loop closes each pass with the lifecycle as it stands after the
-    // programming-mode toggle. A toggle that ends programming mode within a
-    // pass therefore counts as Operational already, and raises no report.
-    PublishSchedule schedule(0, false);
-    TEST_ASSERT_FALSE(schedule.begin(0, false).reportUnlinkedPorts);
-    schedule.end(true);
-    TEST_ASSERT_FALSE(schedule.begin(1, true).reportUnlinkedPorts);
+    PublishSchedule schedule(0);
+    TEST_ASSERT_FALSE(pass(schedule, 0, false).reportUnlinkedPorts);
+    TEST_ASSERT_FALSE(pass(schedule, 1, false).reportUnlinkedPorts);
+    TEST_ASSERT_TRUE(pass(schedule, 2, true).reportUnlinkedPorts);
+    TEST_ASSERT_FALSE(pass(schedule, 3, true).reportUnlinkedPorts);
+}
+
+void test_leaving_programming_mode_from_ets_reports()
+{
+    // ETS ends programming mode over the bus, inside the stack's loop(): the
+    // next pass's top-of-pass reading already sees Operational.
+    PublishSchedule schedule(0);
+    (void)pass(schedule, 0, true);
+    TEST_ASSERT_FALSE(pass(schedule, 1, false).reportUnlinkedPorts);  // ETS entered it
+    TEST_ASSERT_FALSE(pass(schedule, 2, false).reportUnlinkedPorts);  // download
+    TEST_ASSERT_TRUE(pass(schedule, 3, true).reportUnlinkedPorts);    // ETS left it
+}
+
+void test_leaving_programming_mode_with_the_button_reports()
+{
+    // The button is acted on after the top-of-pass reading. The pass that
+    // toggles programming mode off still read Commissioning; the next one
+    // reads Operational and sees the transition. (The old schedule closed each
+    // pass with a reading taken after the toggle, and missed this one.)
+    PublishSchedule schedule(0);
+    (void)pass(schedule, 0, true);
+    // Button: on. This pass read Operational; programming mode starts after it.
+    TEST_ASSERT_FALSE(pass(schedule, 1, true).reportUnlinkedPorts);
+    TEST_ASSERT_FALSE(pass(schedule, 2, false).reportUnlinkedPorts);
+    // Button: off. This pass read Commissioning, toggles, and reports nothing.
+    TEST_ASSERT_FALSE(pass(schedule, 3, false).reportUnlinkedPorts);
+    // The next pass reads Operational: reported.
+    TEST_ASSERT_TRUE(pass(schedule, 4, true).reportUnlinkedPorts);
+}
+
+// ---------------------------------------------------------------------------
+// Port values: read responses answer what publication sends
+// ---------------------------------------------------------------------------
+
+sensor_value_t reading(float value, bool valid)
+{
+    sensor_value_t r{};
+    r.value = value;
+    r.valid = valid;
+    return r;
+}
+
+// A state in which every value is distinct and in range, so a port answering
+// from the wrong field shows.
+PortState healthyState()
+{
+    PortState s;
+    auto &d = s.sensorData;
+    d.temperature = reading(21.3f, true);
+    d.humidity = reading(48.0f, true);
+    d.co2 = reading(812.0f, true);
+    d.pressure = reading(98650.0f, true);
+    d.iaq = reading(57.6f, true);
+    d.air_quality_accuracy = 3;
+    d.co2_equivalent = reading(640.0f, true);
+    d.voc_equivalent = reading(0.9f, true);
+    d.probe_temperature = reading(24.1f, true);
+    d.probe_humidity = reading(61.0f, true);
+    d.trends.temperature.valid = true;
+    d.trends.temperature.per_minute = 0.02f;
+    d.events.fire_alarm = false;
+    d.events.fire_pre_alarm = true;
+    d.events.occupancy_detected = true;
+    d.events.estimated_occupants = 2;
+    d.events.window_open_detected = false;
+
+    s.settings.roomTemperatureOffsetK = -0.4f;
+    s.settings.roomHumidityOffsetPct = 3.0f;
+    s.settings.floorTemperatureOffsetK = 0.6f;
+    s.settings.comfortHeatingSetpointC = 21.5f;
+    s.settings.ventilationSetpointPpm = 900.0f;
+
+    auto &o = s.out;
+    o.seaLevelPressurePa = 101200.0f;
+    o.roomDewPointC = 9.8f;
+    o.roomAbsoluteHumidityGm3 = 8.9f;
+    o.floorAbsoluteHumidityGm3 = 13.2f;
+    o.dewPointMarginK = 4.4f;
+    o.setpointShiftFeedbackK = 0.5f;
+    o.activeSetpointC = 22.0f;
+    o.heatingSetpointC = 22.0f;
+    o.coolingSetpointC = 24.0f;
+    o.activePreset = hvac::OperatingPreset::Comfort;
+    o.activeControllerMode = hvac::ControllerMode::Heat;
+    o.floorMoistureAlarm = true;
+    o.dewPointAlarm = true;
+    o.heatingRequest = true;
+    o.enableHeat = true;
+    s.ventilationMode = hvac::VentilationMode::Boost;
+    s.controllerOnOff = true;
+    return s;
+}
+
+// The same room with every measurement gone: sensors failed, trend window
+// empty. Publication sends none of them.
+PortState failedSensorState()
+{
+    PortState s = healthyState();
+    auto &d = s.sensorData;
+    d.temperature.valid = false;
+    d.humidity.valid = false;
+    d.co2.valid = false;
+    d.pressure.valid = false;
+    d.iaq.valid = false;
+    d.co2_equivalent.valid = false;
+    d.voc_equivalent.valid = false;
+    d.probe_temperature.valid = false;
+    d.probe_humidity.valid = false;
+    d.trends.temperature.valid = false;
+    return s;
+}
+
+// The value publication would hand the stack for each port, keyed by port.
+// Mirrors the firmware's publishValues(): every transmitting port, offered
+// only when it has a value.
+template <typename T>
+bool sameValue(const T &a, const T &b)
+{
+    if constexpr (std::is_same_v<T, float>) {
+        return std::memcmp(&a, &b, sizeof(float)) == 0;
+    } else {
+        return a == b;
+    }
+}
+
+uint16_t dpt9Raw(float value)
+{
+    std::array<uint8_t, 2> bytes{};
+    const auto encoded = knx::application::Dpt9::encode(value, bytes);
+    TEST_ASSERT_TRUE(encoded.isOk());
+    return static_cast<uint16_t>((bytes[0] << 8) | bytes[1]);
+}
+
+void checkReadsMatchPublication(const PortState &state, size_t expectedUnpublished)
+{
+    const PortValues values(state);
+    size_t ports = 0;
+    size_t unpublished = 0;
+    forEachTransmitPort([&]<HabinariPort Port>(const char *label) {
+        ++ports;
+        const auto published = values.template get<Port>();
+        const auto read = readResponse<Port>(values);
+        using T = PortValue<Port>;
+        if (published.has_value()) {
+            if (!sameValue<T>(*published, read)) {
+                TEST_FAIL_MESSAGE(label);
+            }
+            return;
+        }
+        // Nothing published: the read carries the port's "no reading" form.
+        ++unpublished;
+        if constexpr (std::is_same_v<T, float>) {
+            if (dpt9Raw(read) != 0x7FFF) {
+                TEST_FAIL_MESSAGE(label);
+            }
+        } else if constexpr (std::is_integral_v<T>) {
+            if (read != T{0}) {
+                TEST_FAIL_MESSAGE(label);
+            }
+        } else {
+            TEST_FAIL_MESSAGE(label);  // only measurements may be without a value
+        }
+    });
+    TEST_ASSERT_EQUAL_UINT32(std::size(kTransmitPorts), ports);
+    TEST_ASSERT_EQUAL_UINT32(expectedUnpublished, unpublished);
+}
+
+void test_reads_answer_what_publication_sends()
+{
+    checkReadsMatchPublication(healthyState(), 0);
+}
+
+void test_reads_with_failed_sensors_answer_invalid_data()
+{
+    // Room temperature, humidity, CO2, pressure, sea-level pressure, IAQ and
+    // its accuracy, CO2 and VOC equivalents, dew point, absolute humidity,
+    // floor temperature, humidity and absolute humidity, and the trend.
+    checkReadsMatchPublication(failedSensorState(), 15);
+}
+
+void test_reads_use_the_corrected_readings()
+{
+    // The bug this replaced: the read path added offsets to raw values but
+    // skipped the clamp, and ignored validity. Corrected and clamped now.
+    PortState state = healthyState();
+    state.sensorData.humidity = reading(99.0f, true);  // + 3 % offset -> clamped to 100
+    state.sensorData.probe_humidity = reading(104.0f, true);
+    const PortValues values(state);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, readResponse<HabinariPort::RoomHumidity>(values));
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, readResponse<HabinariPort::FloorHumidity>(values));
+    TEST_ASSERT_EQUAL_FLOAT(20.9f, readResponse<HabinariPort::RoomTemperature>(values));
+    TEST_ASSERT_EQUAL_FLOAT(24.7f, readResponse<HabinariPort::FloorTemperature>(values));
+    TEST_ASSERT_EQUAL_UINT16(58, readResponse<HabinariPort::RoomAirQualityIndex>(values));
+    TEST_ASSERT_EQUAL_FLOAT(1.2f, readResponse<HabinariPort::TemperatureTrend>(values));
+}
+
+void test_the_invalid_data_marker_encodes_as_7fff()
+{
+    // What a float read with no reading puts on the bus, through the stack's
+    // own DPT 9 encoder.
+    TEST_ASSERT_EQUAL_HEX16(0x7FFF, dpt9Raw(noReading<float>()));
 }
 
 }  // namespace
@@ -458,7 +648,13 @@ int main()
     RUN_TEST(test_the_startup_gate_holds_then_publishes_once_per_tick);
     RUN_TEST(test_the_first_open_pass_publishes_without_waiting_for_a_tick);
     RUN_TEST(test_the_startup_gate_survives_tick_wraparound);
-    RUN_TEST(test_unlinked_ports_are_reported_on_entering_operational);
-    RUN_TEST(test_the_transition_is_measured_from_the_end_of_the_pass);
+    RUN_TEST(test_a_commissioned_device_reports_unlinked_ports_on_every_boot);
+    RUN_TEST(test_a_fresh_device_reports_once_ets_gives_it_an_address);
+    RUN_TEST(test_leaving_programming_mode_from_ets_reports);
+    RUN_TEST(test_leaving_programming_mode_with_the_button_reports);
+    RUN_TEST(test_reads_answer_what_publication_sends);
+    RUN_TEST(test_reads_with_failed_sensors_answer_invalid_data);
+    RUN_TEST(test_reads_use_the_corrected_readings);
+    RUN_TEST(test_the_invalid_data_marker_encodes_as_7fff);
     return UNITY_END();
 }

@@ -20,7 +20,9 @@
  *     at t=0. Sensor updates keep accumulating meanwhile and go out together
  *     once the gate opens.
  *   - Becoming Operational means the association table is now the project's,
- *     so that is when "which objects did ETS actually link?" is answered.
+ *     so that is when "which objects did ETS actually link?" is answered: on
+ *     every boot of a commissioned device, and on every return to Operational
+ *     — whether programming mode was left from ETS or with the button.
  *
  * Nothing is published, and nothing reported, outside the Operational state.
  *
@@ -40,22 +42,21 @@ public:
     };
 
     /// @p releaseTick: the first tick at which publishing may start.
-    /// @p operationalAtStart: the lifecycle the device started in. A device
-    /// that starts Operational has made no transition into it.
-    constexpr PublishSchedule(uint32_t releaseTick, bool operationalAtStart)
-        : releaseTick_(releaseTick), wasOperational_(operationalAtStart)
-    {
-    }
+    constexpr explicit PublishSchedule(uint32_t releaseTick) : releaseTick_(releaseTick) {}
 
     /// A control tick has completed: the next open pass publishes.
     constexpr void controlTick() { due_ = true; }
 
     /// Decide this pass, given the tick count and whether the device is
-    /// Operational now.
+    /// Operational — read once, at the top of the pass, before the loop acts
+    /// on a programming-mode button press. Every transition is then seen by
+    /// the pass after it, whatever caused it: ETS over the bus, the button, a
+    /// download. A toggle the loop makes this pass is the next pass's input.
     constexpr Pass begin(uint32_t nowTick, bool operational)
     {
         Pass pass{};
         pass.reportUnlinkedPorts = operational && !wasOperational_;
+        wasOperational_ = operational;
         if (!operational) {
             return pass;
         }
@@ -71,10 +72,6 @@ public:
         return pass;
     }
 
-    /// Close the pass with the lifecycle as it stands at its end, which is what
-    /// the next pass's transition is measured from.
-    constexpr void end(bool operational) { wasOperational_ = operational; }
-
     /// True once @p nowTick has reached @p releaseTick, across tick wrap-around.
     static constexpr bool released(uint32_t nowTick, uint32_t releaseTick)
     {
@@ -83,7 +80,10 @@ public:
 
 private:
     uint32_t releaseTick_;
-    bool wasOperational_;
+    // The lifecycle the previous pass observed. Nothing has been observed
+    // before the first pass, which therefore sees a commissioned device's
+    // boot as the transition into Operational that it is.
+    bool wasOperational_{false};
     bool due_{true};
     bool holdAnnounced_{false};
 };

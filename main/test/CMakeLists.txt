@@ -195,13 +195,15 @@ add_test(NAME test_service_helpers COMMAND test_service_helpers)
 # The KNX adapter's decisions, without the adapter: where each ETS parameter
 # lands (against the real product schema and the stack's own ParameterState),
 # which control command an inbound group write is — DPT 9 "invalid data"
-# included — and when the service loop publishes. Header-only on the KNstaX
-# side, so the stack is compiled in the shape the ETS export builds it
-# (tools/ets_export) and nothing of it is linked; the fusion pipeline supplies
-# the compiled-in fusion defaults the parameter rows overlay.
+# included — when the service loop publishes, and that every read response
+# answers what publication sends. Header-only on the KNstaX side apart from the
+# DPT codec (to see a "no reading" answer encode as 7FFFh), compiled in the
+# shape the ETS export builds it (tools/ets_export); the fusion pipeline
+# supplies the compiled-in fusion defaults the parameter rows overlay.
 add_executable(test_knx_adapter
     test_knx_adapter.cpp
     "${MAIN_DIR}/src/sensor_fusion_pipeline.cpp"
+    "${REPO_ROOT}/components/KNstaX/src/application/dpt.cpp"
 )
 target_include_directories(test_knx_adapter PRIVATE
     "${MAIN_DIR}/include"

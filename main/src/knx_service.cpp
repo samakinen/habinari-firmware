@@ -173,6 +173,8 @@ void servicePass(HabinariApp &app, PublishSchedule &schedule, uint32_t startupJi
         schedule.controlTick();
     }
 
+    // The lifecycle as it stands before the button is acted on below; see
+    // PublishSchedule::begin for why that is the reading that counts.
     const auto pass = schedule.begin(xTaskGetTickCount(), isOperational(app));
     if (pass.reportUnlinkedPorts) {
         reportUnlinkedPorts(app);
@@ -191,7 +193,6 @@ void servicePass(HabinariApp &app, PublishSchedule &schedule, uint32_t startupJi
     if (pass.publish) {
         publishAllState(app);
     }
-    schedule.end(isOperational(app));
 }
 
 void knxServiceTask(void *arg)
@@ -265,8 +266,7 @@ void knxServiceTask(void *arg)
     // The rate limiter (configureTransmitShaping) additionally spreads whatever
     // burst does occur.
     const uint32_t startupJitterMs = startupPublishJitterMs();
-    PublishSchedule schedule(xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs),
-                             isOperational(app));
+    PublishSchedule schedule(xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs));
 
     // Startup is this task's stack peak, and it is now behind us. Report what
     // was left so kKnxServiceTaskStackSize can be retuned from measurement.

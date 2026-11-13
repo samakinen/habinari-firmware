@@ -22,13 +22,15 @@ extern "C" {
  *
  * This header is that way in. It is the single description of what the device
  * knows (control_state_t) and what can be asked of it (control_command_t), with
- * no KNX or Modbus types in it. Both protocol adapters are now the same kind of
- * thing: a mapping between wire representation and this struct.
+ * no KNX, Modbus or MQTT types in it. Every protocol adapter is the same kind
+ * of thing: a mapping between wire representation and this struct.
  *
- *   knx_service.cpp   owns the state and implements these functions; the KNX
- *                     group objects are its native expression
- *   mb_rtu_slave.c    maps the same state onto Modbus registers, and Modbus
- *                     writes onto the same commands
+ *   control_service.cpp  owns the state and implements these functions
+ *   knx_group_writes.cpp maps KNX group writes onto the commands, and
+ *   knx_port_values.hpp  the state onto the KNX group objects
+ *   mb_rtu_slave.c       maps the same state onto Modbus registers, and Modbus
+ *                        writes onto the same commands
+ *   mqtt_payload.c       the same, as the MQTT state document and command topics
  *
  * A command from Modbus therefore takes exactly the path a KNX telegram takes,
  * including the clamping and the ETS-configured limits, and the two can never

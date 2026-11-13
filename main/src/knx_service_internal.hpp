@@ -12,6 +12,7 @@
  *
  *   knx_service.cpp         the adapter descriptor, start-up handshake and task
  *   knx_group_reads.cpp     group-object read responses (provideState)
+ *                           — the same values publication sends
  *   knx_group_writes.cpp    inbound group writes -> control_state_write()
  *   knx_parameters.cpp      ETS parameters -> control state (knx_parameter_table.hpp)
  *   knx_publish.cpp         outbound publication and transmit shaping
@@ -23,6 +24,7 @@
  */
 
 #include "control_service.hpp"
+#include "knx_port_values.hpp"
 #include "knx_product.hpp"
 
 #include "freertos/FreeRTOS.h"
@@ -120,6 +122,10 @@ void seedStateFromParameters(HabinariApp &app);
 void configureTransmitShaping(HabinariApp &app);
 /// Re-derive every transmitting port's transmit policy from the settings.
 void refreshTransmitPolicies(HabinariApp &app);
+/// Every transmitting port's value, from one copy of the state taken under the
+/// control lock. Both the publish path and the read responses use it, so a
+/// read answers exactly what publication sends (knx_port_values.hpp).
+PortValues currentPortValues();
 /// Offer every transmitting port; the transmit policy decides what is sent.
 void publishAllState(HabinariApp &app);
 /// One-shot inventory of transmitting objects ETS linked no group address to.
