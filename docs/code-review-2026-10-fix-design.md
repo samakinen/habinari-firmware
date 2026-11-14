@@ -838,3 +838,37 @@ explicit cast of the whole expression, with the bytes unchanged: 36 sites in
 `ets_format_validator.cpp` and `tp1_data_link_layer.cpp`. The ASan/UBSan
 build is at 0 warnings and the CI sanitiser job now configures with
 `-DKNX_WARNINGS_AS_ERRORS=ON`.
+
+**3.8 done** (a–i): one concrete stack port; Tp1MacController folded into
+Tp1MacPhysical; one error type; `BusAccessUnit` split into DeviceModel,
+GroupRuntime and DeviceManagement; `ApplicationLayer` split into receive,
+ManagementServer and ASendPipeline with an explicit request context;
+non-movable runtime objects; stack instrumentation (above). Fixed on the
+way: failed persistence saves and Data Secure sequence checkpoints are
+retried, a failed erase no longer carries stale data into a new bank, and
+a router role no longer logs errors at boot. The sanitizer build is
+warning-free and CI enforces it.
+
+**3.9 done.**
+- DPT codecs checked against 03_07_02: DPT 10 and 19 layouts fixed, DPT 15
+  rewritten (6 BCD digits + flags), DPT 243/244 replaced by the real types,
+  DPT 9 maximum and rounding fixed (Habinari publishes DPT 9: at most 1 LSB
+  differs at double-rounding edges), DPT 16/17/242 corrected.
+- Filter table: the 03_05_01 §5.2/5.3 bitmap over the full group address
+  space, owned by the coupler only; forwarding per 03_03_03 Figure 5 and
+  the GROUP_IACK_ROUT acknowledge filter in the TP1 ISR
+  (`CONFIG_KNX_ENABLE_COUPLER`). Memory-mapped (Type 3) loading is not done.
+- KNXnet/IP tunnelling client and server per 03_08_04 / 03_08_09: secure
+  session MAC with a Device Authentication Code, replay protection,
+  CONNECT_RESPONSE HPAI/CRD, sequence and repetition rules, heartbeat.
+
+**Open after phase 3:**
+- Five interop tests fail (Data Secure over UDP tunnelling, and a device
+  descriptor read over UDP tunnelling); a peer built before 3.9 fails the
+  same five, so they predate it and need their own investigation.
+- The TP1↔IP interface bridge does not apply the tunnel individual address
+  or produce L_Data.con.
+- Data Secure on the TP1 image (decided: enable it; next package).
+- Bench: ETS filter-table download (and which load path ETS uses), DPT 243
+  field order, a real gateway with DAC verification, xknx/ETS6 against TCP
+  tunnelling, plus the earlier bench lists.

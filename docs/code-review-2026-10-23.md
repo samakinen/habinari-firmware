@@ -150,7 +150,7 @@ still open are listed there in section 8. KNstaX paths are relative to
   doubles 3 s → 6 s instead of a fixed 3 s; exhausted retries don't send
   T_Disconnect; T_ACK/T_NAK with a wrong sequence number are ignored
   (`src/transport/connection_table.cpp:283-292`, `transport_layer_receive.cpp:537-566`).
-- [ ] **Filter table can't hold real ETS ranges.** It is a 64-entry first-match
+- [x] **Filter table can't hold real ETS ranges.** It is a 64-entry first-match
   `std::vector`, so large ranges are refused, Clear(x) then Set(x) still blocks
   x, and the coupler ack policy is never applied
   (`src/network/filter_table.cpp`, `routing_table_control.cpp:150-165`,
@@ -185,7 +185,7 @@ still open are listed there in section 8. KNstaX paths are relative to
     key per download.
   - No all-zero X25519 shared-secret check.
   - Key material in `main/` is not zeroised.
-- [ ] **Client-side issues (only matter if tunnelling is enabled).** The secure
+- [x] **Client-side issues (only matter if tunnelling is enabled).** The secure
   tunnelling client never verifies the SESSION_RESPONSE MAC
   (`secure_session_bootstrap.cpp:53-60`) and has no replay check.
   `TunnelingServerEndpoint` CONNECT_RESPONSE lacks HPAI/CRD, and its sequence
@@ -232,7 +232,7 @@ Unused anywhere, or only by tests:
   empty `sdkconfig.ci`.
 
 Compiled into the firmware but not needed:
-- [ ] Client-side KNXnet/IP: `gateway_discovery_client`, `tunneling_session_client`,
+- [x] Client-side KNXnet/IP: `gateway_discovery_client`, `tunneling_session_client`,
   `ip_tunneling_physical`, and about 2.5k lines of header-only device-management
   commissioner code. It is always in `KNX_SOURCES_NETIP`
   (`cmake/knx_sources.cmake:91-109`). Add a `KNX_SOURCES_NETIP_CLIENT` group

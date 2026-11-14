@@ -104,7 +104,7 @@ float decodeDpt9(uint8_t high, uint8_t low)
 void test_dpt9_invalid_code_is_recognised_as_decoded_by_the_stack()
 {
     const float invalid = decodeDpt9(0x7F, 0xFF);
-    TEST_ASSERT_FLOAT_WITHIN(1.0f, habinari_knx::kDpt9InvalidDecoded, invalid);
+    TEST_ASSERT_TRUE(std::isnan(invalid));
     TEST_ASSERT_TRUE(habinari_knx::dpt9IsInvalid(invalid));
 }
 
