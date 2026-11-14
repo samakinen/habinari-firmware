@@ -760,7 +760,7 @@ indirect calls where the chain stops. `tools/stack_report.edges` stitches in
 the receive path's known indirect calls (physical-port function pointers,
 the layers' receive callbacks, the Data Secure transforms, the routing
 security, property providers). The totals are lower bounds. Results
-(GCC 16.1, ESP-IDF 6.2, `-Os`):
+(GCC 16.1, ESP-IDF 6.2; knx at its default `-Og`, knxip at `-Os`):
 
 | | knx (TP1) | knxip |
 |---|---|---|
@@ -770,8 +770,8 @@ security, property providers). The totals are lower bounds. Results
 | unresolved indirect sites reachable from the RX task | 121 in 75 functions | 128 in 79 functions |
 
 Largest RX-task frames: `SecureApplicationLayer::ccmDecrypt` 720 B and
-`ccmEncrypt` 704 B (knxip; Data Secure is not compiled into the TP1 image,
-see below), `PropertyExtServices::handleValueWrite` 656–672 B,
+`ccmEncrypt` 704 B (knxip; Data Secure was not yet compiled into the TP1
+image, see below and "Data Secure on the TP1 image"), `PropertyExtServices::handleValueWrite` 656–672 B,
 `IpRoutingPhysical::beginTransmit` 624 B, the property and memory read
 handlers 592–624 B, `ApplicationLayer::handleTransportRx` 576–624 B. The
 deepest RX chain is a management request answered under Data Secure:
@@ -819,7 +819,8 @@ task. If the RX task's peak exceeds 6.5 KB, raise the Kconfig range of
   while `knx_product.hpp` advertises `dataSecureCapable = true` and
   `knx_data_secure.cpp` installs a tool key. Either the TP1 image should
   enable it (more flash, and the RX task then carries the CCM frames above)
-  or the TP1 catalogue entry should not claim Data Secure. Needs a decision.
+  or the TP1 catalogue entry should not claim Data Secure. Decided: enable
+  it; done, see "Data Secure on the TP1 image" below.
 - `Dpt10` encodes time of day as `DDDHHHHH MMMMMMSS SSSS0000`, and
   `Dpt19::decode` reads the hour across octets 4 and 5. 03_07_02 has DPT 10
   as `NNNHHHHH 00MMMMMM 00SSSSSS` and the DPT 19 hour in the low five bits of
@@ -863,12 +864,104 @@ warning-free and CI enforces it.
   CONNECT_RESPONSE HPAI/CRD, sequence and repetition rules, heartbeat.
 
 **Open after phase 3:**
-- Five interop tests fail (Data Secure over UDP tunnelling, and a device
-  descriptor read over UDP tunnelling); a peer built before 3.9 fails the
-  same five, so they predate it and need their own investigation.
+- ~~Five interop tests fail~~ — fixed, see "Interop suite" below.
 - The TP1↔IP interface bridge does not apply the tunnel individual address
   or produce L_Data.con.
-- Data Secure on the TP1 image (decided: enable it; next package).
+- ~~Data Secure on the TP1 image~~ — done, see below.
 - Bench: ETS filter-table download (and which load path ETS uses), DPT 243
   field order, a real gateway with DAC verification, xknx/ETS6 against TCP
   tunnelling, plus the earlier bench lists.
+
+### Data Secure on the TP1 image (14 November 2026)
+
+**What was wrong.** `CONFIG_KNX_ENABLE_SECURITY` was set only in
+`sdkconfig.defaults.knxip`. The TP1 image is `sdkconfig.defaults` alone, so
+`tools/build_variants.sh knx` produced an image with no CCM transforms while
+the product (`SecurityPolicy::dataSecureCapable`) and the TP1 `.knxprod`
+(`SecureEnabled="true"`) advertised Data Secure and `knx_data_secure.cpp`
+installed a factory Tool Key and printed a certificate for it. The secure
+ETS6 download recorded on TP1 hardware was most likely built from the
+untracked project-root `sdkconfig` on the development machine, which has the
+option on; the scripted variant build did not.
+
+**Change.** `CONFIG_KNX_ENABLE_SECURITY=y` moves to `sdkconfig.defaults`
+(restated in the knxip overlay). Only the AES block cipher comes from the IDF
+(`esp_aes`); CCM is KNstaX's own, so no mbedTLS options change, and the
+mbedTLS 4 restriction (tunnelling withdrawn with security on) does not touch
+TP1, which has no tunnelling client. `knx_data_secure.cpp` now
+`static_assert`s `KNX_SECURE_ENABLED`, so a KNX image without it no longer
+builds. The non-KNX variants compile the option and link none of it (their
+sizes are unchanged to the byte). The ETS export is built on the host from
+`knx_product.hpp` and already said secure-capable for both media; nothing
+changes there.
+
+**Size.** knx 952,592 → 965,584 B (+12,992 B, 49 % of 0x1e0000). knxip,
+modbus, modbus-ble and mqtt unchanged. 0 warnings, no unknown Kconfig
+symbols.
+
+**Stack.** Static report for the knx image with security on (`-Og`,
+`HABINARI_STACK_USAGE=ON`, edges stitched): `rxTaskFunc` deepest resolved
+chain 6,128 B over 54 frames (was 5,408 B without security). It is a
+management response encrypted on the RX task: receive → `handleTransportRx`
+(624) → `ManagementServer` → `ASendPipeline` → transport TX transform (336)
+→ `processOutgoing` (224) → `ccmEncrypt` (784) → CBC-MAC → `esp_aes_crypt_ecb`,
+then the IDF's lazily-created AES lock, heap, log and `__assert_func` tail.
+5.1 KB of it is the stack down to the AES call. `ccmDecrypt` is 912 B, on a
+shallower path. 125 unresolved indirect sites in 76 functions remain. The
+`knxServiceTask` chain is unchanged at 15,328 B. Per the sizing rule the RX
+stack stays at 8192 (a resolved lower bound under the 6.5 KB threshold);
+`sdkconfig.defaults` carries the measurement. Bench steps 2 and 3 (boot with
+keys in force; ETS6 full Secure download over TP1) give the peak that
+decides it.
+
+**Test.** `test_data_secure_virtual_tp1` (KNstaX): a whole device on
+`createTp1StackPort()` / `Tp1MacPhysical` / the bit-bang ISR core on the
+virtual bus, RX task on a VirtualPlatform fibre. A group write secured with
+the group key reaches the group object (plain refused, replay refused as
+SequenceNumberInvalid); an A_PropertyValue_Read secured with the Tool Key is
+answered with a Tool-Access-secured A_PropertyValue_Response in an extended
+frame, which a peer S-AL verifies and decrypts, and the plain request is
+answered plain. The peer's request is CCM-protected with the public block and
+cipher primitives, not the S-AL under test. The virtual bit-bang driver moved
+to `test/common/virtual_bitbang_tp1_driver.hpp` and now forwards the queue
+notify callback to the ISR core, as the ESP-IDF wrapper does.
+
+### Interop suite (14 November 2026)
+
+All five were harness faults; no KNstaX library code changed. xknx 4.1.1,
+`ctest -R interop_pytest`: 32 passed, 0 skipped (was 26 passed, 5 failed,
+1 skipped), stable over three runs.
+
+- **The four Data Secure over UDP tunnelling cases**
+  (`test_xknx_to_knstax_…_groupwrite`, `test_xknx_reads_from_knstax_…`,
+  `test_knstax_to_xknx_…_groupwrite`, `test_data_secure_replay_dropped_or_flagged`).
+  `knstax_tunnel_peer` set the group key, Security Mode and sequence numbers
+  on the Security Object *before* `BusAccessUnit::init()`. Since init
+  restores the interface objects and rebuilds the key maps from the
+  persisted key tables (`applySecurityKeyTables`), the key was gone: inbound
+  secured telegrams failed with "Unknown Key" and outbound ones went in
+  plain, which xknx flagged and the replay test never saw as secure. The
+  peer now configures security after init (and after the group object), as
+  the product API already requires (`installFactoryToolKey`: "Must be called
+  after start()").
+- **`test_client_device_descriptor_read_response_udp_tunneling`** sent
+  A_DeviceDescriptor_Read to group address 1/0/0. 03/03/07 Table 1 defines
+  it point-to-point only, and since phase 1 the application layer ignores a
+  service on a mode it is not defined for. The test now sends it
+  connectionless to the peer's individual address 1.1.1, and gets the
+  response.
+- **Found on the way.** The parametrised Data Secure case of
+  `test_knstax_interop_suite.py` was skipped on every run: it wrote an ad-hoc
+  unsigned keyring that xknx refuses to load, and turned the load failure
+  into a skip. It now uses the signed ETS-format generator of the dedicated
+  Data Secure tests, fails instead of skipping on a load error, and passes.
+  The test gateway's CONNECT_RESPONSE echoed the CRI as the CRD, which xknx
+  (it takes `current_address` from the CRD) read as tunnel address 0.2.0; it
+  now returns the assigned address (channel n = 1.1.n, so the peer is 1.1.1
+  and xknx 1.1.2, the addresses the keyrings name). That was not what failed
+  the five (they pass with either CRD) but xknx was sending from the wrong
+  address.
+- **CI.** `interop/python/requirements.txt` pinned `xknx` nothing, so CI took
+  whatever was newest; it now pins `xknx==4.1.1` (also in
+  `requirements-secure.txt`), the version verified here. The workflow
+  installs from that file, so it needs no change.

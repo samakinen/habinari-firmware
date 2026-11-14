@@ -26,6 +26,18 @@
 
 using namespace knx;
 
+// The product declares itself Data Secure capable on both media
+// (SecurityPolicy::dataSecureCapable in knx_product.hpp, SecureEnabled in the
+// .knxprod), and everything below assumes the stack can honour that. A build
+// without CONFIG_KNX_ENABLE_SECURITY links no Security Interface Object and no
+// CCM transforms, so installFactoryToolKey() would succeed into nothing and
+// the certificate printed at boot would describe a key the device cannot use.
+// That is how the TP1 image shipped until sdkconfig.defaults set the option;
+// refuse to build it again.
+static_assert(KNX_SECURE_ENABLED,
+              "knx_product.hpp declares dataSecureCapable = true: build with "
+              "CONFIG_KNX_ENABLE_SECURITY=y (sdkconfig.defaults sets it)");
+
 namespace habinari_knx::service {
 
 namespace {
@@ -45,8 +57,9 @@ namespace {
 // whole default NVS partition, so a factory reset regenerates it and the
 // previously printed certificate stops matching the device.
 //
-// Data Secure is always on in this firmware; the ETS catalogue entry says so
-// too (SecurityPolicy in knx_product.hpp), and the two must agree.
+// Data Secure is built into every KNX image, TP1 and IP alike; the ETS
+// catalogue entry says so too (SecurityPolicy in knx_product.hpp), and the two
+// must agree (see the static_assert above).
 constexpr const char *kSecureNvsNamespace = "knx_secure";
 constexpr const char *kSecureNvsToolKeyBlob = "tool_key";
 

@@ -82,6 +82,23 @@ ETS derives a topology from it — the catalogue entry:
 | `HABINARI_KNX_MEDIUM_TP1` | y | STKNX, twisted pair | KNX bus terminal, no aux supply |
 | `HABINARI_KNX_MEDIUM_IP` | n | KNXnet/IP routing over Wi-Fi | **5–30 V auxiliary supply required** |
 
+Both media are KNX Data Secure devices: `CONFIG_KNX_ENABLE_SECURITY` is set in
+`sdkconfig.defaults`, the base every variant builds on, so the Security
+Interface Object, the Tool Key and key tables, sequence-number persistence and
+the CCM transforms on the receive task are in the TP1 image as well as the IP
+one, and both catalogue entries say `SecureEnabled="true"`.
+`main/src/knx_data_secure.cpp` refuses to compile a KNX image without it, since
+the product declares itself secure-capable on both. What only the IP image adds
+is KNX/IP Secure Routing; IP Secure tunnelling is in neither (see
+[knxnet-ip.md](knxnet-ip.md)).
+
+| KNX feature | TP1 | IP |
+|---|---|---|
+| Data Secure (S-A_Data, S-A_Sync, Tool Key, group and P2P keys) | yes | yes |
+| eFuse-derived FDSK and device certificate at boot | yes | yes |
+| KNX/IP Secure Routing (backbone key) | — | yes |
+| IP Secure tunnelling sessions | — | — |
+
 [docs/knxnet-ip.md](knxnet-ip.md) covers the IP medium: commissioning from ETS6
 over the network, the topology rule it places on the installation, and what is
 deliberately not implemented.
@@ -95,21 +112,25 @@ tools/build_variants.sh modbus-ble   # sdkconfig.defaults.modbus + .ble
 ```
 
 Measured image sizes against the 1920 kB OTA slot (`tools/build_variants.sh`,
-ESP-IDF v6.1, `-Os`):
+ESP-IDF v6.2, November 2026; the KNX IP image is built at `-Os` with the debug
+log strings stripped, the others at the default `-Og`):
 
 | Variant | `habinari.bin` | Slot used |
 |---|---|---|
-| Modbus only | 349 216 B | 17 % |
-| Modbus + BLE | 776 496 B | 39 % |
-| KNX TP1 + Modbus | 998 688 B | 50 % |
-| MQTT + Modbus + BLE | 1 590 144 B | 80 % |
+| Modbus only | 348 992 B | 18 % |
+| Modbus + BLE | 797 296 B | 41 % |
+| KNX TP1 + Modbus (Data Secure) | 965 584 B | 49 % |
+| KNX IP + Modbus + BLE (Data Secure, Secure Routing) | 1 646 672 B | 84 % |
+| MQTT + Modbus + BLE | 1 665 808 B | 85 % |
+
+Data Secure costs the TP1 image 12 992 B (952 592 B without it).
 
 The Modbus-only image is the interesting one: at a third the size of the KNX
 build it is the same device, with the same control loops and the same
 `control_state_t`, and it contains no KNX stack whatsoever. That is the
 structural change made visible.
 
-The MQTT figure is the one to watch. At 80 % of the slot it fits and an OTA
+The MQTT and KNX IP figures are the ones to watch. At 84–85 % of the slot they fit and an OTA
 still has somewhere to land, but there is no room beside it for another large
 subsystem — which is a real constraint on the Matter option in §5.
 

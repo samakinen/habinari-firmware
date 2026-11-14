@@ -69,6 +69,28 @@ CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
 # gptimer_set_alarm_action()/gptimer_get_raw_count() calls the ISR makes are
 # then all IRAM-resident.
 CONFIG_GPTIMER_ISR_CACHE_SAFE=y
+# KNX Data Secure (AN158): the Security Interface Object, the Tool Key, the
+# key tables, sequence-number persistence and the CCM transforms on the
+# receive and send paths. Stated here, in the base every variant layers on,
+# because the TP1 image is this file alone and the product declares itself
+# Data Secure capable on both media (SecurityPolicy in main/include/
+# knx_product.hpp; the .knxprod says SecureEnabled="true"). Without it the TP1
+# catalogue entry promised security the image did not link: a secure ETS
+# download would have found no Security Interface Object and no S-A_Sync
+# answer. The non-KNX variants compile the option but link none of it.
+#
+# Only the AES block cipher comes from the IDF (esp_aes, hardware); CCM is the
+# stack's own. TP1 has no tunnelling client, so the mbedTLS 4 restriction on
+# IP Secure sessions (see the KNstaX Kconfig) does not touch this image.
+CONFIG_KNX_ENABLE_SECURITY=y
+# The receive task (knx_tp1_rx) runs the Data Secure transforms. Static report
+# for this image with security on (tools/stack_report.py, November 2026, -Og):
+# deepest resolved chain 6,128 B over 54 frames, a management response
+# encrypted on the RX task (ccmEncrypt 784 B; ccmDecrypt is 912 B on a
+# shallower path), of which 5.1 KB is the stack and the rest the IDF's AES
+# lock/heap/log tail. A lower bound under the 6.5 KB bench threshold of the
+# sizing rule (docs/code-review-2026-10-fix-design.md, 3.8h), so 8192 — the
+# Kconfig maximum — stays until the bench says otherwise.
 CONFIG_KNX_RX_TASK_STACK_SIZE=8192
 # Bring-up default: compile in KNX_LOGD so the per-frame RX/TX dumps exist.
 # The runtime level is already set to Debug in knx_service.cpp; without this

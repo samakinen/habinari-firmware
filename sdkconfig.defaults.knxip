@@ -37,8 +37,9 @@ CONFIG_KNX_MEDIUM_IP=y
 # above; the stack has no option of its own for it.
 CONFIG_KNX_IP_PORT=3671
 
-# KNX Data Secure, and with it the KNX/IP Secure Routing wrapper that ETS
-# enables by downloading a backbone key.
+# KNX Data Secure comes from sdkconfig.defaults (both media); on IP it also
+# brings the KNX/IP Secure Routing wrapper that ETS enables by downloading a
+# backbone key. Restated so this file still says so when read on its own.
 CONFIG_KNX_ENABLE_SECURITY=y
 
 # What the device reports in A_Restart_Response after ETS master-resets it

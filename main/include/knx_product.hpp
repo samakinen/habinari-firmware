@@ -824,9 +824,11 @@ inline constexpr auto kHabinariProduct =
                 .persistKnxState = true,
             },
             // Must stay in step with knx_data_secure.cpp, which always installs a
-            // factory tool key. This is only what the ETS catalogue entry
-            // advertises, and a device that claims Data Secure but cannot
-            // honour it fails commissioning. No per-object requirement, so enabling Data
+            // factory tool key, and with CONFIG_KNX_ENABLE_SECURITY, which
+            // sdkconfig.defaults sets for both media (knx_data_secure.cpp
+            // refuses to compile without it). This is only what the ETS
+            // catalogue entry advertises, and a device that claims Data Secure
+            // but cannot honour it fails commissioning. No per-object requirement, so enabling Data
             // Secure stays the integrator's choice and the board still
             // commissions into plain, non-secure installations.
             SecurityPolicy{
