@@ -278,7 +278,8 @@ void prepareMedium()
 }
 
 util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platform,
-                                                 HabinariBindings &&bindings)
+                                                 HabinariBindings &&bindings,
+                                                 const product::SecureCommissioningOptions &secure)
 {
     // The stack needs an interface to join the multicast group on. Waiting is
     // not the same as requiring: the routing endpoint recovers when the
@@ -302,6 +303,7 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
     options.port = NetIpPort(CONFIG_HABINARI_KNXIP_PORT);
     options.timeToLive = static_cast<uint8_t>(CONFIG_HABINARI_KNXIP_TTL);
     options.friendlyName = resolveFriendlyName();
+    options.secure = secure;
 
     char groupText[16] = {0};
     options.multicastGroup.toString(groupText);

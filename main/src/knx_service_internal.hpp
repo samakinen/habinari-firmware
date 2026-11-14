@@ -34,6 +34,7 @@
 #include "knx/platform/esp32_platform.hpp"
 #include "knx/product/commissioned_product.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -150,11 +151,35 @@ struct KnxSerialNumber {
     bool valid{false};
 };
 
-/// Set the serial number on the device object and log it.
-KnxSerialNumber assignSerialNumber(HabinariApp &app);
-/// Install the factory tool key unless ETS has put its own in force, and log
-/// the key and the ETS device certificate when they are still usable.
-void setUpDataSecure(HabinariApp &app, const KnxSerialNumber &serial);
+/// Where the factory tool key came from. The two differ in shelf life: the
+/// eFuse-derived FDSK is fixed for the life of the chip, while the NVS key is
+/// erased by a factory reset.
+enum class ToolKeySource : uint8_t { EfuseDerived, NvsFallback };
+
+/// The device's KNX Data Secure factory tool key (FDSK), resolved before the
+/// stack starts.
+struct DataSecureFactoryKey {
+    std::array<uint8_t, 16> key{};
+    ToolKeySource source{ToolKeySource::NvsFallback};
+    /// The NVS fallback key was generated on this boot.
+    bool created{false};
+    bool valid{false};
+};
+
+/// Read the serial number from the base MAC and log it. Before start.
+KnxSerialNumber readSerialNumber();
+/// Resolve the FDSK: eFuse-derived, else the NVS fallback. Before start.
+DataSecureFactoryKey resolveDataSecureFactoryKey(const KnxSerialNumber &serial);
+/// The product's ex-factory Data Secure state: the FDSK as factory Tool Key,
+/// Security Mode off until ETS turns it on. A Tool Key ETS stored wins over
+/// it at every start, and a Factory Reset returns to it.
+knx::product::SecureCommissioningOptions dataSecureFactoryDefaults(const DataSecureFactoryKey &factoryKey);
+/// Set the serial number on the started device object.
+void assignSerialNumber(HabinariApp &app, const KnxSerialNumber &serial);
+/// Log the Data Secure state, the factory key and the ETS device certificate
+/// while they are still usable.
+void reportDataSecure(HabinariApp &app, const KnxSerialNumber &serial,
+                      const DataSecureFactoryKey &factoryKey);
 
 // --- knx_stack_watch.cpp -----------------------------------------------------
 
@@ -172,7 +197,8 @@ void serviceStackWatch();
 void prepareMedium();
 /// Bring the transport up and start the product on it.
 knx::util::Result<HabinariProductHandle> startProduct(knx::platform::Esp32Platform &platform,
-                                                      HabinariBindings &&bindings);
+                                                      HabinariBindings &&bindings,
+                                                      const knx::product::SecureCommissioningOptions &secure);
 /// After start, before the loop: anything the medium publishes or subscribes to.
 void mediumStarted(HabinariApp &app);
 /// Once per loop pass, after the stack's own loop().

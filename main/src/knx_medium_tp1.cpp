@@ -68,7 +68,8 @@ void prepareMedium()
 }
 
 util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platform,
-                                                 HabinariBindings &&bindings)
+                                                 HabinariBindings &&bindings,
+                                                 const product::SecureCommissioningOptions &secure)
 {
     auto physicalResult = createTp1Physical(platform);
     if (physicalResult.isError()) {
@@ -77,7 +78,7 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
     }
 
     return startCommissionedProduct(platform, kHabinariProduct, std::move(bindings),
-                                    std::move(physicalResult.value()));
+                                    std::move(physicalResult.value()), secure);
 }
 
 void mediumStarted(HabinariApp &)

@@ -109,7 +109,7 @@ esp_err_t toEspErr(util::ErrorCode error)
 // compiler from folding it back into the task, where the builder would occupy
 // the task's frame for good.
 [[gnu::noinline]] util::Result<HabinariProductHandle>
-buildAndStartProduct(platform::Esp32Platform &platform)
+buildAndStartProduct(platform::Esp32Platform &platform, const product::SecureCommissioningOptions &secure)
 {
     // Declared first, then registered onto as an lvalue. Writing this as
     // `auto bindings = makeCommissionedBindings(...).provideState(...)...`
@@ -150,7 +150,7 @@ buildAndStartProduct(platform::Esp32Platform &platform)
 
     // startProduct() builds the runtime on the heap and hands back an owning
     // handle: at ~34 KB it cannot travel through a stack frame.
-    return startProduct(platform, std::move(bindings));
+    return startProduct(platform, std::move(bindings), secure);
 }
 
 void logIndividualAddress(HabinariApp &app)
@@ -220,7 +220,14 @@ void knxServiceTask(void *arg)
 
     platform::Esp32Platform platform;
 
-    auto appResult = buildAndStartProduct(platform);
+    // The ETS device certificate encodes the serial number together with the
+    // key, so the serial comes first. Both are known before the stack starts,
+    // and the FDSK goes in as the factory default: what ETS stored wins over
+    // it, and a Factory Reset returns to it, with no step after start.
+    const KnxSerialNumber serial = readSerialNumber();
+    const DataSecureFactoryKey factoryKey = resolveDataSecureFactoryKey(serial);
+
+    auto appResult = buildAndStartProduct(platform, dataSecureFactoryDefaults(factoryKey));
     if (appResult.isError()) {
         KNX_LOGE(TAG, "KNX start failed: %s", util::errorCodeToString(appResult.error()));
         g_knx.taskHandle.store(nullptr);
@@ -232,11 +239,9 @@ void knxServiceTask(void *arg)
     const HabinariProductHandle appPtr = std::move(appResult.value());
     auto &app = *appPtr;
 
-    // The ETS device certificate encodes the serial number together with the
-    // key, so the serial comes first.
-    const KnxSerialNumber serial = assignSerialNumber(app);
+    assignSerialNumber(app, serial);
     configureTransmitShaping(app);
-    setUpDataSecure(app, serial);
+    reportDataSecure(app, serial, factoryKey);
     logIndividualAddress(app);
     seedStateFromParameters(app);
     mediumStarted(app);

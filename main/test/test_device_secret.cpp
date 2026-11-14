@@ -480,6 +480,24 @@ void test_tohex_separator_and_truncation()
     TEST_ASSERT_EQUAL_STRING("00", tight);
 }
 
+// The boot report's certificate decision (knx_data_secure.cpp): fresh
+// device, after an ETS download, after a Factory Reset.
+void test_certificate_decision(void)
+{
+    using habinari::identity::CertificateDecision;
+    using habinari::identity::certificateDecision;
+    // Fresh / after Factory Reset: the FDSK is the key in force.
+    TEST_ASSERT_TRUE(certificateDecision(true, true, true) == CertificateDecision::Print);
+    // ETS installed its own key.
+    TEST_ASSERT_TRUE(certificateDecision(true, true, false) == CertificateDecision::EtsKeyInForce);
+    TEST_ASSERT_TRUE(certificateDecision(false, true, false) == CertificateDecision::EtsKeyInForce);
+    // No serial: nothing to print, whatever the key.
+    TEST_ASSERT_TRUE(certificateDecision(false, true, true) == CertificateDecision::NoSerial);
+    // No key at all (the FDSK could not be resolved): the certificate is all
+    // the installer has to go on.
+    TEST_ASSERT_TRUE(certificateDecision(true, false, false) == CertificateDecision::Print);
+}
+
 int main()
 {
     UNITY_BEGIN();
@@ -512,6 +530,7 @@ int main()
     RUN_TEST(test_certificate_uses_base32_alphabet_and_grouping);
     RUN_TEST(test_crc4_golden);
     RUN_TEST(test_tohex_separator_and_truncation);
+    RUN_TEST(test_certificate_decision);
 
     return UNITY_END();
 }

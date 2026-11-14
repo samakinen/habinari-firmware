@@ -865,8 +865,8 @@ warning-free and CI enforces it.
 
 **Open after phase 3:**
 - ~~Five interop tests fail~~ — fixed, see "Interop suite" below.
-- The TP1↔IP interface bridge does not apply the tunnel individual address
-  or produce L_Data.con.
+- ~~The TP1↔IP interface bridge does not apply the tunnel individual address
+  or produce L_Data.con~~ — done, see "Follow-ups (14 November 2026)" below.
 - ~~Data Secure on the TP1 image~~ — done, see below.
 - Bench: ETS filter-table download (and which load path ETS uses), DPT 243
   field order, a real gateway with DAC verification, xknx/ETS6 against TCP
@@ -974,6 +974,119 @@ Group keys yield per table to a downloaded key table; Sequence Number
 Sending keeps the higher value; setters that cannot hold a value before
 init return NotInitialized / OperationNotReady instead of succeeding
 silently. Found through the interop peer, whose Data Secure key init()
-wiped. Open: `SecureCommissioningOptions` cannot express "factory Tool Key
-with Security Mode off", so Habinari installs its FDSK after start (which
-still behaves correctly).
+wiped. ~~Open: `SecureCommissioningOptions` cannot express "factory Tool Key
+with Security Mode off"~~ — done, see "Follow-ups" below.
+
+### Follow-ups (14 November 2026)
+
+**TP1↔IP interface bridge** (`network::Tp1IpInterfaceBridge`). It is now the
+cEMI server of the interface, and asynchronous: requests are queued and
+`poll()` (on the task that polls the tunnelling server) drives the TP1
+transmission, so the server's poll never blocks on the line's repetitions.
+
+- *Tunnel addresses.* 03_08_04 §2.2.2: an L_Data.req with Source Address
+  0000h goes onto TP1 with the connection's tunnel address; "Otherwise, the
+  KNX frame shall be sent unchanged" (also 03_06_03 §4.1.5.3.3), so any other
+  source is kept. Every assumed tunnel address is acknowledged on TP1 whether
+  a connection is open on it or not ("Additional KNX Individual Addresses
+  shall be permanent. The KNXnet/IP Server shall generate Layer-2 acknowledge
+  frames for these"): `Tp1DataLinkLayer::setAdditionalIndividualAddresses()`
+  reaches the bit-bang ISR's new individual acknowledge set (16 entries,
+  linear scan) through Tp1MacPhysical and the medium backend, and the data
+  link's receive filter.
+- *L_Data.con.* 03_06_03 §4.1.5.3.4: after the transmission, the requested
+  frame with code 2Eh and Confirm flag 0 (no error) or 1 (error); requests are
+  confirmed one at a time in arrival order (§4.1.5.1, FIFO). Positive when the
+  data link reports success; negative on NAK, BUSY or no L_ACK after the three
+  repetitions, and when the request queue (8) is full. A group frame nobody
+  acknowledged is confirmed positively, because the data link treats it as
+  sent (its documented decision on 03_02_02 §2.4.2), so a cEMI client sees a
+  negative confirmation for a group frame only on NAK or BUSY. The r-flag
+  ("do not repeat") is not honoured: the data link has no per-frame
+  repetition control.
+- *L_Data.ind.* 03_08_04 §2.2.2: group frames to every connection,
+  point-to-point frames only to the connection whose tunnel address is the
+  destination (others are dropped; a client wanting all traffic uses
+  Busmonitor, not implemented). A frame one connection sent successfully is
+  indicated to the other connections by the same rule (footnote 2: each
+  connection "logically appears as another device on the KNX bus").
+- *Not done.* PID_ADDITIONAL_INDIVIDUAL_ADDRESSES and the T_Connect defence of
+  idle additional addresses (§2.2.2), cEMI local device management, and
+  Busmonitor tunnelling.
+- *Tests.* Bridge unit tests (mock line): source fill, positive and negative
+  confirmation for Timeout/NAK/BUSY, routing of indications by tunnel
+  address, FIFO, non-request cEMI dropped. On the virtual TP1 bus with the
+  real data link, MAC and ISR: positive confirmation after a bus ACK, negative
+  after four unacknowledged copies, the ISR acknowledging a tunnel address and
+  not a foreign one, the indication reaching only its connection. An ISR unit
+  test for the additional acknowledge set. Interop (`knstax_interface_peer`, a
+  tunnelling server and bridge on a scripted line): xknx 4.1.1 sends a group
+  write, which returns only after its L_Data.con (C = 0, and C = 1 with the
+  line NAKing; xknx itself ignores C), goes onto the line from tunnel address
+  1.1.10, and receives a frame injected on the line. Interop: 34 passed.
+- *Bench.* ETS6 and Home Assistant through a real interface on a TP1 line:
+  confirmation timing, two tunnels at once, a download through a tunnel.
+
+**Filter Table Realisation Type 3** (`network::FilterTableLoadControl`).
+03_05_01 §5.3.1.5: the MaC allocates the table with an Additional Load
+Control, reads PID_TABLE_REFERENCE and writes the bit field with memory
+writes; §5.3.1.4: the Router Object's Load State Machine is Realisation Type 1
+and the evaluation is negative in every state but Loaded.
+
+- The Router Object declares PID_LOAD_STATE_CONTROL (5, PDT_CONTROL),
+  PID_TABLE_REFERENCE (7, read-only) and PID_MCB_TABLE (27, PDT_GENERIC_08).
+  `GenericInterfaceObject::bindProperty()` backs them with the load state
+  machine instead of storage. The table appears at 8000h (8192 octets, below
+  10000h so DMP_MemWrite_RCoV applies), registered as a memory region when the
+  Router Object is published, i.e. only for a router role. The window is the
+  FilterTable's own storage, so no RAM is added.
+- Transitions per §4.23.2.3.3 Table 94 (recommended column): Start Loading
+  from Unloaded/Loaded/Loading → Loading, Error stays; Load Completed only
+  completes from Loading; Additional Load Controls in Loaded → Error; Unload
+  from anywhere → Unloaded; unknown events ignored (§4.23.2.3.2). Allocation
+  accepts Data Relative Allocation (0Bh, with fill), Relative Allocation (0Ah)
+  and Absolute Data Allocation (00h) at 8000h only (03_05_02 §3.31.3.4); a
+  size above 8192 or another address → Error. PID_TABLE_REFERENCE is zero
+  while unallocated or Unloaded (§4.2.7). Unload clears the table (Table 93:
+  "The data is undefined") and the MCB.
+- MCB (§4.2.27): writable only in Loading. On Load Completed the device
+  computes the CRC over the segment (§4.2.27.1.2); when the MaC wrote an MCB,
+  a different CRC is an error in the data → Error (Table 93), otherwise the
+  MCB is filled in with segment size 8192 and the CRC. The CRC is the variant
+  whose check value the clause gives ("123456789" → E5CCh): the augmented
+  formulation with FFFFh, i.e. the direct algorithm seeded 1D0Fh (seeded
+  FFFFh it gives 29B1h).
+- Every state change reaches the coupler: `setFilterTableLoaded()` on its
+  policy and `refreshAckFilters()` for the ISR's group acknowledge.
+- *Not done.* Neither the table nor its load state is persisted (already so
+  for PID_ROUTETABLE_CONTROL downloads): after a restart the coupler is
+  Loaded with an empty table and blocks every group frame until the next
+  download. Master Reset does not reset the table (§5.3.1.2 asks for the
+  implementation default on 02h/05h/07h). PID_ERROR_CODE is not provided.
+- *Tests.* Unit tests of the state machine (transitions, allocation, fill,
+  MCB, CRC check value); an ETS-like download through the real application
+  layer (Unload, Start Loading, Data Relative Allocation, reference read,
+  A_Memory_Write, MCB, Load Completed), a CRC mismatch ending in Error, Unload
+  clearing the table; on a coupler stack port, the load state reaching the
+  routing policy.
+- *Bench capture needed:* which load path ETS uses for this mask (the Type 3
+  load state machine with memory writes, or PID_ROUTETABLE_CONTROL), whether
+  it writes the MCB and with what CRC, which allocation subtype it sends, and
+  whether it uses A_Memory_Write or the extended memory services.
+
+**SecureCommissioningOptions.** The Tool Key and the Security Mode are now
+independent factory defaults: `std::optional<ToolKey> factoryToolKey` and
+`bool securityModeAtFactoryReset` (replacing `enabled` and `toolKey`), both
+applied before init() per the pre-init rule, so a stored ETS Tool Key or mode
+wins and a Factory Reset returns to them. The TP1 `startCommissionedProduct`
+overload taking a `Tp1MacPhysical` gained a `SecureCommissioningOptions`
+argument (the four-argument form remains). Habinari resolves its serial
+number and FDSK (eFuse, NVS fallback) before start and passes the FDSK with
+the mode off; after start it only sets the serial on the Device Object and
+logs. The log and certificate behaviour is unchanged; whether the certificate
+is printed is decided by `habinari::identity::certificateDecision()`, which
+has a host test. KNstaX product tests: a fresh device has the FDSK and mode
+off; after an ETS download the ETS key and mode win over two restarts; after
+a local Factory Reset (erased store, as `control_service_factory_reset`) the
+FDSK is back with mode off. Master Reset 02h is covered by
+`test_ets_connected_session`.

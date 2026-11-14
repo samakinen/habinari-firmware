@@ -58,4 +58,29 @@ void formatDeviceCertificate(std::span<const uint8_t, 6> serial,
                              char *out,
                              size_t outLen);
 
+/// What to say at boot about the ETS device certificate.
+enum class CertificateDecision : uint8_t {
+    /// The factory Tool Key is in force: the certificate is what ETS needs.
+    Print,
+    /// No serial number, so there is no certificate to build.
+    NoSerial,
+    /// ETS has installed a Tool Key of its own. The factory certificate would
+    /// be refused ("secured with a key not known within this project") until
+    /// a Factory Reset puts the FDSK back.
+    EtsKeyInForce,
+};
+
+/// @p anyToolKeyInForce: the device holds some Tool Key; @p factoryKeyInForce:
+/// that key is the FDSK. The FDSK is the stack's factory default, so it is in
+/// force unless ETS stored its own.
+constexpr CertificateDecision certificateDecision(bool serialValid,
+                                                  bool anyToolKeyInForce,
+                                                  bool factoryKeyInForce)
+{
+    if (anyToolKeyInForce && !factoryKeyInForce) {
+        return CertificateDecision::EtsKeyInForce;
+    }
+    return serialValid ? CertificateDecision::Print : CertificateDecision::NoSerial;
+}
+
 } // namespace habinari::identity

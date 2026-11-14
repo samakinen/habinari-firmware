@@ -30,7 +30,7 @@ using namespace knx;
 // (SecurityPolicy::dataSecureCapable in knx_product.hpp, SecureEnabled in the
 // .knxprod), and everything below assumes the stack can honour that. A build
 // without CONFIG_KNX_ENABLE_SECURITY links no Security Interface Object and no
-// CCM transforms, so installFactoryToolKey() would succeed into nothing and
+// CCM transforms, so the factory Tool Key would be installed into nothing and
 // the certificate printed at boot would describe a key the device cannot use.
 // That is how the TP1 image shipped until sdkconfig.defaults set the option;
 // refuse to build it again.
@@ -102,11 +102,6 @@ bool loadOrCreateToolKey(std::array<uint8_t, 16> &key, bool &created)
     return true;
 }
 
-// Where the factory tool key came from. The two differ in shelf life: the
-// eFuse-derived FDSK is fixed for the life of the chip, while the NVS key is
-// erased by a factory reset.
-enum class ToolKeySource { EfuseDerived, NvsFallback };
-
 // Resolve the device's factory tool key, preferring the FDSK derived from the
 // eFuse root secret and falling back to the legacy NVS key while that block is
 // still unprovisioned. `serial` is null when the MAC read failed, which rules
@@ -132,18 +127,17 @@ bool resolveFactoryToolKey(const uint8_t *serial,
 
 }  // namespace
 
-KnxSerialNumber assignSerialNumber(HabinariApp &app)
+KnxSerialNumber readSerialNumber()
 {
     KnxSerialNumber serial;
     // KNX serial number (device object PID 11): derive from the
     // factory-programmed base MAC so every board reports a unique,
     // stable identity instead of all zeroes. The MAC is globally unique,
     // so this doubles as the device's manufacturing serial. It is logged
-    // below so it can be paired with the Data Secure key during ETS
+    // here so it can be paired with the Data Secure key during ETS
     // commissioning.
     uint8_t mac[6] = {};
     if (esp_read_mac(mac, ESP_MAC_BASE) == ESP_OK) {
-        app.deviceObject().setSerialNumber(std::span<const uint8_t>(mac, sizeof(mac)));
         std::copy(std::begin(mac), std::end(mac), std::begin(serial.bytes));
         serial.valid = true;
         char serialHex[3 * 6] = {};
@@ -155,98 +149,115 @@ KnxSerialNumber assignSerialNumber(HabinariApp &app)
     return serial;
 }
 
-void setUpDataSecure(HabinariApp &app, const KnxSerialNumber &serial)
+void assignSerialNumber(HabinariApp &app, const KnxSerialNumber &serial)
 {
-    // Resolve the device-unique KNX Data Secure factory tool key and log it
-    // in hex so an installer can capture it locally and enter it, together
-    // with the serial number above, into ETS for secure commissioning.
+    if (serial.valid) {
+        app.deviceObject().setSerialNumber(std::span<const uint8_t>(serial.bytes, sizeof(serial.bytes)));
+    }
+}
+
+DataSecureFactoryKey resolveDataSecureFactoryKey(const KnxSerialNumber &serial)
+{
     // This key is the device's FDSK / initial tool key: derived from the
     // eFuse root secret once that is provisioned, otherwise the legacy
     // NVS-stored random key.
-    std::array<uint8_t, 16> toolKey{};
-    bool created = false;
-    ToolKeySource keySource = ToolKeySource::NvsFallback;
-    if (resolveFactoryToolKey(serial.valid ? serial.bytes : nullptr, toolKey, keySource,
-                              created)) {
+    DataSecureFactoryKey factoryKey;
+    factoryKey.valid = resolveFactoryToolKey(serial.valid ? serial.bytes : nullptr, factoryKey.key,
+                                             factoryKey.source, factoryKey.created);
+    return factoryKey;
+}
+
+product::SecureCommissioningOptions dataSecureFactoryDefaults(const DataSecureFactoryKey &factoryKey)
+{
+    // The FDSK is the factory default, set before the stack starts (the
+    // pre-init rule on BusAccessUnit::init). ETS installs its own Tool Key
+    // during secure commissioning and then restarts the device; the stack
+    // restores that key from its persistence over this default, so the
+    // device is never put back on its FDSK behind ETS's back (which made
+    // ETS's first S-A_Sync_Request after the restart fail: "no SyncResponse
+    // was received; probably the key did not match"). A Factory Reset
+    // returns to it.
+    //
+    // Security Mode stays off ex-factory. It is ETS's property, it is
+    // persisted, and ETS turns it on when it finishes a secure download.
+    // Forcing it on made the device refuse every unsecured management
+    // service, so a project that does not use security could not
+    // commission it at all.
+    product::SecureCommissioningOptions secure{};
+    if (factoryKey.valid) {
+        secure.factoryToolKey = factoryKey.key;
+    }
+    secure.securityModeAtFactoryReset = false;
+    return secure;
+}
+
+void reportDataSecure(HabinariApp &app, const KnxSerialNumber &serial,
+                      const DataSecureFactoryKey &factoryKey)
+{
+    if (!factoryKey.valid) {
+        // resolveFactoryToolKey() has logged why.
+        return;
+    }
+
+    // Log the key in hex so an installer can capture it locally and enter
+    // it, together with the serial number, into ETS for secure
+    // commissioning, while it is the key in force. hasEtsToolKey() is only
+    // "some tool key is set"; what decides is whether the key in force IS
+    // the factory key.
+    const bool factoryKeyInForce = app.toolKeyInForceIs(factoryKey.key);
+    const auto decision = habinari::identity::certificateDecision(serial.valid, app.hasEtsToolKey(),
+                                                                  factoryKeyInForce);
+
+    if (decision == habinari::identity::CertificateDecision::EtsKeyInForce) {
+        KNX_LOGW(TAG,
+                 "KNX Data Secure available (mode %s, set by ETS). Keeping the "
+                 "tool key already on the device; the factory key is only valid "
+                 "again after a factory reset.",
+                 app.isSecurityEnabled() ? "ON" : "off");
+    } else {
         char keyHex[3 * 16] = {};
-        toHex(std::span<const uint8_t>(toolKey.data(), toolKey.size()), ' ', keyHex, sizeof(keyHex));
+        toHex(std::span<const uint8_t>(factoryKey.key.data(), factoryKey.key.size()), ' ', keyHex,
+              sizeof(keyHex));
+        KNX_LOGW(TAG,
+                 "KNX Data Secure available (mode %s, set by ETS). "
+                 "Tool key (%s): %s",
+                 app.isSecurityEnabled() ? "ON" : "off",
+                 factoryKey.source == ToolKeySource::EfuseDerived
+                     ? "derived from the eFuse root secret"
+                     : (factoryKey.created ? "NVS, generated" : "NVS, stored"),
+                 keyHex);
+    }
 
-        // ETS installs its own tool key during secure commissioning and
-        // then restarts the device; the stack restores that key from its
-        // own persistence. Re-applying the factory key here would put the
-        // device back on its FDSK behind ETS's back, and the first thing
-        // ETS does after the restart — an S-A_Sync_Request — then fails to
-        // verify ("no SyncResponse was received; probably the key did not
-        // match"). So the factory key is only applied when the device does
-        // not already carry one.
-        //
-        // Security Mode is deliberately not asserted here either. It is
-        // ETS's property, it is persisted, and ETS turns it on when it
-        // finishes a secure download. Forcing it on at every boot made the
-        // device refuse every unsecured management service, so a project
-        // that does not use security could not commission it at all: ETS
-        // opened the connection, sent A_Authorize_Request in the clear,
-        // and the device dropped it without an answer.
-        // hasEtsToolKey() is only "some tool key is set", which is also
-        // true of the factory key this firmware installed on an earlier
-        // boot. What decides whether the certificate below is still worth
-        // printing is whether the key in force IS the factory key.
-        const bool factoryKeyInForce = app.toolKeyInForceIs(toolKey);
-        const bool provisionedKeyInForce = app.hasEtsToolKey() && !factoryKeyInForce;
-        const auto secureResult = provisionedKeyInForce
-                                      ? util::Result<void>::ok()
-                                      : app.installFactoryToolKey(toolKey);
-        if (secureResult.isError()) {
-            KNX_LOGE(TAG, "Data Secure: installFactoryToolKey failed: %d",
-                     static_cast<int>(secureResult.error()));
-        } else {
-            if (provisionedKeyInForce) {
-                KNX_LOGW(TAG,
-                         "KNX Data Secure available (mode %s, set by ETS). Keeping the "
-                         "tool key already on the device; the factory key below was not "
-                         "re-applied and is only valid again after a factory reset.",
-                         app.isSecurityEnabled() ? "ON" : "off");
-            } else {
-                KNX_LOGW(TAG,
-                         "KNX Data Secure available (mode %s, set by ETS). "
-                         "Tool key (%s): %s",
-                         app.isSecurityEnabled() ? "ON" : "off",
-                         keySource == ToolKeySource::EfuseDerived
-                             ? "derived from the eFuse root secret"
-                             : (created ? "NVS, generated" : "NVS, stored"),
-                         keyHex);
-            }
+    if (factoryKey.source == ToolKeySource::NvsFallback) {
+        KNX_LOGW(TAG,
+                 "This device has no eFuse root secret yet, so the key above lives "
+                 "in NVS and a factory reset will replace it — the certificate "
+                 "below is only valid until then.");
+    }
 
-            if (keySource == ToolKeySource::NvsFallback) {
-                KNX_LOGW(TAG,
-                         "This device has no eFuse root secret yet, so the key above lives "
-                         "in NVS and a factory reset will replace it — the certificate "
-                         "below is only valid until then.");
-            }
-
-            // The certificate is only usable while the factory key is the
-            // one the device would actually accept. Printing it once ETS
-            // has installed a Tool Key of its own is worse than printing
-            // nothing: ETS answers an FDSK that is no longer in force with
-            // "Device is secured with a key not known within this project",
-            // and re-entering the same certificate can never change that.
-            if (!serial.valid) {
-                KNX_LOGW(TAG,
-                         "KNX Data Secure device certificate unavailable: no serial number");
-            } else if (provisionedKeyInForce) {
-                KNX_LOGW(TAG,
-                         "KNX Data Secure device certificate NOT printed: the Tool Key in "
-                         "force was installed by ETS, so the factory certificate would not "
-                         "be accepted. Use the project that commissioned this device, or "
-                         "factory-reset it and use the certificate printed on the next boot.");
-            } else {
-                char certificate[habinari::identity::kCertificateBufferSize] = {};
-                formatDeviceCertificate(std::span<const uint8_t, 6>(serial.bytes, 6),
-                                        toolKey, certificate, sizeof(certificate));
-                KNX_LOGW(TAG,
-                         "KNX Data Secure device certificate (enter in ETS): %s",
-                         certificate);
-            }
+    // The certificate is only usable while the factory key is the one the
+    // device would actually accept. Printing it once ETS has installed a
+    // Tool Key of its own is worse than printing nothing: ETS answers an
+    // FDSK that is no longer in force with "Device is secured with a key
+    // not known within this project", and re-entering the same certificate
+    // can never change that.
+    switch (decision) {
+        case habinari::identity::CertificateDecision::NoSerial:
+            KNX_LOGW(TAG, "KNX Data Secure device certificate unavailable: no serial number");
+            break;
+        case habinari::identity::CertificateDecision::EtsKeyInForce:
+            KNX_LOGW(TAG,
+                     "KNX Data Secure device certificate NOT printed: the Tool Key in "
+                     "force was installed by ETS, so the factory certificate would not "
+                     "be accepted. Use the project that commissioned this device, or "
+                     "factory-reset it and use the certificate printed on the next boot.");
+            break;
+        case habinari::identity::CertificateDecision::Print: {
+            char certificate[habinari::identity::kCertificateBufferSize] = {};
+            formatDeviceCertificate(std::span<const uint8_t, 6>(serial.bytes, 6), factoryKey.key,
+                                    certificate, sizeof(certificate));
+            KNX_LOGW(TAG, "KNX Data Secure device certificate (enter in ETS): %s", certificate);
+            break;
         }
     }
 }
