@@ -1,0 +1,42 @@
+# Indirect calls on the KNX receive path that GCC's call graph cannot follow,
+# for tools/stack_report.py --edges. One "caller -> callee" per line; patterns
+# are demangled-name globs, "@file:line" picks one of several same-named
+# lambdas. An edge whose ends are not in the build (the other medium's
+# physical layer) is skipped. Keep in step with the code when the wiring moves.
+
+# Data link -> physical port (function pointers bound in bindPhysical()).
+* knx::datalink::Tp1DataLinkLayer::pollReceive() -> * knx::physical::Tp1MacPhysical::pollReceive()
+* knx::datalink::Tp1DataLinkLayer::pollReceive() -> * knx::physical::IpRoutingPhysical::pollReceive()
+* knx::datalink::Tp1DataLinkLayer::sendFrame(* -> * knx::physical::Tp1MacPhysical::sendFrame(*
+* knx::datalink::Tp1DataLinkLayer::sendFrame(* -> * knx::physical::IpRoutingPhysical::sendFrame(*
+* knx::datalink::Tp1DataLinkLayer::beginTransmit(* -> * knx::physical::Tp1MacPhysical::beginTransmit(*
+* knx::datalink::Tp1DataLinkLayer::beginTransmit(* -> * knx::physical::IpRoutingPhysical::beginTransmit(*
+* knx::datalink::Tp1DataLinkLayer::pollTransmit() -> * knx::physical::Tp1MacPhysical::pollTransmit(*
+* knx::datalink::Tp1DataLinkLayer::pollTransmit() -> * knx::physical::IpRoutingPhysical::pollTransmit(*
+
+# KNX IP Secure Routing behind the routing endpoint (RoutingSecurity is virtual).
+* knx::netip::RoutingEndpoint::receive(* -> * knx::netip::ip_secure::SecureRoutingSecurity::unprotect(*
+* knx::netip::RoutingEndpoint::receive(* -> * knx::netip::ip_secure::SecureRoutingSecurity::handleTimerNotify(*
+* knx::netip::RoutingEndpoint::receive(* -> * knx::netip::ip_secure::SecureRoutingSecurity::takeDueTimerNotify(*
+* knx::netip::RoutingEndpoint::sendToGroup(* -> * knx::netip::ip_secure::SecureRoutingSecurity::protect(*
+
+# Upward receive callbacks (InplaceFunction invokers of the layers' init() lambdas).
+* knx::datalink::Tp1DataLinkLayer::pollReceive() -> *CallableT = knx::network::NetworkLayer::init(*
+* knx::network::NetworkLayer::handleDlRx(* -> *CallableT = knx::transport::TransportLayer::init(*
+* knx::transport::TransportLayer::handleNetworkRx(* -> *CallableT = knx::application::ApplicationLayer::init(*
+* knx::transport::TransportLayer::handleNumberedData(* -> *CallableT = knx::application::ApplicationLayer::init(*
+
+# Data Secure: the transport's RX/TX transforms installed by the stack port.
+* knx::transport::TransportLayer::handleNetworkRx(* -> *configureSecurity()::<lambda*@bau_stack_port.cpp:674
+* knx::transport::TransportLayer::handleNumberedData(* -> *configureSecurity()::<lambda*@bau_stack_port.cpp:674
+* knx::transport::TransportLayer::buildNetworkTxFrame(* -> *configureSecurity()::<lambda*@bau_stack_port.cpp:652
+
+# Downward send: network -> data link (virtual).
+* knx::network::NetworkLayer::sendFrame(* -> * knx::datalink::Tp1DataLinkLayer::sendFrame(*
+* knx::network::NetworkLayer::pollTransmit() -> * knx::datalink::Tp1DataLinkLayer::pollTransmit()
+
+# Property services -> InterfaceObjectManager (read/write providers).
+* knx::application::PropertyServices::handleValueRead(* -> * knx::objects::InterfaceObjectManager::readProperty(*
+*knx::application::PropertyServices::handleValueWrite(*)::<lambda*@property_services.cpp:144 -> * knx::objects::InterfaceObjectManager::writeProperty(*
+* knx::application::PropertyExtServices::handleValueRead(* -> * knx::objects::InterfaceObjectManager::readProperty(*
+* knx::application::PropertyExtServices::handleValueWrite(* -> * knx::objects::InterfaceObjectManager::writeProperty(*

@@ -17,6 +17,7 @@
  *   knx_parameters.cpp      ETS parameters -> control state (knx_parameter_table.hpp)
  *   knx_publish.cpp         outbound publication and transmit shaping
  *   knx_data_secure.cpp     serial number, factory tool key, device certificate
+ *   knx_stack_watch.cpp     stack headroom of the KNX tasks
  *   knx_medium_tp1.cpp /
  *   knx_medium_ip.cpp       the transport — the only thing that differs by medium
  *
@@ -45,6 +46,11 @@ inline constexpr const char *TAG = "knx_service";
 // The publish cadence ceiling, and the link-diagnostics log interval. The
 // control task owns the real cadence; see knxServiceTask.
 inline constexpr uint32_t kControlIntervalMs = 1000;
+
+// The service task's stack. Start-up, not the service loop, sets its peak; see
+// knxServiceTask for what is on it, and knx_stack_watch.cpp for how it is
+// measured. Retune from the logged worst case, not from guesswork.
+inline constexpr uint32_t kKnxServiceTaskStackSize = 32 * 1024;
 
 using HabinariProductHandle =
     knx::product::CommissionedProductHandle<std::remove_cvref_t<decltype(kHabinariProduct)>,
@@ -87,6 +93,9 @@ struct KnxAdapterState {
     // consumed by the service loop with an exchange, so a tick raised between
     // the read and the clear is never lost.
     std::atomic<bool> controlTickPending{true};
+    // Raised on a lifecycle change (from whichever task reports it), consumed
+    // by the service loop, which logs the KNX tasks' stack headroom.
+    std::atomic<bool> stackCheckPending{false};
 #if defined(CONFIG_HABINARI_KNX_MEDIUM_IP)
     // Raised from the Wi-Fi event loop when the interface gains an address, so
     // the service task republishes what ETS reads back. Consumed the same way
@@ -146,6 +155,15 @@ KnxSerialNumber assignSerialNumber(HabinariApp &app);
 /// Install the factory tool key unless ETS has put its own in force, and log
 /// the key and the ETS device certificate when they are still usable.
 void setUpDataSecure(HabinariApp &app, const KnxSerialNumber &serial);
+
+// --- knx_stack_watch.cpp -----------------------------------------------------
+
+/// The read-only "knx.stack" item: least free stack seen, per KNX task.
+void registerStackDiagnostics();
+/// Log each KNX task's stack high-water mark and the worst seen; warn under 1 KB.
+void logStackHeadroom(const char *why);
+/// Once per loop pass: log on a lifecycle change and every 10 minutes.
+void serviceStackWatch();
 
 // --- knx_medium_tp1.cpp / knx_medium_ip.cpp ----------------------------------
 

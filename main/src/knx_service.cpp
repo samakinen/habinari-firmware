@@ -42,10 +42,12 @@ using control::LockGuard;
 // PublishSchedule compares ticks with 32-bit wrap-around arithmetic.
 static_assert(std::is_same_v<TickType_t, uint32_t>, "TickType_t must be 32 bits");
 
-// Startup, not the service loop, sets this task's stack peak. The commissioned
-// runtime is ~53 KB for this product and is built directly on the heap by
-// startCommissionedProduct(), so it never crosses this stack; what remains here
-// is the bindings builder (~8.9 KB) and the BAU init call tree with
+// kKnxServiceTaskStackSize (knx_service_internal.hpp) is 32 KB because of
+// start-up, not the service loop. The commissioned runtime is ~53 KB for this
+// product and is built directly on the heap by startCommissionedProduct(), so
+// it never crosses this stack; what remains here is the bindings builder (the
+// buildAndStartProduct() frame: 10,240 B on TP1, 13,696 B on knxip by
+// -fstack-usage, November 2026) and the BAU init call tree with
 // NVS/crypto/logging under it.
 //
 // Everything on that path that is sized by the port and parameter counts —
@@ -59,9 +61,8 @@ static_assert(std::is_same_v<TickType_t, uint32_t>, "TickType_t must be 32 bits"
 //
 // The builder now lives in buildAndStartProduct()'s frame rather than the
 // task's, so the task's own frame no longer carries it through the service
-// loop. The high-water mark is logged once at the end of start-up; retune this
-// from that number rather than from guesswork if the product grows.
-constexpr uint32_t kKnxServiceTaskStackSize = 32 * 1024;
+// loop. The high-water mark is logged at the end of start-up, on every
+// lifecycle change and every 10 minutes (knx_stack_watch.cpp).
 
 // How long knxAdapterStart() waits for the service task to report whether the
 // product started. Start-up itself (NVS load, BAU init) takes well under a
@@ -103,8 +104,8 @@ esp_err_t toEspErr(util::ErrorCode error)
 
 // Assemble the bindings and start the product on this build's medium.
 //
-// A function of its own so that its frame — the bindings builder, ~9 KB for a
-// product this size — is gone before the service loop runs. noinline keeps the
+// A function of its own so that its frame — the bindings builder, 10–14 KB for
+// a product this size — is gone before the service loop runs. noinline keeps the
 // compiler from folding it back into the task, where the builder would occupy
 // the task's frame for good.
 [[gnu::noinline]] util::Result<HabinariProductHandle>
@@ -132,6 +133,13 @@ buildAndStartProduct(platform::Esp32Platform &platform)
                      state == DeviceLifecycleState::Operational   ? "Operational" :
                      state == DeviceLifecycleState::Commissioning ? "Commissioning" :
                                                                   "Uncommissioned");
+            // A download or a reset is where the stacks peak; the service
+            // loop logs them on its next pass rather than from this context.
+            g_knx.stackCheckPending.store(true);
+            const TaskHandle_t handle = g_knx.taskHandle.load();
+            if (handle != nullptr) {
+                xTaskNotifyGive(handle);
+            }
         })
         .onFault([](FaultInfo info) {
             KNX_LOGE(TAG,
@@ -167,6 +175,7 @@ bool isOperational(const HabinariApp &app)
 void servicePass(HabinariApp &app, PublishSchedule &schedule, uint32_t startupJitterMs)
 {
     serviceMedium(app);
+    serviceStackWatch();
 
     if (g_knx.controlTickPending.exchange(false)) {
         refreshTransmitPolicies(app);
@@ -268,12 +277,8 @@ void knxServiceTask(void *arg)
     const uint32_t startupJitterMs = startupPublishJitterMs();
     PublishSchedule schedule(xTaskGetTickCount() + pdMS_TO_TICKS(startupJitterMs));
 
-    // Startup is this task's stack peak, and it is now behind us. Report what
-    // was left so kKnxServiceTaskStackSize can be retuned from measurement.
-    KNX_LOGI(TAG,
-             "Stack headroom after startup: %u of %u bytes free",
-             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
-             static_cast<unsigned>(kKnxServiceTaskStackSize));
+    // Startup is this task's stack peak, and it is now behind us.
+    logStackHeadroom("start-up");
 
     reportStartResult(ESP_OK);
 
@@ -325,6 +330,7 @@ esp_err_t knxAdapterStart()
     // association is attempted so a device with the wrong credentials is still
     // reachable from the service channel to be corrected.
     prepareMedium();
+    registerStackDiagnostics();
 
     // Wait for the task to say whether the product actually started. Creating
     // the task used to count as success, so a stack that then failed to come

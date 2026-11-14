@@ -41,6 +41,7 @@ if(CONFIG_HABINARI_PROTOCOL_KNX)
         "src/knx_parameters.cpp"
         "src/knx_publish.cpp"
         "src/knx_data_secure.cpp"
+        "src/knx_stack_watch.cpp"
     )
     # The transport is the only part that differs by medium.
     if(CONFIG_HABINARI_KNX_MEDIUM_IP)

@@ -723,3 +723,118 @@ management dispatch) has never been measured.
 | 3.8g | Split `ApplicationLayer` into receive/dispatch, `ManagementServer` and `ASendPipeline`, with an explicit request context |
 | 3.8h | Stack high-water logging for `knx_service` and `knx_tp1_rx`, a static stack report (`-fstack-usage`), and a bench procedure with a sizing rule |
 | 3.8i | Delete the `CommissionedProductRuntime` move constructor; optionally move template-independent product code to a .cpp |
+
+### 3.8h Stack sizing for the KNX tasks (13 November 2026)
+
+**The tasks.** `knx_service` (32 KB, `kKnxServiceTaskStackSize`) runs
+start-up, the stack's `loop()`, group-write events, publication and
+persistence. `knx_tp1_rx` (`CONFIG_KNX_RX_TASK_STACK_SIZE` = 8192, the top of
+its Kconfig range) is created by `Tp1DataLinkLayer` on **both** media: the
+name is historical, KNXnet/IP routing runs through the same data link layer,
+and on knxip that task blocks in `select()` on the routing socket. It runs
+Secure Routing unwrap and TIMER_NOTIFY, the Data Secure RX/TX transforms,
+management dispatch and the blocking response send. No other task runs KNX
+code (lwIP's task only moves datagrams; the TP1 link re-poll is an
+`esp_timer` callback that reads a GPIO).
+
+**Runtime instrumentation** (`main/src/knx_stack_watch.cpp`). The service
+task logs `uxTaskGetStackHighWaterMark` (bytes) for both tasks, looked up by
+name, at the end of start-up, on every lifecycle change (a download or a
+reset, signalled from the lifecycle callback and logged on the next service
+pass) and every 10 minutes, with the worst value seen since boot. Under
+1 KB free it logs a warning. The worst values are also the read-only
+service-channel item `knx.stack` ("svc N rx N bytes free", -1 = not seen),
+which knxip's BLE channel shows; the TP1 image has no service channel, so
+there it is the log only.
+
+**Static report.** A measurement build in a directory of its own adds
+`-fstack-usage -fcallgraph-info=su` to every object (the shipped flags are
+unchanged):
+
+    idf.py -B build_su -DHABINARI_STACK_USAGE=ON build   # plus the image's SDKCONFIG_DEFAULTS
+    tools/stack_report.py build_su knxServiceTask Tp1DataLinkLayer::rxTaskFunc \
+        --edges tools/stack_report.edges
+
+It prints the deepest resolved chain, the largest reachable frames and the
+indirect calls where the chain stops. `tools/stack_report.edges` stitches in
+the receive path's known indirect calls (physical-port function pointers,
+the layers' receive callbacks, the Data Secure transforms, the routing
+security, property providers). The totals are lower bounds. Results
+(GCC 16.1, ESP-IDF 6.2, `-Os`):
+
+| | knx (TP1) | knxip |
+|---|---|---|
+| `knxServiceTask`, deepest resolved chain | 15,328 B | 18,480 B |
+| of which `buildAndStartProduct` frame (the bindings builder) | 10,240 B | 13,696 B |
+| `rxTaskFunc`, deepest resolved chain (edges stitched) | 5,408 B / 50 frames | 5,424 B / 52 frames |
+| unresolved indirect sites reachable from the RX task | 121 in 75 functions | 128 in 79 functions |
+
+Largest RX-task frames: `SecureApplicationLayer::ccmDecrypt` 720 B and
+`ccmEncrypt` 704 B (knxip; Data Secure is not compiled into the TP1 image,
+see below), `PropertyExtServices::handleValueWrite` 656–672 B,
+`IpRoutingPhysical::beginTransmit` 624 B, the property and memory read
+handlers 592–624 B, `ApplicationLayer::handleTransportRx` 576–624 B. The
+deepest RX chain is a management request answered under Data Secure:
+receive, `handleTransportRx`, `ManagementServer`, `ASendPipeline`, the
+transport TX transform, `ccmEncrypt`, the AES driver, and the IDF lock/
+malloc/log path below it. What it cannot see: the libc `vprintf` behind
+`esp_log` (prebuilt, no frame data), the restart and Master Reset callbacks
+into the BAU, the function-property and memory-region providers, and the
+interface objects' kernel handler tables.
+
+**Judgement.** Nothing is clearly undersized, so neither size changes. The
+RX task resolves to 5.4 KB of 8 KB; with printf under a log call it is
+plausibly near 6.5 KB, which is the bench threshold below, not an overflow.
+The service task's static figure (15–18.5 KB) is well under 32 KB, but the
+start-up path is mostly behind unresolved calls (the 34 KB overflow recorded
+in `knx_service.cpp` came from frames the static graph does not join), so
+32 KB stays until the bench gives a peak. knxip's builder frame is 13.7 KB,
+more than the ~9 KB `knx_service.cpp` assumed; its comment now carries the
+measured frames.
+
+**Bench procedure** (both images unless noted; read the `Stack ...` log
+lines, or `knx.stack` on knxip, after each step):
+
+1. Cold boot, uncommissioned.
+2. Boot after a full download with Data Secure keys in force.
+3. ETS6 full Secure download over TP1, and over IP.
+4. Property enumeration over the extended services (ETS6 device info /
+   property browser).
+5. Master Reset 02h from ETS.
+6. Home Assistant reading every group object in one burst.
+7. knxip: Secure Routing backbone-key download, then a TIMER_NOTIFY
+   exchange with xknx.
+8. A 24 h soak with normal traffic; record the periodic worst values.
+
+**Sizing rule.** Size = peak × 1.25 + 1 KB, rounded up to 512 B. If the
+service task's start-up peak is more than 1.5× its steady-state peak,
+consider running start-up in a short-lived task and shrinking the service
+task. If the RX task's peak exceeds 6.5 KB, raise the Kconfig range of
+`KNX_RX_TASK_STACK_SIZE` (8192 is its maximum today) and its default.
+
+**Found on the way, not changed:**
+
+- The TP1 image is built without `CONFIG_KNX_ENABLE_SECURITY` (only
+  `sdkconfig.defaults.knxip` sets it), so it links no Data Secure code,
+  while `knx_product.hpp` advertises `dataSecureCapable = true` and
+  `knx_data_secure.cpp` installs a tool key. Either the TP1 image should
+  enable it (more flash, and the RX task then carries the CCM frames above)
+  or the TP1 catalogue entry should not claim Data Secure. Needs a decision.
+- `Dpt10` encodes time of day as `DDDHHHHH MMMMMMSS SSSS0000`, and
+  `Dpt19::decode` reads the hour across octets 4 and 5. 03_07_02 has DPT 10
+  as `NNNHHHHH 00MMMMMM 00SSSSSS` and the DPT 19 hour in the low five bits of
+  its fourth octet. Habinari uses neither DPT; the -Wconversion casts below
+  keep the current bytes.
+
+**-Wconversion in the sanitiser build** (supersedes the 3.4 follow-up). The
+warnings were real `int` → `uint8_t`/`uint16_t` narrowings in
+shift-and-or expressions; GCC normally proves the range and stays quiet, and
+UBSan's shift instrumentation hides the range from it. Each is now an
+explicit cast of the whole expression, with the bytes unchanged: 36 sites in
+`types.hpp`, `protocol/tpci.hpp`, `application/device_descriptor.hpp`,
+`util/byte_stream.hpp`, `util/bit_ops.hpp`,
+`physical/bitbang_driver_timer_isr.hpp`, `dpt.cpp`, `cemi.cpp`,
+`device_management_codec.cpp`, `filter_table.cpp`,
+`ets_format_validator.cpp` and `tp1_data_link_layer.cpp`. The ASan/UBSan
+build is at 0 warnings and the CI sanitiser job now configures with
+`-DKNX_WARNINGS_AS_ERRORS=ON`.
