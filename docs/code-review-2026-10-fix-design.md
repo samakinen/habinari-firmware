@@ -965,3 +965,15 @@ All five were harness faults; no KNstaX library code changed. xknx 4.1.1,
   whatever was newest; it now pins `xknx==4.1.1` (also in
   `requirements-secure.txt`), the version verified here. The workflow
   installs from that file, so it needs no change.
+
+**Configuration before init() (done).** One rule, documented on
+`BusAccessUnit::init()` and in DEVELOPMENT_GUIDELINES.md: what firmware sets
+before `init()` is the device's factory default; state restored from
+persistence (an ETS download) wins over it; Factory Reset returns to it.
+Group keys yield per table to a downloaded key table; Sequence Number
+Sending keeps the higher value; setters that cannot hold a value before
+init return NotInitialized / OperationNotReady instead of succeeding
+silently. Found through the interop peer, whose Data Secure key init()
+wiped. Open: `SecureCommissioningOptions` cannot express "factory Tool Key
+with Security Mode off", so Habinari installs its FDSK after start (which
+still behaves correctly).
