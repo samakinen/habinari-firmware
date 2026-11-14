@@ -1090,3 +1090,22 @@ off; after an ETS download the ETS key and mode win over two restarts; after
 a local Factory Reset (erased store, as `control_service_factory_reset`) the
 FDSK is back with mode off. Master Reset 02h is covered by
 `test_ets_connected_session`.
+
+**Follow-ups, continued (15 November 2026).**
+- **TP1 transmit race (production, fixed):** `finishTxOperation()` released
+  the TX mutex before clearing its state, so a task waiting to send (the RX
+  task answering ETS, or the application sending a group value) could lose
+  its frame and keep the mutex, leaving TP1 unable to send until reboot.
+  Found while making `test_knx_stack_e2e` deterministic.
+- Coupler: the filter table, its load state and the routing configuration
+  (PID 52–55, 67) are persisted and restored; Master Reset 02h/07h return
+  them to factory values; filter-table memory writes are refused outside
+  Loading; the Router Object has PID_ERROR_CODE.
+- Still not persisted: PID_L2_COUPLER_TYPE (59) and PID_HOP_COUNT (61),
+  which the forwarding path does not read.
+
+**Bench (add):** a TP1 burst test — ETS reading properties while the
+device publishes group values — to confirm the transmit race is gone on
+hardware; NVS headroom on a coupler with a worst-case (random) filter
+table; and a capture of an ETS6 coupler download (load path, MCB, whether
+it writes the table window outside Loading).
