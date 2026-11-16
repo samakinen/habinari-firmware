@@ -1109,3 +1109,42 @@ device publishes group values — to confirm the transmit race is gone on
 hardware; NVS headroom on a coupler with a worst-case (random) filter
 table; and a capture of an ETS6 coupler download (load path, MCB, whether
 it writes the table window outside Loading).
+
+### TP1 bit-bang ISR: specification, self-check and hot path (15 November 2026)
+
+- The ISR core is specified in
+  `components/KNstaX/docs/reference/tp1_bitbang_isr.md`: states, the legal
+  composite transmitter modes, the anchored timing schedule, 14 invariants
+  and the event contract with the layers above. Host builds check the
+  invariants after every interrupt and `send()`, and the event grammar as
+  each event is produced (`KNX_TP1_BITBANG_SELF_CHECK`). Comments in the ISR
+  now describe the current behaviour only.
+- Fixed: another device's DL-ACK starting before this one's cancelled the
+  armed acknowledge, so a NAK or BUSY from this device could be lost. The
+  armed slot now holds its own octet (`_ackSlotByte`).
+- Fixed: after losing arbitration, the receiver restarted on a data bit of
+  the winning frame and misdecoded it. The receiver now takes over the
+  character at the diverging bit, and the winner's frame is received whole
+  and acknowledged when addressed here.
+- Fixed: a rejected start bit between two characters left the telegram open
+  in `RX_IDLE`, and the next telegram was appended to it.
+- Every reception this node abandons to transmit is now closed with `End`.
+- Hot path: on single-timer TIMG chips (C6) the timer is read and rearmed
+  through registers, and its alarm interrupt is the HAL's own (no gptimer
+  call, spinlock or callback). The RX edge handler is registered directly
+  with the GPIO ISR service. TX makes no timer reads, the ISR does no
+  multiplications or library calls (parity no longer calls
+  `__popcountsi2`), and hot fields sit at the start of the object. An audit
+  of the `knx` ELF finds all 20 functions reachable from either interrupt
+  in IRAM.
+- Open: the MAC duplicates the ISR's "ACK window expected" rule, and
+  `TxComplete` produces no event, so a frame to FFFFh abandoned after
+  arbitration loss is reported as sent; the task-side event pump exists
+  twice (target and host test driver). Both are in the spec, §9.
+
+**Bench (add):** with `CONFIG_KNX_TP1_BITBANG_TIMING_STATS`, compare ISR
+cycle counts and `timerJitterUs` with the previous firmware; confirm
+`staleTimerAlarms` stays at zero and `startValidationRejects` does not grow
+during an ETS download; check two devices acknowledging one group telegram
+and two devices starting a frame at once (the loser must receive the
+winner's frame).
