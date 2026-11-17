@@ -8,8 +8,8 @@
  * decides does not:
  *
  *   - knx_parameter_table.hpp: where each ETS parameter lands. Driven here with
- *     the stack's own ParameterState over the real product schema, so the
- *     defaults are the ones ETS exports.
+ *     the product's real parameter layout and its default image, read through
+ *     the view the firmware uses, so the defaults are the ones ETS exports.
  *   - knx_group_writes.hpp: which control command an inbound group write is,
  *     how its bus value maps, and the DPT 9 7FFFh "invalid data" code.
  *   - knx_publish_schedule.hpp: when the service loop publishes, and when it
@@ -33,6 +33,7 @@
 
 #include <unity.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -62,9 +63,27 @@ struct ParameterTarget {
     bool fusionConfigDirty{false};
 };
 
-using ProductDefinition = std::remove_cvref_t<decltype(kHabinariProduct)>;
-using ParameterSchema = ProductDefinition::parameter_schema_type;
-using Parameters = knx::product::detail::ParameterState<ParameterSchema>;
+namespace params = knx::product::params;
+using ParameterLayout = std::remove_cvref_t<decltype(kHabinariParameters)>;
+
+// A parameter image on the host, as the device holds it: it starts at the ETS
+// defaults, `apply` writes one parameter the way an ETS download would have,
+// and `get` reads through the same view the firmware uses.
+struct Parameters {
+    std::array<uint8_t, ParameterLayout::kSize> image{params::kDefaultImageOf<kHabinariParameters>};
+
+    template <HabinariParameter Id>
+    auto get() const
+    {
+        return params::ViewFor<kHabinariParameters>(image).template block<HabinariParameter>().template get<Id>();
+    }
+
+    template <HabinariParameter Id>
+    void apply(params::value_type_in<ParameterLayout, Id> value)
+    {
+        params::store<ParameterLayout, Id>(image, 0, value);
+    }
+};
 
 // A target with the compiled-in defaults, built in zeroed storage so that two
 // copies of it compare equal byte for byte, padding included.
@@ -106,14 +125,47 @@ T differentFrom(T value)
     }
 }
 
+// True when the two settings are the same but for what DPT 9 cannot hold: a
+// float that went through the parameter image is the nearest DPT 9 value,
+// which for 85 is 84.96 (the 2-octet float has a 0.08 step from 81.92 up).
+// Anything else that differs, a flag, an integer, a float by more than that
+// resolution, fails.
+bool sameSettingsAsDpt9Stores(const control::Settings &expected, const control::Settings &actual)
+{
+    const auto *a = reinterpret_cast<const unsigned char *>(&expected);
+    const auto *b = reinterpret_cast<const unsigned char *>(&actual);
+    for (size_t i = 0; i < sizeof(control::Settings); i += sizeof(float)) {
+        const size_t width = std::min(sizeof(float), sizeof(control::Settings) - i);
+        if (std::memcmp(a + i, b + i, width) == 0) {
+            continue;
+        }
+        if (width != sizeof(float)) {
+            return false;
+        }
+        float fa = 0.0f;
+        float fb = 0.0f;
+        std::memcpy(&fa, a + i, sizeof(float));
+        std::memcpy(&fb, b + i, sizeof(float));
+        // An integer or a flag read as a float is a denormal, far below 1.
+        const bool plausible = std::isfinite(fa) && std::isfinite(fb) && std::fabs(fa) >= 1.0f;
+        if (!plausible || std::fabs(fa - fb) > 0.005f * std::fabs(fa)) {
+            std::printf("setting at offset %u differs: %.9g, loaded %.9g\n", static_cast<unsigned>(i),
+                        static_cast<double>(fa), static_cast<double>(fb));
+            return false;
+        }
+    }
+    return true;
+}
+
 void test_ets_defaults_load_as_the_factory_settings()
 {
     // control_defaults.hpp feeds both the ETS parameter defaults and the
     // Settings initialisers. Loading an uncommissioned device's parameters
     // through the table must therefore change nothing — which also catches a
     // row writing the right value to the wrong field, whenever the two
-    // fields' defaults differ.
-    const Parameters params(kHabinariProduct.parameterSchema);
+    // fields' defaults differ. The parameters are read from the image the
+    // device holds, so a DPT 9 default arrives as DPT 9 stores it.
+    const Parameters params;
     ParameterTarget factory;
     makeFactoryTarget(factory);
     ParameterTarget loaded;
@@ -121,7 +173,7 @@ void test_ets_defaults_load_as_the_factory_settings()
 
     loadParameters(params, loaded);
 
-    TEST_ASSERT_EQUAL_MEMORY(&factory.hvac, &loaded.hvac, sizeof(control::Settings));
+    TEST_ASSERT_TRUE(sameSettingsAsDpt9Stores(factory.hvac, loaded.hvac));
     // Fusion rows mark the config for pushing down to the acquisition side.
     TEST_ASSERT_TRUE(loaded.fusionConfigDirty);
 }
@@ -131,7 +183,7 @@ void test_every_row_writes_a_field_of_its_own()
     // Each parameter, changed on its own, must change the target, and no two
     // parameters may land on the same bytes. The dirty flag is the one byte the
     // fusion rows deliberately share.
-    const Parameters defaults(kHabinariProduct.parameterSchema);
+    const Parameters defaults;
     ParameterTarget baseline;
     makeFactoryTarget(baseline);
     loadParameters(defaults, baseline);
@@ -172,22 +224,22 @@ void test_every_row_writes_a_field_of_its_own()
 
     // The compile-time check in the header already pins this; restated so the
     // count is visible in the test output if it ever changes.
-    TEST_ASSERT_EQUAL_UINT32(ParameterSchema::kParameterCount - 1, rows);
+    TEST_ASSERT_EQUAL_UINT32(ParameterLayout::kDeclaredParameters, rows);
 }
 
 void test_parameters_convert_to_the_setting_types()
 {
-    Parameters params(kHabinariProduct.parameterSchema);
-    (void)params.apply<HabinariParameter::HeatingTiSeconds>(uint16_t{1234});
-    (void)params.apply<HabinariParameter::Co2Cov>(uint16_t{75});
-    (void)params.apply<HabinariParameter::ComfortHeatingSetpoint>(knx::product::Dpt9Float{22.5f});
-    (void)params.apply<HabinariParameter::DefaultHvacOperatingMode>(
+    Parameters params;
+    params.apply<HabinariParameter::HeatingTiSeconds>(uint16_t{1234});
+    params.apply<HabinariParameter::Co2Cov>(uint16_t{75});
+    params.apply<HabinariParameter::ComfortHeatingSetpoint>(knx::product::Dpt9Float{22.5f});
+    params.apply<HabinariParameter::DefaultHvacOperatingMode>(
         static_cast<uint8_t>(hvac::OperatingPreset::Economy));
-    (void)params.apply<HabinariParameter::HeatCoolChangeoverPolarity>(uint8_t{1});
-    (void)params.apply<HabinariParameter::CoolingEnabled>(uint8_t{0});
-    (void)params.apply<HabinariParameter::MeasurementHeartbeatSeconds>(uint16_t{600});
-    (void)params.apply<HabinariParameter::SensorFilterSeconds>(uint16_t{45});
-    (void)params.apply<HabinariParameter::WindowDetectEnabled>(uint8_t{0});
+    params.apply<HabinariParameter::HeatCoolChangeoverPolarity>(uint8_t{1});
+    params.apply<HabinariParameter::CoolingEnabled>(uint8_t{0});
+    params.apply<HabinariParameter::MeasurementHeartbeatSeconds>(uint16_t{600});
+    params.apply<HabinariParameter::SensorFilterSeconds>(uint16_t{45});
+    params.apply<HabinariParameter::WindowDetectEnabled>(uint8_t{0});
 
     ParameterTarget target;
     makeFactoryTarget(target);

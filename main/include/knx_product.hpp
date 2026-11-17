@@ -51,7 +51,10 @@
  * Prototype/greenfield: port numbers and parameter ids are free to be renumbered
  * as the model evolves. The knxprod is regenerated from this header on every
  * build (see cmake/ets_export.cmake) and re-imported into ETS; no old-layout
- * migration is kept. Bump kParameterLayoutVersion when the byte layout changes.
+ * migration is kept. The stack stores the parameters with a fingerprint of
+ * their layout, so a device that gets firmware with another layout takes its
+ * defaults and asks for a download; bump kApplicationVersion with every change
+ * ETS has to know about.
  */
 
 namespace habinari_knx {
@@ -65,11 +68,8 @@ namespace semantics = knx::product::semantics;
 using knx::ManufacturerId;
 using knx::product::Dpt9Float;
 using knx::product::makeCommissionedProduct;
+namespace params = knx::product::params;
 using knx::product::makeEndpointDefinition;
-using knx::product::makeParameterSchema;
-using knx::product::ParameterDescriptor;
-using knx::product::ParameterOption;
-using knx::product::parameterOptions;
 using knx::product::PersistencePolicy;
 using knx::product::ProductIdentity;
 using knx::product::SecurityPolicy;
@@ -131,7 +131,7 @@ inline constexpr uint16_t kApplicationNumber = 21;
 // parameters, group objects, the download procedure. ETS refuses to replace a
 // program of the same number and version whose content hash has moved, so a
 // regenerated knxprod that keeps the old version will not import.
-inline constexpr uint16_t kApplicationVersion = 6;
+inline constexpr uint16_t kApplicationVersion = 7;
 
 // ---------------------------------------------------------------------------
 // Parameter defaults
@@ -251,13 +251,11 @@ enum class HabinariPort : uint16_t {
 };
 
 // ---------------------------------------------------------------------------
-// ETS parameter identity. Declaration order in makeParameterSchema below
-// defines the ProgramData / RS-0000 byte layout.
+// ETS parameter identity. The order in kHabinariParameterBlock below, not the
+// numbers here, defines the byte layout of the parameter image.
 // ---------------------------------------------------------------------------
 
 enum class HabinariParameter : uint16_t {
-    ParameterLayoutVersion = 0,
-
     // Measurements
     MeasurementHeartbeatSeconds = 1,
     MeasurementMinRepTimeSeconds = 2,
@@ -362,13 +360,6 @@ enum class HabinariParameter : uint16_t {
     WindowDetectEnabled = 81,
 };
 
-// Shorthand for the visibility conditions below: ETS hides a parameter unless
-// the named parameter currently holds the given value.
-constexpr uint16_t paramId(HabinariParameter id)
-{
-    return static_cast<uint16_t>(id);
-}
-
 // ETS section headings. Named once so a typo cannot silently split a block.
 inline constexpr std::string_view kGroupMeasurement = "Measurements and sending behaviour";
 inline constexpr std::string_view kGroupControlGeneral = "Room control - general";
@@ -381,10 +372,730 @@ inline constexpr std::string_view kGroupDewPoint = "Condensation protection";
 inline constexpr std::string_view kGroupMoisture = "Slab moisture detection";
 inline constexpr std::string_view kGroupVentilation = "Ventilation and air quality";
 inline constexpr std::string_view kGroupFusion = "Sensor fusion and detection";
-inline constexpr std::string_view kGroupDevice = "Device";
+
+// ---------------------------------------------------------------------------
+// ETS parameters
+//
+// One block, with one section per ETS page. The order of the parameters is
+// the order in the parameter image the device stores, and KNstaX stores the
+// image with a fingerprint of that layout: after a firmware update that adds,
+// removes, reorders or retypes a parameter the device takes its defaults and
+// reports that it needs a download. A change of *meaning* with the same type
+// (a unit, a scale) is not visible to the fingerprint; it needs a new
+// kApplicationVersion like every other change ETS has to know about.
+// ---------------------------------------------------------------------------
+
+inline constexpr auto kControllerDefaultEnableOptions =
+    params::options<uint8_t>(
+    {{0, "Off"},
+     {1, "On"}});
+
+inline constexpr auto kDefaultHvacOperatingModeOptions =
+    params::options<uint8_t>(
+    {{0, "Auto"},
+     {1, "Comfort"},
+     {2, "Standby"},
+     {3, "Economy"},
+     {4, "Building protection"}});
+
+inline constexpr auto kDefaultControllerModeOptions =
+    params::options<uint8_t>(
+    {{0, "Auto"},
+     {1, "Heat"},
+     {2, "Cool"},
+     {3, "Off"}});
+
+inline constexpr auto kHeatingEnabledOptions =
+    params::options<uint8_t>(
+    {{0, "Not used"},
+     {1, "Used"}});
+
+inline constexpr auto kHeatCoolChangeoverModeOptions =
+    params::options<uint8_t>(
+    {{0, "Automatic (internal dead band)"},
+     {1, "Follow changeover input"},
+     {2, "Fixed: heating only"},
+     {3, "Fixed: cooling only"}});
+
+inline constexpr auto kHeatCoolChangeoverPolarityOptions =
+    params::options<uint8_t>(
+    {{0, "1 = heating (DPT 1.100)"},
+     {1, "1 = cooling (inverted)"}});
+
+inline constexpr auto kWindowOpenBehaviorOptions =
+    params::options<uint8_t>(
+    {{0, "Ignore"},
+     {1, "Building protection setpoint"},
+     {2, "Switch outputs off"}});
+
+inline constexpr auto kPresenceBehaviorOptions =
+    params::options<uint8_t>(
+    {{0, "Standby"},
+     {1, "Economy"}});
+
+inline constexpr auto kSensorFaultBehaviorOptions =
+    params::options<uint8_t>(
+    {{0, "Hold last outputs"},
+     {1, "Switch outputs off"},
+     {2, "Keep controlling on last reading"}});
+
+inline constexpr auto kHeatingControlAlgorithmOptions =
+    params::options<uint8_t>(
+    {{0, "Two-point (on/off)"},
+     {1, "Continuous PI"}});
+
+inline constexpr auto kBinaryDemandStrategyOptions =
+    params::options<uint8_t>(
+    {{0, "Temperature hysteresis"},
+     {1, "Control value threshold"}});
+
+inline constexpr auto kDewPointSurfaceSourceOptions =
+    params::options<uint8_t>(
+    {{0, "Off (no local dew point alarm)"},
+     {1, "Floor probe"},
+     {2, "Flow temperature input"},
+     {3, "Coldest available"}});
+
+inline constexpr auto kBlockCoolingOnDewPointAlarmOptions =
+    params::options<uint8_t>(
+    {{0, "Continue (report only)"},
+     {1, "Block cooling"}});
+
+inline constexpr auto kFireRequireAirQualityOptions =
+    params::options<uint8_t>(
+    {{0, "No - temperature alone"},
+     {1, "Yes - fewer false alarms"}});
+
+inline constexpr auto kCo2OccupancyEnabledOptions =
+    params::options<uint8_t>(
+    {{0, "Disabled"},
+     {1, "Enabled"}});
+
+inline constexpr auto kHabinariParameterBlock = params::parameterBlock<HabinariParameter>(
+    {.key = "habinari", .name = "Habinari"},
+    params::section(
+        {.name = kGroupMeasurement},
+        // ---- Measurements and sending behaviour --------------------------
+        // The KNX sensor FBs parameterise Heartbeat/MinRepTime per
+        // Datapoint. Held device-wide here instead: sixty per-sensor timing
+        // fields would bury the handful of settings an integrator actually
+        // changes, and the per-measurand knob that does matter — the COV
+        // delta, whose sensible value differs by orders of magnitude
+        // between K, %RH and ppm — is kept individually.
+        params::param<HabinariParameter::MeasurementHeartbeatSeconds, uint16_t>(
+            {.name = "Cyclic retransmission (heartbeat)",
+             .def = cfg::kDefaultMeasurementHeartbeatSeconds,
+             .min = 0,
+             .max = 65535,
+             .unit = "s",
+             .key = "measurement_heartbeat_seconds"}),
+        params::param<HabinariParameter::MeasurementMinRepTimeSeconds, uint16_t>(
+            {.name = "Minimum time between transmissions",
+             .def = cfg::kDefaultMeasurementMinRepTimeSeconds,
+             .min = 0,
+             .max = 3600,
+             .unit = "s",
+             .key = "measurement_min_rep_time_seconds"}),
+        // Self-heating is the dominant error on a wall-mounted board that
+        // also powers a TP1 transceiver, so an offset is not optional here.
+        params::param<HabinariParameter::RoomTemperatureOffset, Dpt9Float>(
+            {.name = "Room temperature correction",
+             .def = Dpt9Float{cfg::kDefaultRoomTemperatureOffsetK},
+             .min = -10,
+             .max = 10,
+             .unit = "K",
+             .key = "room_temperature_offset"}),
+        params::param<HabinariParameter::RoomTemperatureCov, Dpt9Float>(
+            {.name = "Room temperature change to send",
+             .def = Dpt9Float{cfg::kDefaultRoomTemperatureCovK},
+             .min = 0,
+             .max = 10,
+             .unit = "K",
+             .key = "room_temperature_cov"}),
+        params::param<HabinariParameter::RoomHumidityOffset, Dpt9Float>(
+            {.name = "Room humidity correction",
+             .def = Dpt9Float{cfg::kDefaultRoomHumidityOffsetPct},
+             .min = -20,
+             .max = 20,
+             .unit = "%",
+             .key = "room_humidity_offset"}),
+        params::param<HabinariParameter::RoomHumidityCov, Dpt9Float>(
+            {.name = "Room humidity change to send",
+             .def = Dpt9Float{cfg::kDefaultRoomHumidityCovPct},
+             .min = 0,
+             .max = 50,
+             .unit = "%",
+             .key = "room_humidity_cov"}),
+        params::param<HabinariParameter::Co2Cov, uint16_t>(
+            {.name = "CO2 change to send",
+             .def = cfg::kDefaultCo2CovPpm,
+             .min = 0,
+             .max = 5000,
+             .unit = "ppm",
+             .key = "co2_cov"}),
+        params::param<HabinariParameter::PressureCov, uint16_t>(
+            {.name = "Air pressure change to send",
+             .def = cfg::kDefaultPressureCovPa,
+             .min = 0,
+             .max = 10000,
+             .unit = "Pa",
+             .key = "pressure_cov"}),
+        params::param<HabinariParameter::AirQualityCov, uint16_t>(
+            {.name = "Air quality index change to send",
+             .def = cfg::kDefaultAirQualityCovIndex,
+             .min = 0,
+             .max = 500,
+             .key = "air_quality_cov"}),
+        params::param<HabinariParameter::FloorTemperatureOffset, Dpt9Float>(
+            {.name = "Floor temperature correction",
+             .def = Dpt9Float{cfg::kDefaultFloorTemperatureOffsetK},
+             .min = -10,
+             .max = 10,
+             .unit = "K",
+             .key = "floor_temperature_offset"}),
+        params::param<HabinariParameter::FloorTemperatureCov, Dpt9Float>(
+            {.name = "Floor temperature change to send",
+             .def = Dpt9Float{cfg::kDefaultFloorTemperatureCovK},
+             .min = 0,
+             .max = 10,
+             .unit = "K",
+             .key = "floor_temperature_cov"}),
+        params::param<HabinariParameter::FloorHumidityCov, Dpt9Float>(
+            {.name = "Floor humidity change to send",
+             .def = Dpt9Float{cfg::kDefaultFloorHumidityCovPct},
+             .min = 0,
+             .max = 50,
+             .unit = "%",
+             .key = "floor_humidity_cov"}),
+        params::param<HabinariParameter::DerivedValueCov, Dpt9Float>(
+            {.name = "Dew point / absolute humidity change to send",
+             .def = Dpt9Float{cfg::kDefaultDerivedCovK},
+             .min = 0,
+             .max = 10,
+             .key = "derived_value_cov"}),
+        params::param<HabinariParameter::AltitudeM, uint16_t>(
+            {.name = "Installation altitude above sea level",
+             .def = cfg::kDefaultAltitudeM,
+             .min = 0,
+             .max = 4000,
+             .unit = "m",
+             .key = "altitude_m"})),
+
+    params::section(
+        {.name = kGroupControlGeneral},
+        // ---- Room control: general ---------------------------------------
+        params::param<HabinariParameter::ControllerDefaultEnable, uint8_t>(
+            {.name = "Controller state after download",
+             .def = cfg::kDefaultControllerEnable,
+             .options = kControllerDefaultEnableOptions,
+             .key = "controller_default_enable"}),
+        params::param<HabinariParameter::DefaultHvacOperatingMode, uint8_t>(
+            {.name = "HVAC operating mode after download",
+             .def = cfg::kDefaultHvacOperatingMode,
+             .options = kDefaultHvacOperatingModeOptions,
+             .key = "default_hvac_operating_mode"}),
+        params::param<HabinariParameter::DefaultControllerMode, uint8_t>(
+            {.name = "Controller mode after download",
+             .def = cfg::kDefaultControllerMode,
+             .options = kDefaultControllerModeOptions,
+             .key = "default_controller_mode"}),
+        params::param<HabinariParameter::HeatingEnabled, uint8_t>(
+            {.name = "Heating sequence",
+             .def = cfg::kDefaultHeatingEnabled,
+             .options = kHeatingEnabledOptions,
+             .key = "heating_enabled"}),
+        params::param<HabinariParameter::CoolingEnabled, uint8_t>(
+            {.name = "Cooling sequence",
+             .def = cfg::kDefaultCoolingEnabled,
+             .options = kHeatingEnabledOptions,
+             .key = "cooling_enabled"}),
+        params::param<HabinariParameter::HeatCoolChangeoverMode, uint8_t>(
+            {.name = "Heat/cool changeover",
+             .def = cfg::kDefaultHeatCoolChangeoverMode,
+             .options = kHeatCoolChangeoverModeOptions,
+             .key = "heat_cool_changeover_mode"}),
+        params::param<HabinariParameter::HeatCoolChangeoverPolarity, uint8_t>(
+            {.name = "Changeover input polarity",
+             .def = cfg::kDefaultHeatCoolChangeoverPolarity,
+             .options = kHeatCoolChangeoverPolarityOptions,
+             .visible = params::when<HabinariParameter::HeatCoolChangeoverMode>(1),
+             .key = "heat_cool_changeover_polarity"}),
+        params::param<HabinariParameter::MinimumHeatCoolChangeoverSeconds, uint16_t>(
+            {.name = "Minimum delay between heating and cooling",
+             .def = cfg::kDefaultMinimumHeatCoolChangeoverSeconds,
+             .min = 0,
+             .max = 65535,
+             .unit = "s",
+             .key = "minimum_heat_cool_changeover_seconds"}),
+        params::param<HabinariParameter::WindowOpenBehavior, uint8_t>(
+            {.name = "Behaviour with window open",
+             .def = cfg::kDefaultWindowOpenBehavior,
+             .options = kWindowOpenBehaviorOptions,
+             .key = "window_open_behavior"}),
+        params::param<HabinariParameter::PresenceBehavior, uint8_t>(
+            {.name = "Mode when the room is unoccupied",
+             .def = cfg::kDefaultPresenceBehavior,
+             .options = kPresenceBehaviorOptions,
+             .key = "presence_behavior"}),
+        params::param<HabinariParameter::SensorFaultBehavior, uint8_t>(
+            {.name = "Behaviour on sensor failure",
+             .def = cfg::kDefaultSensorFaultBehavior,
+             .options = kSensorFaultBehaviorOptions,
+             .key = "sensor_fault_behavior"})),
+
+    params::section(
+        {.name = kGroupSetpoints},
+        // ---- Setpoints ------------------------------------------------------
+        // KNX RTSM ladder: Comfort is the absolute anchor, Standby/Economy
+        // are shifts away from it, and only building protection is absolute
+        // again. One setpoint write from an HMI or Home Assistant then moves
+        // the whole ladder coherently.
+        params::param<HabinariParameter::ComfortHeatingSetpoint, Dpt9Float>(
+            {.name = "Comfort heating setpoint",
+             .def = Dpt9Float{cfg::kDefaultComfortHeatingSetpointC},
+             .min = 5,
+             .max = 40,
+             .unit = "°C",
+             .key = "comfort_heating_setpoint"}),
+        params::param<HabinariParameter::StandbyHeatingReduction, Dpt9Float>(
+            {.name = "Standby: reduction below comfort",
+             .def = Dpt9Float{cfg::kDefaultStandbyHeatingReductionK},
+             .min = 0,
+             .max = 15,
+             .unit = "K",
+             .key = "standby_heating_reduction"}),
+        params::param<HabinariParameter::EconomyHeatingReduction, Dpt9Float>(
+            {.name = "Economy: reduction below comfort",
+             .def = Dpt9Float{cfg::kDefaultEconomyHeatingReductionK},
+             .min = 0,
+             .max = 20,
+             .unit = "K",
+             .key = "economy_heating_reduction"}),
+        params::param<HabinariParameter::ProtectionHeatingSetpoint, Dpt9Float>(
+            {.name = "Building protection: frost setpoint",
+             .def = Dpt9Float{cfg::kDefaultProtectionHeatingSetpointC},
+             .min = 3,
+             .max = 15,
+             .unit = "°C",
+             .key = "protection_heating_setpoint"}),
+        params::param<HabinariParameter::CoolingDeadband, Dpt9Float>(
+            {.name = "Dead band between heating and cooling",
+             .def = Dpt9Float{cfg::kDefaultCoolingDeadbandK},
+             .min = 0,
+             .max = 10,
+             .unit = "K",
+             .key = "cooling_deadband"}),
+        params::param<HabinariParameter::StandbyCoolingIncrease, Dpt9Float>(
+            {.name = "Standby: increase above comfort cooling",
+             .def = Dpt9Float{cfg::kDefaultStandbyCoolingIncreaseK},
+             .min = 0,
+             .max = 15,
+             .unit = "K",
+             .visible = params::when<HabinariParameter::CoolingEnabled>(1),
+             .key = "standby_cooling_increase"}),
+        params::param<HabinariParameter::EconomyCoolingIncrease, Dpt9Float>(
+            {.name = "Economy: increase above comfort cooling",
+             .def = Dpt9Float{cfg::kDefaultEconomyCoolingIncreaseK},
+             .min = 0,
+             .max = 20,
+             .unit = "K",
+             .visible = params::when<HabinariParameter::CoolingEnabled>(1),
+             .key = "economy_cooling_increase"}),
+        params::param<HabinariParameter::ProtectionCoolingSetpoint, Dpt9Float>(
+            {.name = "Building protection: heat setpoint",
+             .def = Dpt9Float{cfg::kDefaultProtectionCoolingSetpointC},
+             .min = 25,
+             .max = 45,
+             .unit = "°C",
+             .visible = params::when<HabinariParameter::CoolingEnabled>(1),
+             .key = "protection_cooling_setpoint"}),
+        params::param<HabinariParameter::MinSetpoint, Dpt9Float>(
+            {.name = "Lowest allowed setpoint",
+             .def = Dpt9Float{cfg::kDefaultMinSetpointC},
+             .min = 3,
+             .max = 25,
+             .unit = "°C",
+             .key = "min_setpoint"}),
+        params::param<HabinariParameter::MaxSetpoint, Dpt9Float>(
+            {.name = "Highest allowed setpoint",
+             .def = Dpt9Float{cfg::kDefaultMaxSetpointC},
+             .min = 15,
+             .max = 45,
+             .unit = "°C",
+             .key = "max_setpoint"}),
+        params::param<HabinariParameter::MaxSetpointShift, Dpt9Float>(
+            {.name = "Maximum manual setpoint shift",
+             .def = Dpt9Float{cfg::kDefaultMaxSetpointShiftK},
+             .min = 0,
+             .max = 10,
+             .unit = "K",
+             .key = "max_setpoint_shift"})),
+
+    params::section(
+        {.name = kGroupHeating, .visible = params::when<HabinariParameter::HeatingEnabled>(1)},
+        // ---- Heating control -------------------------------------------------
+        // The whole section is gated on the heating sequence being in use, so
+        // an integrator who switched heating off does not get a section of
+        // settings that the controller ignores. Cooling below is deliberately
+        // identical in shape: the two sequences differ only in which enable
+        // and which algorithm parameter they follow.
+        params::param<HabinariParameter::HeatingControlAlgorithm, uint8_t>(
+            {.name = "Heating control algorithm",
+             .def = cfg::kDefaultHeatingControlAlgorithm,
+             .options = kHeatingControlAlgorithmOptions,
+             .key = "heating_control_algorithm"}),
+        params::param<HabinariParameter::HeatingKp, Dpt9Float>(
+            {.name = "Heating proportional gain",
+             .def = Dpt9Float{cfg::kDefaultHeatingKp},
+             .min = 1,
+             .max = 200,
+             .unit = "%/K",
+             .visible = params::when<HabinariParameter::HeatingControlAlgorithm>(1),
+             .key = "heating_pid_kp"}),
+        params::param<HabinariParameter::HeatingTiSeconds, uint16_t>(
+            {.name = "Heating reset time (0 = P only)",
+             .def = cfg::kDefaultHeatingTiSeconds,
+             .min = 0,
+             .max = 65535,
+             .unit = "s",
+             .visible = params::when<HabinariParameter::HeatingControlAlgorithm>(1),
+             .key = "heating_pid_ti_seconds"}),
+        params::param<HabinariParameter::HeatingTdSeconds, uint16_t>(
+            {.name = "Heating derivative time (0 = off)",
+             .def = cfg::kDefaultHeatingTdSeconds,
+             .min = 0,
+             .max = 65535,
+             .unit = "s",
+             .visible = params::when<HabinariParameter::HeatingControlAlgorithm>(1),
+             .key = "heating_pid_td_seconds"}),
+        params::param<HabinariParameter::HeatingMinimumOutputPercent, uint8_t>(
+            {.name = "Heating minimum control value",
+             .def = cfg::kDefaultHeatingMinimumOutputPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "heating_minimum_output_percent"}),
+        params::param<HabinariParameter::HeatingMaximumOutputPercent, uint8_t>(
+            {.name = "Heating maximum control value",
+             .def = cfg::kDefaultHeatingMaximumOutputPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "heating_maximum_output_percent"})),
+
+    params::section(
+        {.name = kGroupCooling, .visible = params::when<HabinariParameter::CoolingEnabled>(1)},
+        // ---- Cooling control -------------------------------------------------
+        // Mirror image of the heating section above, gated on the cooling
+        // sequence. The PI terms follow the cooling algorithm rather than the
+        // cooling enable: gating them on the enable made them appear under a
+        // two-point configuration, where they do nothing.
+        params::param<HabinariParameter::CoolingControlAlgorithm, uint8_t>(
+            {.name = "Cooling control algorithm",
+             .def = cfg::kDefaultCoolingControlAlgorithm,
+             .options = kHeatingControlAlgorithmOptions,
+             .key = "cooling_control_algorithm"}),
+        params::param<HabinariParameter::CoolingKp, Dpt9Float>(
+            {.name = "Cooling proportional gain",
+             .def = Dpt9Float{cfg::kDefaultCoolingKp},
+             .min = 1,
+             .max = 200,
+             .unit = "%/K",
+             .visible = params::when<HabinariParameter::CoolingControlAlgorithm>(1),
+             .key = "cooling_pid_kp"}),
+        params::param<HabinariParameter::CoolingTiSeconds, uint16_t>(
+            {.name = "Cooling reset time (0 = P only)",
+             .def = cfg::kDefaultCoolingTiSeconds,
+             .min = 0,
+             .max = 65535,
+             .unit = "s",
+             .visible = params::when<HabinariParameter::CoolingControlAlgorithm>(1),
+             .key = "cooling_pid_ti_seconds"}),
+        params::param<HabinariParameter::CoolingTdSeconds, uint16_t>(
+            {.name = "Cooling derivative time (0 = off)",
+             .def = cfg::kDefaultCoolingTdSeconds,
+             .min = 0,
+             .max = 65535,
+             .unit = "s",
+             .visible = params::when<HabinariParameter::CoolingControlAlgorithm>(1),
+             .key = "cooling_pid_td_seconds"}),
+        params::param<HabinariParameter::CoolingMinimumOutputPercent, uint8_t>(
+            {.name = "Cooling minimum control value",
+             .def = cfg::kDefaultCoolingMinimumOutputPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "cooling_minimum_output_percent"}),
+        params::param<HabinariParameter::CoolingMaximumOutputPercent, uint8_t>(
+            {.name = "Cooling maximum control value",
+             .def = cfg::kDefaultCoolingMaximumOutputPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "cooling_maximum_output_percent"})),
+
+    params::section(
+        {.name = kGroupLoop},
+        // ---- Control loop behaviour ------------------------------------------
+        params::param<HabinariParameter::ThermostatHysteresis, Dpt9Float>(
+            {.name = "Two-point switching hysteresis",
+             .def = Dpt9Float{cfg::kDefaultThermostatHysteresisC},
+             .min = 0,
+             .max = 5,
+             .unit = "K",
+             .key = "thermostat_hysteresis"}),
+        params::param<HabinariParameter::BinaryDemandStrategy, uint8_t>(
+            {.name = "Binary demand derived from",
+             .def = cfg::kDefaultBinaryDemandStrategy,
+             .options = kBinaryDemandStrategyOptions,
+             .key = "binary_demand_strategy"}),
+        params::param<HabinariParameter::BinaryDemandThresholdPercent, uint8_t>(
+            {.name = "Binary demand control-value threshold",
+             .def = cfg::kDefaultBinaryDemandThresholdPercent,
+             .min = 1,
+             .max = 100,
+             .unit = "%",
+             .visible = params::when<HabinariParameter::BinaryDemandStrategy>(1),
+             .key = "binary_demand_threshold_percent"}),
+        params::param<HabinariParameter::FrostAlarmTemperature, Dpt9Float>(
+            {.name = "Frost alarm below (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultFrostAlarmTemperatureC},
+             .min = 0,
+             .max = 20,
+             .unit = "°C",
+             .key = "frost_alarm_temperature"}),
+        params::param<HabinariParameter::OverheatAlarmTemperature, Dpt9Float>(
+            {.name = "Overheat alarm above (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultOverheatAlarmTemperatureC},
+             .min = 0,
+             .max = 60,
+             .unit = "°C",
+             .key = "overheat_alarm_temperature"})),
+
+    params::section(
+        {.name = kGroupFloor},
+        // ---- Floor temperature -------------------------------------------------
+        params::param<HabinariParameter::MaxFloorTemperature, Dpt9Float>(
+            {.name = "Maximum floor temperature (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultMaxFloorTemperatureC},
+             .min = 0,
+             .max = 45,
+             .unit = "°C",
+             .key = "max_floor_temperature"}),
+        params::param<HabinariParameter::MinFloorTemperature, Dpt9Float>(
+            {.name = "Minimum floor temperature (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultMinFloorTemperatureC},
+             .min = 0,
+             .max = 35,
+             .unit = "°C",
+             .key = "min_floor_temperature"}),
+        params::param<HabinariParameter::FloorHysteresis, Dpt9Float>(
+            {.name = "Floor temperature hysteresis",
+             .def = Dpt9Float{cfg::kDefaultFloorHysteresisK},
+             .min = 0,
+             .max = 10,
+             .unit = "K",
+             .key = "floor_hysteresis"}),
+        params::param<HabinariParameter::FloorComfortOutputPercent, uint8_t>(
+            {.name = "Control value while holding minimum floor temperature",
+             .def = cfg::kDefaultFloorComfortOutputPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "floor_comfort_output_percent"})),
+
+    params::section(
+        {.name = kGroupDewPoint},
+        // ---- Condensation protection -------------------------------------------
+        params::param<HabinariParameter::DewPointSurfaceSource, uint8_t>(
+            {.name = "Surface temperature used for condensation check",
+             .def = cfg::kDefaultDewPointSurfaceSource,
+             .options = kDewPointSurfaceSourceOptions,
+             .key = "dew_point_surface_source"}),
+        params::param<HabinariParameter::DewPointMargin, Dpt9Float>(
+            {.name = "Alarm when surface is within",
+             .def = Dpt9Float{cfg::kDefaultDewPointMarginK},
+             .min = 0,
+             .max = 10,
+             .unit = "K of dew point",
+             .key = "dew_point_margin"}),
+        params::param<HabinariParameter::DewPointHysteresis, Dpt9Float>(
+            {.name = "Dew point alarm hysteresis",
+             .def = Dpt9Float{cfg::kDefaultDewPointHysteresisK},
+             .min = 0,
+             .max = 10,
+             .unit = "K",
+             .key = "dew_point_hysteresis"}),
+        params::param<HabinariParameter::BlockCoolingOnDewPointAlarm, uint8_t>(
+            {.name = "Cooling during a dew point alarm",
+             .def = cfg::kDefaultBlockCoolingOnDewPointAlarm,
+             .options = kBlockCoolingOnDewPointAlarmOptions,
+             .key = "block_cooling_on_dew_point_alarm"})),
+
+    params::section(
+        {.name = kGroupMoisture},
+        // ---- Slab moisture detection ---------------------------------------------
+        params::param<HabinariParameter::FloorMoistureThreshold, Dpt9Float>(
+            {.name = "Slab humidity alarm above (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultFloorMoistureThresholdPct},
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "floor_moisture_threshold"}),
+        params::param<HabinariParameter::FloorMoistureHysteresis, Dpt9Float>(
+            {.name = "Slab humidity alarm hysteresis",
+             .def = Dpt9Float{cfg::kDefaultFloorMoistureHysteresisPct},
+             .min = 0,
+             .max = 25,
+             .unit = "%",
+             .key = "floor_moisture_hysteresis"}),
+        // Absolute humidity is a moisture *content*, so comparing the slab
+        // against the room stays meaningful even though the slab is the
+        // colder of the two — which is exactly where a relative-humidity
+        // comparison misleads. Detects evaporating liquid water long before
+        // the relative reading looks alarming.
+        params::param<HabinariParameter::FloorMoistureExcess, Dpt9Float>(
+            {.name = "Alarm when slab is wetter than the room by (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultFloorMoistureExcessGm3},
+             .min = 0,
+             .max = 20,
+             .unit = "g/m³",
+             .key = "floor_moisture_excess"})),
+
+    params::section(
+        {.name = kGroupVentilation},
+        // ---- Ventilation and air quality --------------------------------------------
+        params::param<HabinariParameter::VentilationSetpoint, uint16_t>(
+            {.name = "CO2 setpoint (demand starts here)",
+             .def = cfg::kDefaultVentilationSetpointPpm,
+             .min = 400,
+             .max = 5000,
+             .unit = "ppm",
+             .key = "ventilation_setpoint"}),
+        params::param<HabinariParameter::VentilationBand, uint16_t>(
+            {.name = "CO2 band to full demand",
+             .def = cfg::kDefaultVentilationBandPpm,
+             .min = 0,
+             .max = 5000,
+             .unit = "ppm",
+             .key = "ventilation_band"}),
+        params::param<HabinariParameter::HumidityBoostThreshold, Dpt9Float>(
+            {.name = "Humidity setpoint (demand starts here)",
+             .def = Dpt9Float{cfg::kDefaultHumidityBoostPct},
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "humidity_boost_threshold"}),
+        params::param<HabinariParameter::HumidityBoostBand, Dpt9Float>(
+            {.name = "Humidity band to full demand",
+             .def = Dpt9Float{cfg::kDefaultHumidityBandPct},
+             .min = 0,
+             .max = 50,
+             .unit = "%",
+             .key = "humidity_boost_band"}),
+        params::param<HabinariParameter::VocBoostThreshold, uint16_t>(
+            {.name = "Air quality index setpoint (0 = off)",
+             .def = cfg::kDefaultVocThresholdIndex,
+             .min = 0,
+             .max = 500,
+             .key = "voc_boost_threshold"}),
+        params::param<HabinariParameter::VocBoostBand, uint16_t>(
+            {.name = "Air quality index band to full demand",
+             .def = cfg::kDefaultVocBandIndex,
+             .min = 0,
+             .max = 500,
+             .key = "voc_boost_band"}),
+        params::param<HabinariParameter::VentilationBaseDemandPercent, uint8_t>(
+            {.name = "Base ventilation while the room is occupied",
+             .def = cfg::kDefaultVentilationBaseDemandPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "ventilation_base_demand_percent"}),
+        params::param<HabinariParameter::VentilationManualDemandPercent, uint8_t>(
+            {.name = "Demand in manual ventilation mode",
+             .def = cfg::kDefaultVentilationManualDemandPercent,
+             .min = 0,
+             .max = 100,
+             .unit = "%",
+             .key = "ventilation_manual_demand_percent"})),
+
+    params::section(
+        {.name = kGroupFusion},
+        // ---- Sensor fusion and detection ---------------------------------
+        params::param<HabinariParameter::SensorFilterSeconds, uint16_t>(
+            {.name = "Measurement smoothing time constant",
+             .def = cfg::kDefaultSensorFilterSeconds,
+             .min = 0,
+             .max = 600,
+             .unit = "s",
+             .key = "sensor_filter_seconds"}),
+        // The board measures room temperature three times over (HDC3020,
+        // BME688, SCD4x). Beyond this difference they are not measuring the
+        // same thing any more, which means one of them has drifted: with
+        // three sources the outlier is voted out of the published value,
+        // with two it is only reported.
+        params::param<HabinariParameter::TemperatureCrossCheck, Dpt9Float>(
+            {.name = "Temperature sensor disagreement limit (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultTemperatureCrossCheckK},
+             .min = 0,
+             .max = 20,
+             .unit = "K",
+             .key = "temperature_cross_check"}),
+        params::param<HabinariParameter::HumidityCrossCheck, Dpt9Float>(
+            {.name = "Humidity sensor disagreement limit (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultHumidityCrossCheckPct},
+             .min = 0,
+             .max = 50,
+             .unit = "%",
+             .key = "humidity_cross_check"}),
+        // Advisory heat detection. Not a substitute for a certified fire
+        // detector — see the FireAlarm object's description and the manual.
+        params::param<HabinariParameter::FireRateOfRise, Dpt9Float>(
+            {.name = "Rapid rise alarm threshold (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultFireRateOfRiseKPerMin},
+             .min = 0,
+             .max = 30,
+             .unit = "K/min",
+             .key = "fire_rate_of_rise"}),
+        params::param<HabinariParameter::FireAbsoluteTemperature, Dpt9Float>(
+            {.name = "Over-temperature alarm threshold (0 = off)",
+             .def = Dpt9Float{cfg::kDefaultFireAbsoluteTemperatureC},
+             .min = 0,
+             .max = 120,
+             .unit = "C",
+             .key = "fire_absolute_temperature"}),
+        params::param<HabinariParameter::FireConfirmSeconds, uint16_t>(
+            {.name = "Rapid rise confirmation time",
+             .def = cfg::kDefaultFireConfirmSeconds,
+             .min = 5,
+             .max = 600,
+             .unit = "s",
+             .key = "fire_confirm_seconds"}),
+        // A fan heater raises the temperature fast and burns nothing. Only
+        // combustion also drives the BME688 gas signal, so requiring both
+        // is the strongest false-alarm defence available here — at the cost
+        // of needing a calibrated BSEC, which takes hours after a cold boot.
+        params::param<HabinariParameter::FireRequireAirQuality, uint8_t>(
+            {.name = "Also require rising air pollution",
+             .def = cfg::kDefaultFireRequireAirQuality,
+             .options = kFireRequireAirQualityOptions,
+             .key = "fire_require_air_quality"}),
+        params::param<HabinariParameter::Co2OccupancyEnabled, uint8_t>(
+            {.name = "Derive occupancy from CO2",
+             .def = cfg::kDefaultCo2OccupancyEnabled,
+             .options = kCo2OccupancyEnabledOptions,
+             .key = "co2_occupancy_enabled"}),
+        params::param<HabinariParameter::WindowDetectEnabled, uint8_t>(
+            {.name = "Detect open windows from air change",
+             .def = cfg::kDefaultWindowDetectEnabled,
+             .options = kCo2OccupancyEnabledOptions,
+             .key = "window_detect_enabled"})));
+
+inline constexpr auto kHabinariParameters = params::parameterLayout(kHabinariParameterBlock);
 
 inline constexpr auto kHabinariProduct =
-    makeCommissionedProduct(
+    makeCommissionedProduct<kHabinariParameters>(
         makeEndpointDefinition<
             HabinariPort,
             // ---- FB RTS / RRHS / RAQS: room air measurements ---------------
@@ -838,754 +1549,6 @@ inline constexpr auto kHabinariProduct =
                 // 0 → one group-key slot per group object.
                 .groupKeyTableEntries = 0,
                 .p2pKeyTableEntries = 1,
-            }),
-        makeParameterSchema(
-            // ---- Device ------------------------------------------------------
-            ParameterDescriptor<HabinariParameter::ParameterLayoutVersion, uint16_t>{
-                .key = "parameter_layout_version",
-                .displayName = "Parameter Layout Version (do not change)",
-                .defaultValue = cfg::kParameterLayoutVersion,
-                .group = kGroupDevice},
-
-            // ---- Measurements and sending behaviour --------------------------
-            // The KNX sensor FBs parameterise Heartbeat/MinRepTime per
-            // Datapoint. Held device-wide here instead: sixty per-sensor timing
-            // fields would bury the handful of settings an integrator actually
-            // changes, and the per-measurand knob that does matter — the COV
-            // delta, whose sensible value differs by orders of magnitude
-            // between K, %RH and ppm — is kept individually.
-            ParameterDescriptor<HabinariParameter::MeasurementHeartbeatSeconds, uint16_t>{
-                .key = "measurement_heartbeat_seconds",
-                .displayName = "Cyclic retransmission (heartbeat)",
-                .defaultValue = cfg::kDefaultMeasurementHeartbeatSeconds,
-                .minValue = 0,
-                .maxValue = 65535,
-                .unit = "s",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::MeasurementMinRepTimeSeconds, uint16_t>{
-                .key = "measurement_min_rep_time_seconds",
-                .displayName = "Minimum time between transmissions",
-                .defaultValue = cfg::kDefaultMeasurementMinRepTimeSeconds,
-                .minValue = 0,
-                .maxValue = 3600,
-                .unit = "s",
-                .group = kGroupMeasurement},
-            // Self-heating is the dominant error on a wall-mounted board that
-            // also powers a TP1 transceiver, so an offset is not optional here.
-            ParameterDescriptor<HabinariParameter::RoomTemperatureOffset, Dpt9Float>{
-                .key = "room_temperature_offset",
-                .displayName = "Room temperature correction",
-                .defaultValue = Dpt9Float{cfg::kDefaultRoomTemperatureOffsetK},
-                .minValue = -10,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::RoomTemperatureCov, Dpt9Float>{
-                .key = "room_temperature_cov",
-                .displayName = "Room temperature change to send",
-                .defaultValue = Dpt9Float{cfg::kDefaultRoomTemperatureCovK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::RoomHumidityOffset, Dpt9Float>{
-                .key = "room_humidity_offset",
-                .displayName = "Room humidity correction",
-                .defaultValue = Dpt9Float{cfg::kDefaultRoomHumidityOffsetPct},
-                .minValue = -20,
-                .maxValue = 20,
-                .unit = "%",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::RoomHumidityCov, Dpt9Float>{
-                .key = "room_humidity_cov",
-                .displayName = "Room humidity change to send",
-                .defaultValue = Dpt9Float{cfg::kDefaultRoomHumidityCovPct},
-                .minValue = 0,
-                .maxValue = 50,
-                .unit = "%",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::Co2Cov, uint16_t>{
-                .key = "co2_cov",
-                .displayName = "CO2 change to send",
-                .defaultValue = cfg::kDefaultCo2CovPpm,
-                .minValue = 0,
-                .maxValue = 5000,
-                .unit = "ppm",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::PressureCov, uint16_t>{
-                .key = "pressure_cov",
-                .displayName = "Air pressure change to send",
-                .defaultValue = cfg::kDefaultPressureCovPa,
-                .minValue = 0,
-                .maxValue = 10000,
-                .unit = "Pa",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::AirQualityCov, uint16_t>{
-                .key = "air_quality_cov",
-                .displayName = "Air quality index change to send",
-                .defaultValue = cfg::kDefaultAirQualityCovIndex,
-                .minValue = 0,
-                .maxValue = 500,
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::FloorTemperatureOffset, Dpt9Float>{
-                .key = "floor_temperature_offset",
-                .displayName = "Floor temperature correction",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorTemperatureOffsetK},
-                .minValue = -10,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::FloorTemperatureCov, Dpt9Float>{
-                .key = "floor_temperature_cov",
-                .displayName = "Floor temperature change to send",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorTemperatureCovK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::FloorHumidityCov, Dpt9Float>{
-                .key = "floor_humidity_cov",
-                .displayName = "Floor humidity change to send",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorHumidityCovPct},
-                .minValue = 0,
-                .maxValue = 50,
-                .unit = "%",
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::DerivedValueCov, Dpt9Float>{
-                .key = "derived_value_cov",
-                .displayName = "Dew point / absolute humidity change to send",
-                .defaultValue = Dpt9Float{cfg::kDefaultDerivedCovK},
-                .minValue = 0,
-                .maxValue = 10,
-                .group = kGroupMeasurement},
-            ParameterDescriptor<HabinariParameter::AltitudeM, uint16_t>{
-                .key = "altitude_m",
-                .displayName = "Installation altitude above sea level",
-                .defaultValue = cfg::kDefaultAltitudeM,
-                .minValue = 0,
-                .maxValue = 4000,
-                .unit = "m",
-                .group = kGroupMeasurement},
-
-            // ---- Room control: general ---------------------------------------
-            ParameterDescriptor<HabinariParameter::ControllerDefaultEnable, uint8_t>{
-                .key = "controller_default_enable",
-                .displayName = "Controller state after download",
-                .defaultValue = cfg::kDefaultControllerEnable,
-                .options = parameterOptions(ParameterOption{0, "Off"}, ParameterOption{1, "On"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::DefaultHvacOperatingMode, uint8_t>{
-                .key = "default_hvac_operating_mode",
-                .displayName = "HVAC operating mode after download",
-                .defaultValue = cfg::kDefaultHvacOperatingMode,
-                .options = parameterOptions(ParameterOption{0, "Auto"},
-                                            ParameterOption{1, "Comfort"},
-                                            ParameterOption{2, "Standby"},
-                                            ParameterOption{3, "Economy"},
-                                            ParameterOption{4, "Building protection"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::DefaultControllerMode, uint8_t>{
-                .key = "default_controller_mode",
-                .displayName = "Controller mode after download",
-                .defaultValue = cfg::kDefaultControllerMode,
-                .options = parameterOptions(ParameterOption{0, "Auto"},
-                                            ParameterOption{1, "Heat"},
-                                            ParameterOption{2, "Cool"},
-                                            ParameterOption{3, "Off"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::HeatingEnabled, uint8_t>{
-                .key = "heating_enabled",
-                .displayName = "Heating sequence",
-                .defaultValue = cfg::kDefaultHeatingEnabled,
-                .options = parameterOptions(ParameterOption{0, "Not used"},
-                                            ParameterOption{1, "Used"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::CoolingEnabled, uint8_t>{
-                .key = "cooling_enabled",
-                .displayName = "Cooling sequence",
-                .defaultValue = cfg::kDefaultCoolingEnabled,
-                .options = parameterOptions(ParameterOption{0, "Not used"},
-                                            ParameterOption{1, "Used"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::HeatCoolChangeoverMode, uint8_t>{
-                .key = "heat_cool_changeover_mode",
-                .displayName = "Heat/cool changeover",
-                .defaultValue = cfg::kDefaultHeatCoolChangeoverMode,
-                .options = parameterOptions(ParameterOption{0, "Automatic (internal dead band)"},
-                                            ParameterOption{1, "Follow changeover input"},
-                                            ParameterOption{2, "Fixed: heating only"},
-                                            ParameterOption{3, "Fixed: cooling only"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::HeatCoolChangeoverPolarity, uint8_t>{
-                .key = "heat_cool_changeover_polarity",
-                .displayName = "Changeover input polarity",
-                .defaultValue = cfg::kDefaultHeatCoolChangeoverPolarity,
-                .options = parameterOptions(ParameterOption{0, "1 = heating (DPT 1.100)"},
-                                            ParameterOption{1, "1 = cooling (inverted)"}),
-                .group = kGroupControlGeneral,
-                .visibleWhenParameterId = paramId(HabinariParameter::HeatCoolChangeoverMode),
-                .visibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::MinimumHeatCoolChangeoverSeconds, uint16_t>{
-                .key = "minimum_heat_cool_changeover_seconds",
-                .displayName = "Minimum delay between heating and cooling",
-                .defaultValue = cfg::kDefaultMinimumHeatCoolChangeoverSeconds,
-                .minValue = 0,
-                .maxValue = 65535,
-                .unit = "s",
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::WindowOpenBehavior, uint8_t>{
-                .key = "window_open_behavior",
-                .displayName = "Behaviour with window open",
-                .defaultValue = cfg::kDefaultWindowOpenBehavior,
-                .options = parameterOptions(ParameterOption{0, "Ignore"},
-                                            ParameterOption{1, "Building protection setpoint"},
-                                            ParameterOption{2, "Switch outputs off"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::PresenceBehavior, uint8_t>{
-                .key = "presence_behavior",
-                .displayName = "Mode when the room is unoccupied",
-                .defaultValue = cfg::kDefaultPresenceBehavior,
-                .options = parameterOptions(ParameterOption{0, "Standby"},
-                                            ParameterOption{1, "Economy"}),
-                .group = kGroupControlGeneral},
-            ParameterDescriptor<HabinariParameter::SensorFaultBehavior, uint8_t>{
-                .key = "sensor_fault_behavior",
-                .displayName = "Behaviour on sensor failure",
-                .defaultValue = cfg::kDefaultSensorFaultBehavior,
-                .options = parameterOptions(ParameterOption{0, "Hold last outputs"},
-                                            ParameterOption{1, "Switch outputs off"},
-                                            ParameterOption{2, "Keep controlling on last reading"}),
-                .group = kGroupControlGeneral},
-
-            // ---- Setpoints ------------------------------------------------------
-            // KNX RTSM ladder: Comfort is the absolute anchor, Standby/Economy
-            // are shifts away from it, and only building protection is absolute
-            // again. One setpoint write from an HMI or Home Assistant then moves
-            // the whole ladder coherently.
-            ParameterDescriptor<HabinariParameter::ComfortHeatingSetpoint, Dpt9Float>{
-                .key = "comfort_heating_setpoint",
-                .displayName = "Comfort heating setpoint",
-                .defaultValue = Dpt9Float{cfg::kDefaultComfortHeatingSetpointC},
-                .minValue = 5,
-                .maxValue = 40,
-                .unit = "°C",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::StandbyHeatingReduction, Dpt9Float>{
-                .key = "standby_heating_reduction",
-                .displayName = "Standby: reduction below comfort",
-                .defaultValue = Dpt9Float{cfg::kDefaultStandbyHeatingReductionK},
-                .minValue = 0,
-                .maxValue = 15,
-                .unit = "K",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::EconomyHeatingReduction, Dpt9Float>{
-                .key = "economy_heating_reduction",
-                .displayName = "Economy: reduction below comfort",
-                .defaultValue = Dpt9Float{cfg::kDefaultEconomyHeatingReductionK},
-                .minValue = 0,
-                .maxValue = 20,
-                .unit = "K",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::ProtectionHeatingSetpoint, Dpt9Float>{
-                .key = "protection_heating_setpoint",
-                .displayName = "Building protection: frost setpoint",
-                .defaultValue = Dpt9Float{cfg::kDefaultProtectionHeatingSetpointC},
-                .minValue = 3,
-                .maxValue = 15,
-                .unit = "°C",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::CoolingDeadband, Dpt9Float>{
-                .key = "cooling_deadband",
-                .displayName = "Dead band between heating and cooling",
-                .defaultValue = Dpt9Float{cfg::kDefaultCoolingDeadbandK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::StandbyCoolingIncrease, Dpt9Float>{
-                .key = "standby_cooling_increase",
-                .displayName = "Standby: increase above comfort cooling",
-                .defaultValue = Dpt9Float{cfg::kDefaultStandbyCoolingIncreaseK},
-                .minValue = 0,
-                .maxValue = 15,
-                .unit = "K",
-                .group = kGroupSetpoints,
-                .visibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::EconomyCoolingIncrease, Dpt9Float>{
-                .key = "economy_cooling_increase",
-                .displayName = "Economy: increase above comfort cooling",
-                .defaultValue = Dpt9Float{cfg::kDefaultEconomyCoolingIncreaseK},
-                .minValue = 0,
-                .maxValue = 20,
-                .unit = "K",
-                .group = kGroupSetpoints,
-                .visibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::ProtectionCoolingSetpoint, Dpt9Float>{
-                .key = "protection_cooling_setpoint",
-                .displayName = "Building protection: heat setpoint",
-                .defaultValue = Dpt9Float{cfg::kDefaultProtectionCoolingSetpointC},
-                .minValue = 25,
-                .maxValue = 45,
-                .unit = "°C",
-                .group = kGroupSetpoints,
-                .visibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .visibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::MinSetpoint, Dpt9Float>{
-                .key = "min_setpoint",
-                .displayName = "Lowest allowed setpoint",
-                .defaultValue = Dpt9Float{cfg::kDefaultMinSetpointC},
-                .minValue = 3,
-                .maxValue = 25,
-                .unit = "°C",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::MaxSetpoint, Dpt9Float>{
-                .key = "max_setpoint",
-                .displayName = "Highest allowed setpoint",
-                .defaultValue = Dpt9Float{cfg::kDefaultMaxSetpointC},
-                .minValue = 15,
-                .maxValue = 45,
-                .unit = "°C",
-                .group = kGroupSetpoints},
-            ParameterDescriptor<HabinariParameter::MaxSetpointShift, Dpt9Float>{
-                .key = "max_setpoint_shift",
-                .displayName = "Maximum manual setpoint shift",
-                .defaultValue = Dpt9Float{cfg::kDefaultMaxSetpointShiftK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupSetpoints},
-
-            // ---- Heating control -------------------------------------------------
-            // The whole section is gated on the heating sequence being in use, so
-            // an integrator who switched heating off does not get a section of
-            // settings that the controller ignores. Cooling below is deliberately
-            // identical in shape: the two sequences differ only in which enable
-            // and which algorithm parameter they follow.
-            ParameterDescriptor<HabinariParameter::HeatingControlAlgorithm, uint8_t>{
-                .key = "heating_control_algorithm",
-                .displayName = "Heating control algorithm",
-                .defaultValue = cfg::kDefaultHeatingControlAlgorithm,
-                .options = parameterOptions(ParameterOption{0, "Two-point (on/off)"},
-                                            ParameterOption{1, "Continuous PI"}),
-                .group = kGroupHeating,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::HeatingKp, Dpt9Float>{
-                .key = "heating_pid_kp",
-                .displayName = "Heating proportional gain",
-                .defaultValue = Dpt9Float{cfg::kDefaultHeatingKp},
-                .minValue = 1,
-                .maxValue = 200,
-                .unit = "%/K",
-                .group = kGroupHeating,
-                .visibleWhenParameterId = paramId(HabinariParameter::HeatingControlAlgorithm),
-                .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::HeatingTiSeconds, uint16_t>{
-                .key = "heating_pid_ti_seconds",
-                .displayName = "Heating reset time (0 = P only)",
-                .defaultValue = cfg::kDefaultHeatingTiSeconds,
-                .minValue = 0,
-                .maxValue = 65535,
-                .unit = "s",
-                .group = kGroupHeating,
-                .visibleWhenParameterId = paramId(HabinariParameter::HeatingControlAlgorithm),
-                .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::HeatingTdSeconds, uint16_t>{
-                .key = "heating_pid_td_seconds",
-                .displayName = "Heating derivative time (0 = off)",
-                .defaultValue = cfg::kDefaultHeatingTdSeconds,
-                .minValue = 0,
-                .maxValue = 65535,
-                .unit = "s",
-                .group = kGroupHeating,
-                .visibleWhenParameterId = paramId(HabinariParameter::HeatingControlAlgorithm),
-                .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::HeatingMinimumOutputPercent, uint8_t>{
-                .key = "heating_minimum_output_percent",
-                .displayName = "Heating minimum control value",
-                .defaultValue = cfg::kDefaultHeatingMinimumOutputPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupHeating,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::HeatingMaximumOutputPercent, uint8_t>{
-                .key = "heating_maximum_output_percent",
-                .displayName = "Heating maximum control value",
-                .defaultValue = cfg::kDefaultHeatingMaximumOutputPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupHeating,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::HeatingEnabled),
-                .groupVisibleWhenValue = 1},
-
-            // ---- Cooling control -------------------------------------------------
-            // Mirror image of the heating section above, gated on the cooling
-            // sequence. The PI terms follow the cooling algorithm rather than the
-            // cooling enable: gating them on the enable made them appear under a
-            // two-point configuration, where they do nothing.
-            ParameterDescriptor<HabinariParameter::CoolingControlAlgorithm, uint8_t>{
-                .key = "cooling_control_algorithm",
-                .displayName = "Cooling control algorithm",
-                .defaultValue = cfg::kDefaultCoolingControlAlgorithm,
-                .options = parameterOptions(ParameterOption{0, "Two-point (on/off)"},
-                                            ParameterOption{1, "Continuous PI"}),
-                .group = kGroupCooling,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::CoolingKp, Dpt9Float>{
-                .key = "cooling_pid_kp",
-                .displayName = "Cooling proportional gain",
-                .defaultValue = Dpt9Float{cfg::kDefaultCoolingKp},
-                .minValue = 1,
-                .maxValue = 200,
-                .unit = "%/K",
-                .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(HabinariParameter::CoolingControlAlgorithm),
-                .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::CoolingTiSeconds, uint16_t>{
-                .key = "cooling_pid_ti_seconds",
-                .displayName = "Cooling reset time (0 = P only)",
-                .defaultValue = cfg::kDefaultCoolingTiSeconds,
-                .minValue = 0,
-                .maxValue = 65535,
-                .unit = "s",
-                .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(HabinariParameter::CoolingControlAlgorithm),
-                .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::CoolingTdSeconds, uint16_t>{
-                .key = "cooling_pid_td_seconds",
-                .displayName = "Cooling derivative time (0 = off)",
-                .defaultValue = cfg::kDefaultCoolingTdSeconds,
-                .minValue = 0,
-                .maxValue = 65535,
-                .unit = "s",
-                .group = kGroupCooling,
-                .visibleWhenParameterId = paramId(HabinariParameter::CoolingControlAlgorithm),
-                .visibleWhenValue = 1,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::CoolingMinimumOutputPercent, uint8_t>{
-                .key = "cooling_minimum_output_percent",
-                .displayName = "Cooling minimum control value",
-                .defaultValue = cfg::kDefaultCoolingMinimumOutputPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupCooling,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .groupVisibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::CoolingMaximumOutputPercent, uint8_t>{
-                .key = "cooling_maximum_output_percent",
-                .displayName = "Cooling maximum control value",
-                .defaultValue = cfg::kDefaultCoolingMaximumOutputPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupCooling,
-                .groupVisibleWhenParameterId = paramId(HabinariParameter::CoolingEnabled),
-                .groupVisibleWhenValue = 1},
-
-            // ---- Control loop behaviour ------------------------------------------
-            ParameterDescriptor<HabinariParameter::ThermostatHysteresis, Dpt9Float>{
-                .key = "thermostat_hysteresis",
-                .displayName = "Two-point switching hysteresis",
-                .defaultValue = Dpt9Float{cfg::kDefaultThermostatHysteresisC},
-                .minValue = 0,
-                .maxValue = 5,
-                .unit = "K",
-                .group = kGroupLoop},
-            ParameterDescriptor<HabinariParameter::BinaryDemandStrategy, uint8_t>{
-                .key = "binary_demand_strategy",
-                .displayName = "Binary demand derived from",
-                .defaultValue = cfg::kDefaultBinaryDemandStrategy,
-                .options = parameterOptions(ParameterOption{0, "Temperature hysteresis"},
-                                            ParameterOption{1, "Control value threshold"}),
-                .group = kGroupLoop},
-            ParameterDescriptor<HabinariParameter::BinaryDemandThresholdPercent, uint8_t>{
-                .key = "binary_demand_threshold_percent",
-                .displayName = "Binary demand control-value threshold",
-                .defaultValue = cfg::kDefaultBinaryDemandThresholdPercent,
-                .minValue = 1,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupLoop,
-                .visibleWhenParameterId = paramId(HabinariParameter::BinaryDemandStrategy),
-                .visibleWhenValue = 1},
-            ParameterDescriptor<HabinariParameter::FrostAlarmTemperature, Dpt9Float>{
-                .key = "frost_alarm_temperature",
-                .displayName = "Frost alarm below (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultFrostAlarmTemperatureC},
-                .minValue = 0,
-                .maxValue = 20,
-                .unit = "°C",
-                .group = kGroupLoop},
-            ParameterDescriptor<HabinariParameter::OverheatAlarmTemperature, Dpt9Float>{
-                .key = "overheat_alarm_temperature",
-                .displayName = "Overheat alarm above (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultOverheatAlarmTemperatureC},
-                .minValue = 0,
-                .maxValue = 60,
-                .unit = "°C",
-                .group = kGroupLoop},
-
-            // ---- Floor temperature -------------------------------------------------
-            ParameterDescriptor<HabinariParameter::MaxFloorTemperature, Dpt9Float>{
-                .key = "max_floor_temperature",
-                .displayName = "Maximum floor temperature (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultMaxFloorTemperatureC},
-                .minValue = 0,
-                .maxValue = 45,
-                .unit = "°C",
-                .group = kGroupFloor},
-            ParameterDescriptor<HabinariParameter::MinFloorTemperature, Dpt9Float>{
-                .key = "min_floor_temperature",
-                .displayName = "Minimum floor temperature (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultMinFloorTemperatureC},
-                .minValue = 0,
-                .maxValue = 35,
-                .unit = "°C",
-                .group = kGroupFloor},
-            ParameterDescriptor<HabinariParameter::FloorHysteresis, Dpt9Float>{
-                .key = "floor_hysteresis",
-                .displayName = "Floor temperature hysteresis",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorHysteresisK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupFloor},
-            ParameterDescriptor<HabinariParameter::FloorComfortOutputPercent, uint8_t>{
-                .key = "floor_comfort_output_percent",
-                .displayName = "Control value while holding minimum floor temperature",
-                .defaultValue = cfg::kDefaultFloorComfortOutputPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupFloor},
-
-            // ---- Condensation protection -------------------------------------------
-            ParameterDescriptor<HabinariParameter::DewPointSurfaceSource, uint8_t>{
-                .key = "dew_point_surface_source",
-                .displayName = "Surface temperature used for condensation check",
-                .defaultValue = cfg::kDefaultDewPointSurfaceSource,
-                .options = parameterOptions(ParameterOption{0, "Off (no local dew point alarm)"},
-                                            ParameterOption{1, "Floor probe"},
-                                            ParameterOption{2, "Flow temperature input"},
-                                            ParameterOption{3, "Coldest available"}),
-                .group = kGroupDewPoint},
-            ParameterDescriptor<HabinariParameter::DewPointMargin, Dpt9Float>{
-                .key = "dew_point_margin",
-                .displayName = "Alarm when surface is within",
-                .defaultValue = Dpt9Float{cfg::kDefaultDewPointMarginK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K of dew point",
-                .group = kGroupDewPoint},
-            ParameterDescriptor<HabinariParameter::DewPointHysteresis, Dpt9Float>{
-                .key = "dew_point_hysteresis",
-                .displayName = "Dew point alarm hysteresis",
-                .defaultValue = Dpt9Float{cfg::kDefaultDewPointHysteresisK},
-                .minValue = 0,
-                .maxValue = 10,
-                .unit = "K",
-                .group = kGroupDewPoint},
-            ParameterDescriptor<HabinariParameter::BlockCoolingOnDewPointAlarm, uint8_t>{
-                .key = "block_cooling_on_dew_point_alarm",
-                .displayName = "Cooling during a dew point alarm",
-                .defaultValue = cfg::kDefaultBlockCoolingOnDewPointAlarm,
-                .options = parameterOptions(ParameterOption{0, "Continue (report only)"},
-                                            ParameterOption{1, "Block cooling"}),
-                .group = kGroupDewPoint},
-
-            // ---- Slab moisture detection ---------------------------------------------
-            ParameterDescriptor<HabinariParameter::FloorMoistureThreshold, Dpt9Float>{
-                .key = "floor_moisture_threshold",
-                .displayName = "Slab humidity alarm above (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorMoistureThresholdPct},
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupMoisture},
-            ParameterDescriptor<HabinariParameter::FloorMoistureHysteresis, Dpt9Float>{
-                .key = "floor_moisture_hysteresis",
-                .displayName = "Slab humidity alarm hysteresis",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorMoistureHysteresisPct},
-                .minValue = 0,
-                .maxValue = 25,
-                .unit = "%",
-                .group = kGroupMoisture},
-            // Absolute humidity is a moisture *content*, so comparing the slab
-            // against the room stays meaningful even though the slab is the
-            // colder of the two — which is exactly where a relative-humidity
-            // comparison misleads. Detects evaporating liquid water long before
-            // the relative reading looks alarming.
-            ParameterDescriptor<HabinariParameter::FloorMoistureExcess, Dpt9Float>{
-                .key = "floor_moisture_excess",
-                .displayName = "Alarm when slab is wetter than the room by (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultFloorMoistureExcessGm3},
-                .minValue = 0,
-                .maxValue = 20,
-                .unit = "g/m³",
-                .group = kGroupMoisture},
-
-            // ---- Ventilation and air quality --------------------------------------------
-            ParameterDescriptor<HabinariParameter::VentilationSetpoint, uint16_t>{
-                .key = "ventilation_setpoint",
-                .displayName = "CO2 setpoint (demand starts here)",
-                .defaultValue = cfg::kDefaultVentilationSetpointPpm,
-                .minValue = 400,
-                .maxValue = 5000,
-                .unit = "ppm",
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::VentilationBand, uint16_t>{
-                .key = "ventilation_band",
-                .displayName = "CO2 band to full demand",
-                .defaultValue = cfg::kDefaultVentilationBandPpm,
-                .minValue = 0,
-                .maxValue = 5000,
-                .unit = "ppm",
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::HumidityBoostThreshold, Dpt9Float>{
-                .key = "humidity_boost_threshold",
-                .displayName = "Humidity setpoint (demand starts here)",
-                .defaultValue = Dpt9Float{cfg::kDefaultHumidityBoostPct},
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::HumidityBoostBand, Dpt9Float>{
-                .key = "humidity_boost_band",
-                .displayName = "Humidity band to full demand",
-                .defaultValue = Dpt9Float{cfg::kDefaultHumidityBandPct},
-                .minValue = 0,
-                .maxValue = 50,
-                .unit = "%",
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::VocBoostThreshold, uint16_t>{
-                .key = "voc_boost_threshold",
-                .displayName = "Air quality index setpoint (0 = off)",
-                .defaultValue = cfg::kDefaultVocThresholdIndex,
-                .minValue = 0,
-                .maxValue = 500,
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::VocBoostBand, uint16_t>{
-                .key = "voc_boost_band",
-                .displayName = "Air quality index band to full demand",
-                .defaultValue = cfg::kDefaultVocBandIndex,
-                .minValue = 0,
-                .maxValue = 500,
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::VentilationBaseDemandPercent, uint8_t>{
-                .key = "ventilation_base_demand_percent",
-                .displayName = "Base ventilation while the room is occupied",
-                .defaultValue = cfg::kDefaultVentilationBaseDemandPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupVentilation},
-            ParameterDescriptor<HabinariParameter::VentilationManualDemandPercent, uint8_t>{
-                .key = "ventilation_manual_demand_percent",
-                .displayName = "Demand in manual ventilation mode",
-                .defaultValue = cfg::kDefaultVentilationManualDemandPercent,
-                .minValue = 0,
-                .maxValue = 100,
-                .unit = "%",
-                .group = kGroupVentilation},
-
-            // ---- Sensor fusion and detection ---------------------------------
-            ParameterDescriptor<HabinariParameter::SensorFilterSeconds, uint16_t>{
-                .key = "sensor_filter_seconds",
-                .displayName = "Measurement smoothing time constant",
-                .defaultValue = cfg::kDefaultSensorFilterSeconds,
-                .minValue = 0,
-                .maxValue = 600,
-                .unit = "s",
-                .group = kGroupFusion},
-            // The board measures room temperature three times over (HDC3020,
-            // BME688, SCD4x). Beyond this difference they are not measuring the
-            // same thing any more, which means one of them has drifted: with
-            // three sources the outlier is voted out of the published value,
-            // with two it is only reported.
-            ParameterDescriptor<HabinariParameter::TemperatureCrossCheck, Dpt9Float>{
-                .key = "temperature_cross_check",
-                .displayName = "Temperature sensor disagreement limit (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultTemperatureCrossCheckK},
-                .minValue = 0,
-                .maxValue = 20,
-                .unit = "K",
-                .group = kGroupFusion},
-            ParameterDescriptor<HabinariParameter::HumidityCrossCheck, Dpt9Float>{
-                .key = "humidity_cross_check",
-                .displayName = "Humidity sensor disagreement limit (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultHumidityCrossCheckPct},
-                .minValue = 0,
-                .maxValue = 50,
-                .unit = "%",
-                .group = kGroupFusion},
-            // Advisory heat detection. Not a substitute for a certified fire
-            // detector — see the FireAlarm object's description and the manual.
-            ParameterDescriptor<HabinariParameter::FireRateOfRise, Dpt9Float>{
-                .key = "fire_rate_of_rise",
-                .displayName = "Rapid rise alarm threshold (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultFireRateOfRiseKPerMin},
-                .minValue = 0,
-                .maxValue = 30,
-                .unit = "K/min",
-                .group = kGroupFusion},
-            ParameterDescriptor<HabinariParameter::FireAbsoluteTemperature, Dpt9Float>{
-                .key = "fire_absolute_temperature",
-                .displayName = "Over-temperature alarm threshold (0 = off)",
-                .defaultValue = Dpt9Float{cfg::kDefaultFireAbsoluteTemperatureC},
-                .minValue = 0,
-                .maxValue = 120,
-                .unit = "C",
-                .group = kGroupFusion},
-            ParameterDescriptor<HabinariParameter::FireConfirmSeconds, uint16_t>{
-                .key = "fire_confirm_seconds",
-                .displayName = "Rapid rise confirmation time",
-                .defaultValue = cfg::kDefaultFireConfirmSeconds,
-                .minValue = 5,
-                .maxValue = 600,
-                .unit = "s",
-                .group = kGroupFusion},
-            // A fan heater raises the temperature fast and burns nothing. Only
-            // combustion also drives the BME688 gas signal, so requiring both
-            // is the strongest false-alarm defence available here — at the cost
-            // of needing a calibrated BSEC, which takes hours after a cold boot.
-            ParameterDescriptor<HabinariParameter::FireRequireAirQuality, uint8_t>{
-                .key = "fire_require_air_quality",
-                .displayName = "Also require rising air pollution",
-                .defaultValue = cfg::kDefaultFireRequireAirQuality,
-                .options = parameterOptions(ParameterOption{0, "No - temperature alone"},
-                                            ParameterOption{1, "Yes - fewer false alarms"}),
-                .group = kGroupFusion},
-            ParameterDescriptor<HabinariParameter::Co2OccupancyEnabled, uint8_t>{
-                .key = "co2_occupancy_enabled",
-                .displayName = "Derive occupancy from CO2",
-                .defaultValue = cfg::kDefaultCo2OccupancyEnabled,
-                .options = parameterOptions(ParameterOption{0, "Disabled"},
-                                            ParameterOption{1, "Enabled"}),
-                .group = kGroupFusion},
-            ParameterDescriptor<HabinariParameter::WindowDetectEnabled, uint8_t>{
-                .key = "window_detect_enabled",
-                .displayName = "Detect open windows from air change",
-                .defaultValue = cfg::kDefaultWindowDetectEnabled,
-                .options = parameterOptions(ParameterOption{0, "Disabled"},
-                                            ParameterOption{1, "Enabled"}),
-                .group = kGroupFusion}));
+            }));
 
 } // namespace habinari_knx

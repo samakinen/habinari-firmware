@@ -175,6 +175,12 @@ target_compile_options(test_device_config PRIVATE -Wall -Wextra)
 
 add_test(NAME test_device_config COMMAND test_device_config)
 
+# KNstaX's headers read its resolved configuration (the CONFIG_KNX_* macros).
+# The firmware gets it from ESP-IDF's Kconfig; a host build resolves a profile
+# here. The tests below add ${KNX_CONFIG_DIR} to their include path.
+include("${REPO_ROOT}/components/KNstaX/cmake/knx_config.cmake")
+knx_configure(PROFILE host-test)
+
 # The pure helpers the Wi-Fi and KNX services lean on: copying a credential into
 # the unterminated station-config fields, and recognising the DPT 9 "invalid
 # data" code. The latter is checked against KNstaX's own DPT codec, the one
@@ -186,6 +192,7 @@ add_executable(test_service_helpers
 target_include_directories(test_service_helpers PRIVATE
     "${MAIN_DIR}/include"
     "${REPO_ROOT}/components/KNstaX/include"
+    "${KNX_CONFIG_DIR}"
 )
 target_link_libraries(test_service_helpers PRIVATE unity)
 target_compile_options(test_service_helpers PRIVATE -Wall -Wextra)
@@ -193,7 +200,7 @@ target_compile_options(test_service_helpers PRIVATE -Wall -Wextra)
 add_test(NAME test_service_helpers COMMAND test_service_helpers)
 
 # The KNX adapter's decisions, without the adapter: where each ETS parameter
-# lands (against the real product schema and the stack's own ParameterState),
+# lands (against the real product's parameter layout and its default image),
 # which control command an inbound group write is — DPT 9 "invalid data"
 # included — when the service loop publishes, and that every read response
 # answers what publication sends. Header-only on the KNstaX side apart from the
@@ -212,6 +219,7 @@ target_include_directories(test_knx_adapter PRIVATE
 # SYSTEM: the stack's headers are held to its own warning set, not this suite's.
 target_include_directories(test_knx_adapter SYSTEM PRIVATE
     "${REPO_ROOT}/components/KNstaX/include"
+    "${KNX_CONFIG_DIR}"
 )
 target_compile_definitions(test_knx_adapter PRIVATE
     KNX_SECURE_ENABLED=0

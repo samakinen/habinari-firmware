@@ -26,8 +26,8 @@
  * Changing a number here changes both, so the ETS catalogue entry and the
  * running firmware can never disagree about what a factory-fresh device does.
  *
- * `kParameterLayoutVersion` must be bumped whenever the *meaning* or order of
- * a stored parameter changes; see control_service.cpp for the migration hook.
+ * Bump `kApplicationVersion` (knx_product.hpp) whenever the meaning, the type
+ * or the order of a parameter changes.
  */
 
 namespace habinari {
@@ -41,8 +41,6 @@ namespace config {
 // separator-free integers parse identically everywhere. Fractional values stay
 // fully settable by the integrator (DPT 9 parameters render as decimal editors).
 // ---------------------------------------------------------------------------
-
-inline constexpr uint16_t kParameterLayoutVersion = 5;
 
 // --- Measurement publishing ------------------------------------------------
 inline constexpr uint16_t kDefaultMeasurementHeartbeatSeconds = 900;  // KNX FB default

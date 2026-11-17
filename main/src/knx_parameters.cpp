@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 Sami Mäkinen
 
-// ETS parameters into the control state: the live onParameterChanged bindings
-// and the one-time load at start-up, both driven by kParameterTable
+// ETS parameters into the control state: the load at start-up and the reload
+// after an ETS download, both driven by kParameterTable
 // (knx_parameter_table.hpp), so the two can never map a parameter differently.
 
 #include "knx_service_internal.hpp"
@@ -11,41 +11,34 @@
 #include "knx_parameter_table.hpp"
 #include "sensor_fusion_service.h"
 
-#include <tuple>
-
 namespace habinari_knx::service {
 
 namespace {
 
 using habinari::control::LockGuard;
 
-template <HabinariParameter Id, typename Apply>
-void bindParameter(HabinariBindings &bindings, const ParameterRow<Id, Apply> &)
-{
-    bindings.template onParameterChanged<Id>([](ParameterValue<Id> value) {
-        LockGuard lock(g_state.mutex);
-        Apply{}(g_state, value);
-    });
-}
-
 }  // namespace
 
 void bindParameters(HabinariBindings &bindings)
 {
-    std::apply([&bindings](const auto &...rows) { (bindParameter(bindings, rows), ...); },
-               kParameterTable);
+    // After a completed ETS download every row is applied again, with the
+    // control mutex held, exactly as at start-up.
+    bindings.onParametersChanged([](knx::product::params::ViewFor<kHabinariParameters> parameters) {
+        LockGuard lock(g_state.mutex);
+        loadParameters(parameters.block<HabinariParameter>(), g_state);
+    });
 }
 
 void seedStateFromParameters(HabinariApp &app)
 {
     LockGuard lock(g_state.mutex);
     // Seed engineering values from the ETS parameters: the same table the
-    // onParameterChanged bindings use, applied once. Fusion tuning starts
+    // download callback uses, applied once. Fusion tuning starts
     // from the compiled-in defaults so the fields the ETS product does not
     // expose (staleness, inter-sensor offsets) are populated, and the
     // table then overlays the ones it does.
     sensor_fusion_default_config(&g_state.fusion);
-    loadParameters(app.parameters(), g_state);
+    loadParameters(app.parameters().block<HabinariParameter>(), g_state);
     g_state.fusionConfigDirty = true;
     auto &s = g_state.hvac;
     // Seed the runtime mode/state inputs from their ETS defaults.

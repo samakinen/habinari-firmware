@@ -14,9 +14,9 @@
  * @file knx_parameter_table.hpp
  * @brief ETS parameters: where each one's value lands in the control state.
  *
- * One row per parameter. The same table drives the live onParameterChanged
- * bindings and the one-time load at start-up; they used to be two hand-kept
- * lists of the same 81 mappings, which had to be kept in step by reading.
+ * One row per parameter. The same table is applied at start-up and after every
+ * ETS download (onParametersChanged), so the two can never map a parameter
+ * differently.
  *
  * A setter receives the value in the type knx_product.hpp declares for that
  * parameter — Dpt9Float (KNX 2-byte half-float, implicitly a float), uint16_t
@@ -305,13 +305,6 @@ inline constexpr auto kParameterTable = std::make_tuple(
     })
 );
 
-/// The parameters the table deliberately has no row for. The layout version is
-/// read by the persistence migration, not by the control model.
-constexpr bool isUnmappedParameter(HabinariParameter id)
-{
-    return id == HabinariParameter::ParameterLayoutVersion;
-}
-
 namespace detail {
 
 template <typename ParametersT, typename TargetT, HabinariParameter Id, typename Apply>
@@ -323,8 +316,8 @@ void loadParameter(const ParametersT &params, TargetT &target, const ParameterRo
 }  // namespace detail
 
 /// Apply every row to @p target, each with the value @p params holds for it.
-/// `params` is anything with `get<Id>()` — the runtime's parameters() view, or
-/// the stack's ParameterState on the host.
+/// `params` is anything with `get<Id>()`: the block view of the product's
+/// parameters, `parameters().block<HabinariParameter>()`.
 template <typename ParametersT, typename TargetT>
 void loadParameters(const ParametersT &params, TargetT &target)
 {
@@ -349,20 +342,18 @@ constexpr std::size_t rowsFor()
         kParameterTable);
 }
 
-template <typename DescriptorsTuple>
+template <typename BlockT>
 struct EveryParameterHasOneRow;
 
-template <typename... Descriptors>
-struct EveryParameterHasOneRow<std::tuple<Descriptors...>> {
-    static constexpr bool value =
-        ((rowsFor<Descriptors::id>() == (isUnmappedParameter(Descriptors::id) ? 0u : 1u)) && ...);
+template <typename... Parameters>
+struct EveryParameterHasOneRow<knx::product::params::ParameterBlock<HabinariParameter, Parameters...>> {
+    static constexpr bool value = ((rowsFor<Parameters::id>() == 1u) && ...);
 };
 
 }  // namespace detail
 
 static_assert(
-    detail::EveryParameterHasOneRow<typename std::remove_cvref_t<
-        decltype(kHabinariProduct)>::parameter_schema_type::descriptors_tuple>::value,
-    "kParameterTable must have exactly one row per ETS parameter (see isUnmappedParameter)");
+    detail::EveryParameterHasOneRow<std::remove_cvref_t<decltype(kHabinariParameterBlock)>>::value,
+    "kParameterTable must have exactly one row per ETS parameter");
 
 }  // namespace habinari_knx

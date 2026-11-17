@@ -87,7 +87,7 @@ void publishPort(HabinariApp &app, HabinariPort port, T value, const char *label
 // not filter anything itself.
 //
 // Cheap and idempotent, so it is simply re-applied every control tick (~1 Hz)
-// rather than only on onParameterChanged, which keeps it in step with the
+// rather than only after a parameter download, which keeps it in step with the
 // "reconfigure-from-settings-every-tick" pattern used for the controllers.
 // Write-only CommandPorts never transmit and are intentionally absent.
 void applyTransmitPolicies(HabinariApp &app, const Settings &settings)

@@ -67,8 +67,8 @@ is in [.devcontainer/](.devcontainer/).
 * **`main/include/knx_product.hpp` is the source of truth for the ETS catalogue
   entry as well as the runtime.** Adding, removing or reordering a group object
   or a parameter changes the application program, which means existing ETS
-  projects must be re-imported and re-downloaded. Bump `applicationVersion` and
-  `kParameterLayoutVersion` when you do, and say so in the pull request.
+  projects must be re-imported and re-downloaded. Bump `kApplicationVersion`
+  when you do, and say so in the pull request.
 * **Adding a field bus** is: write the mapping, define one `protocol_adapter_t`,
   register it in `main/src/protocol_registry.c` behind a Kconfig symbol. If it
   needs a radio it cannot coexist with KNX — see

@@ -121,7 +121,7 @@ void bindGroupObjectWrites(HabinariBindings &bindings);
 
 // --- knx_parameters.cpp ------------------------------------------------------
 
-/// Live onParameterChanged bindings, one per kParameterTable row.
+/// The onParametersChanged binding: every kParameterTable row, after a download.
 void bindParameters(HabinariBindings &bindings);
 /// Seed the control state from the parameters the product loaded at start-up.
 void seedStateFromParameters(HabinariApp &app);

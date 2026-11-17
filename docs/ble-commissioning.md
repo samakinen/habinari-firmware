@@ -396,8 +396,8 @@ becomes affordable.
 
 The Modbus settings are still registered on a KNX+Modbus image — the registry
 does not care whether anything is rendering it — so exposing the RS-485 address
-as an ETS parameter later is a small change, and the natural one. It would bump
-the parameter layout version and require an ETS re-import, which is why it is
+as an ETS parameter later is a small change, and the natural one. It would change
+the parameter layout, bump the application version and require an ETS re-import, which is why it is
 not being done as a side effect of this work.
 
 ---
