@@ -22,6 +22,7 @@
 #include "knx/physical/physical_factory.hpp"
 #include "knx/util/log.hpp"
 
+#include <atomic>
 #include <memory>
 #include <utility>
 
@@ -31,6 +32,28 @@ using namespace knx::product;
 namespace habinari_knx::service {
 
 namespace {
+
+// The started product, for the link state callback, which is installed before
+// the product exists. Null until mediumStarted(): before that there is no
+// Data Secure state to save.
+std::atomic<HabinariApp *> s_app{nullptr};
+
+// Bus power lost: have the next loop() save the Data Secure replay state (the
+// last valid sequence numbers of the partners), then wake the service task so
+// that loop() runs now rather than at the next control tick. The bulk
+// capacitors keep the board up only briefly once KNX_OK drops.
+void saveOnPowerFailure()
+{
+    HabinariApp *app = s_app.load();
+    if (app == nullptr) {
+        return;
+    }
+    app->requestPowerFailSave();  // only sets a flag
+    const TaskHandle_t handle = g_knx.taskHandle.load();
+    if (handle != nullptr) {
+        xTaskNotifyGive(handle);
+    }
+}
 
 util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platform::Esp32Platform &platform)
 {
@@ -43,12 +66,15 @@ util::Result<std::unique_ptr<physical::Tp1MacPhysical>> createTp1Physical(platfo
     auto physicalResult = physical::createTp1PhysicalForPlatform(dependencies);
     if (physicalResult.isOk() && physicalResult.value()) {
         // STKNX drives PIN_KNX_OK (GPIO3) while the bus supply is good. The
-        // stack uses it to stop transmitting into a dead bus; here it is only
-        // reported, so a field log shows bus outages and returns explicitly
-        // rather than as a burst of unacknowledged transmissions.
+        // stack uses it to stop transmitting into a dead bus. Here a loss
+        // saves the Data Secure replay state while the bulk capacitors still
+        // hold the supply, and both edges are logged, so a field log shows bus
+        // outages and returns explicitly rather than as a burst of
+        // unacknowledged transmissions.
         physicalResult.value()->setLinkStateCallback(
             [](const physical::LinkStatus &status, void *) {
                 if (status.state == physical::LinkState::Down) {
+                    saveOnPowerFailure();
                     KNX_LOGW(TAG, "KNX bus power lost — transmission suspended");
                 } else {
                     KNX_LOGI(TAG, "KNX bus power %s", physical::linkStateToString(status.state));
@@ -81,8 +107,9 @@ util::Result<HabinariProductHandle> startProduct(platform::Esp32Platform &platfo
                                     std::move(physicalResult.value()), secure);
 }
 
-void mediumStarted(HabinariApp &)
+void mediumStarted(HabinariApp &app)
 {
+    s_app.store(&app);
     KNX_LOGI(TAG, "ETS-commissionable TP1 sensor bridge started");
 }
 
