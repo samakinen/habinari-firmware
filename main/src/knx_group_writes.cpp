@@ -110,7 +110,7 @@ void bindGroupObjectWrites(HabinariBindings &bindings)
 {
     bindings
         // ---- Condensation protection (FB DPS) ----
-        .onStateWrite<HabinariPort::DewPointStatusInput>([](bool value) {
+        .onCommand<HabinariPort::DewPointStatusInput>([](bool value) {
             LockGuard lock(g_state.mutex);
             g_state.in.externalDewPointAlarm = value;
         })
@@ -118,13 +118,13 @@ void bindGroupObjectWrites(HabinariBindings &bindings)
         // ---- Neighbour-device inputs ----
         // A neighbour that reports invalid data has no reading, so its last
         // one stops being used rather than being trusted indefinitely.
-        .onStateWrite<HabinariPort::OutsideTemperature>([](float value) {
+        .onCommand<HabinariPort::OutsideTemperature>([](float value) {
             writeNeighbourReading<HabinariPort::OutsideTemperature>(value, "outside temperature");
         })
-        .onStateWrite<HabinariPort::OutsideHumidity>([](float value) {
+        .onCommand<HabinariPort::OutsideHumidity>([](float value) {
             writeNeighbourReading<HabinariPort::OutsideHumidity>(value, "outside humidity");
         })
-        .onStateWrite<HabinariPort::FlowTemperature>([](float value) {
+        .onCommand<HabinariPort::FlowTemperature>([](float value) {
             writeNeighbourReading<HabinariPort::FlowTemperature>(value, "flow temperature");
         })
 
@@ -132,10 +132,10 @@ void bindGroupObjectWrites(HabinariBindings &bindings)
         .onStateWrite<HabinariPort::ControllerOnOff>([](bool value) {
             writeCommand<HabinariPort::ControllerOnOff>(value);
         })
-        .onStateWrite<HabinariPort::HvacMode>([](Dpt20Mode value) {
+        .onCommand<HabinariPort::HvacMode>([](Dpt20Mode value) {
             writeCommand<HabinariPort::HvacMode>(value);
         })
-        .onStateWrite<HabinariPort::ContrMode>([](uint8_t value) {
+        .onCommand<HabinariPort::ContrMode>([](uint8_t value) {
             writeCommand<HabinariPort::ContrMode>(value);
         })
         // Base setpoint write from an HMI or Home Assistant's
@@ -148,26 +148,26 @@ void bindGroupObjectWrites(HabinariBindings &bindings)
                     ESP_LOGI(TAG, "Base (comfort heating) setpoint updated to %.2f C", after);
                 });
         })
-        .onStateWrite<HabinariPort::SetpointShift>([](float value) {
+        .onCommand<HabinariPort::SetpointShift>([](float value) {
             writeCommand<HabinariPort::SetpointShift>(value);
         })
 
         // ---- Room inputs (FB WOS / PRD / WCOS) ----
-        .onStateWrite<HabinariPort::WindowStatus>([](bool value) {
+        .onCommand<HabinariPort::WindowStatus>([](bool value) {
             writeCommand<HabinariPort::WindowStatus>(value);
         })
-        .onStateWrite<HabinariPort::PresenceStatus>([](bool value) {
+        .onCommand<HabinariPort::PresenceStatus>([](bool value) {
             writeCommand<HabinariPort::PresenceStatus>(value);
         })
-        .onStateWrite<HabinariPort::SwitchHeat>([](bool value) {
+        .onCommand<HabinariPort::SwitchHeat>([](bool value) {
             LockGuard lock(g_state.mutex);
             g_state.in.switchHeat = value;
         })
-        .onStateWrite<HabinariPort::SwitchCool>([](bool value) {
+        .onCommand<HabinariPort::SwitchCool>([](bool value) {
             LockGuard lock(g_state.mutex);
             g_state.in.switchCool = value;
         })
-        .onStateWrite<HabinariPort::ChangeOverStatus>([](bool value) {
+        .onCommand<HabinariPort::ChangeOverStatus>([](bool value) {
             LockGuard lock(g_state.mutex);
             g_state.in.changeOverStatus = value;
         })
@@ -186,7 +186,7 @@ void bindGroupObjectWrites(HabinariBindings &bindings)
         // Acknowledging clears the latched fire alarm. Handled on the control
         // tick rather than here so the acknowledge and the detector state
         // change happen in one place, in the task that owns the detector.
-        .onStateWrite<HabinariPort::AlarmAcknowledge>([](bool value) {
+        .onCommand<HabinariPort::AlarmAcknowledge>([](bool value) {
             writeCommand<HabinariPort::AlarmAcknowledge>(value);
         });
 }
