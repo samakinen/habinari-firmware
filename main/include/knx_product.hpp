@@ -131,7 +131,7 @@ inline constexpr uint16_t kApplicationNumber = 21;
 // parameters, group objects, the download procedure. ETS refuses to replace a
 // program of the same number and version whose content hash has moved, so a
 // regenerated knxprod that keeps the old version will not import.
-inline constexpr uint16_t kApplicationVersion = 7;
+inline constexpr uint16_t kApplicationVersion = 8;
 
 // ---------------------------------------------------------------------------
 // Parameter defaults
