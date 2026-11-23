@@ -110,6 +110,12 @@ If you cloned without `--recurse-submodules`, run
 ([KNstaX](https://github.com/samakinen/KNstaX)) is a submodule and the default
 build needs it.
 
+The submodule tracks KNstaX's `main` branch. A clone checks out the commit
+recorded here; to move to the latest KNstaX, run
+`git submodule update --remote components/KNstaX`, build every variant
+(`tools/build_variants.sh`) and run the host tests, and commit the new submodule
+commit.
+
 Building every personality at once:
 
 ```bash
