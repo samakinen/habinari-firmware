@@ -102,8 +102,8 @@ milestone to aim for, and the one that says the next step is a download.
 
 From there it is an ordinary KNX download:
 
-1. Import `ets_export/habinari_ip_ets.knxprod.xml` (via OpenKNXproducer — see
-   the README) and add the device to the project.
+1. Import `habinari_ip.knxprod`, packed from the KNXnet/IP build's product
+   file (README, "ETS product"), and add the device to the project.
 2. Press the programming button. The LED lights, and the device answers the
    individual-address write.
 3. Download the individual address, then the application program.
@@ -172,7 +172,7 @@ applying on IP:
 
 ## 4. Two catalogue entries, one device
 
-`habinari_tp1_ets` and `habinari_ip_ets` are separate ETS products. Every group
+`habinari_tp1` and `habinari_ip` are separate ETS products. Every group
 object, every parameter and every default is identical; what differs is what
 ETS needs in order to place the device in a topology and to keep the two apart
 in its catalogue.

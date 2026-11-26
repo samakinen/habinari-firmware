@@ -205,7 +205,7 @@ add_test(NAME test_service_helpers COMMAND test_service_helpers)
 # included — when the service loop publishes, and that every read response
 # answers what publication sends. Header-only on the KNstaX side apart from the
 # DPT codec (to see a "no reading" answer encode as 7FFFh), compiled in the
-# shape the ETS export builds it (tools/ets_export); the fusion pipeline
+# shape the ETS product build compiles it (knx_ets_product()); the fusion pipeline
 # supplies the compiled-in fusion defaults the parameter rows overlay.
 add_executable(test_knx_adapter
     test_knx_adapter.cpp

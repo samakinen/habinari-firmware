@@ -1,0 +1,12 @@
+{
+  "habinari_ip": {
+    "application": "M-00FA_A-0016",
+    "content": "sha256:291f1d5b4b2e951616e7a9f678d7fe4abd139d2b261a338dbde75f28ec60779a",
+    "version": 8
+  },
+  "habinari_tp1": {
+    "application": "M-00FA_A-0015",
+    "content": "sha256:3e6feccf53a5be7fb0e8ee26f7cc79684841dc8078ffcce2707e546edffb9950",
+    "version": 8
+  }
+}

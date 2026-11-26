@@ -237,37 +237,48 @@ Adding a protocol is: write the mapping, define one `protocol_adapter_t`, add it
 to `protocol_registry.c` behind a Kconfig symbol. Nothing in `main.c`, the
 control core or any other adapter changes.
 
-## ETS product export
+## ETS product
 
 `main/include/knx_product.hpp` is the single source of truth for both the KNX
-runtime and the ETS catalogue entry. Every `idf.py build` of a KNX image
-regenerates `ets_export/habinari_<medium>_ets.knxprod.xml` (plus the `.json`
-intermediate) from it, so the two can never drift. The directory is gitignored —
-the export is a build artefact, not a checked-in file.
+runtime and the ETS catalogue entry. Every build of a KNX image also builds its
+ETS product, on the host and with the image's own KNstaX configuration from
+`sdkconfig` (KNstaX `knx_ets_product()`, its
+[ETS export guide](components/KNstaX/docs/reference/ets_export_guide.md)), so the
+two can never drift. In the build directory:
 
-The medium follows the image being built, so a TP1 build refreshes
-`habinari_tp1_ets` and a KNXnet/IP build refreshes `habinari_ip_ets`. They are
-separate catalogue entries because ETS derives what a device may be connected to
-from its declared medium; one entry claiming both would let an integrator place
-a TP1 board on an IP line and discover it on site.
+| File | What it is |
+|---|---|
+| `habinari_<medium>.knxprod.xml` | The product as KNX project XML |
+| `habinari_<medium>.ets.xml` | The same without `MasterData`: what the packer signs |
+| `habinari_<medium>.json` | The product as the firmware sees it; the file to diff |
+| `dist/habinari_<medium>/` | The above with `habinari.bin` and a `manifest.json` naming the commits |
 
-Skip the regeneration with `idf.py -DHABINARI_ETS_EXPORT=OFF build`, or run it
-on its own with
-`cmake -S tools/ets_export -B build/ets_export && cmake --build build/ets_export`.
+The medium follows the image being built: a TP1 build makes `habinari_tp1` and a
+KNXnet/IP build makes `habinari_ip`. They are separate catalogue entries because
+ETS derives what a device may be connected to from its declared medium; one
+entry claiming both would let an integrator place a TP1 board on an IP line and
+discover it on site. Images without KNX have no product. Skip it with
+`idf.py -DKNX_ETS_PRODUCT=OFF build`.
 
-To get an actual `.knxprod` for ETS import, run the XML through OpenKNXproducer
-on a host that has it installed: `tools/ets_export/package_with_openknxproducer.ps1`.
-The script strips the `MasterData` section first — the exported XML is
-self-contained, while a `.knxprod` takes its master data from ETS, and the ETS
-signing step aborts with `Naming pair for MasterData cannot be found` if the
-section is still there.
+To get a `.knxprod` ETS imports, pack it on a Windows PC with ETS6 and
+OpenKNXproducer installed (`OpenKNXproducer` on `PATH`, or its path in
+`OPENKNXPRODUCER`):
+
+```
+python components/KNstaX/tools/ets_product/ets_product.py pack build_knx/dist
+```
+
+It signs every product in the directory into `habinari_<medium>.knxprod` next to
+its `.ets.xml` and checks the archive.
 
 ETS keys an application program by manufacturer + number + version and stores a
 hash of its content, so it refuses to import a changed program that still claims
 an existing key ("the product has a different hash than the existing product").
-Bump `kApplicationVersion` in `knx_product.hpp` after any change to the
-ETS-visible content, or delete the old product from the ETS catalogue first.
-See [docs/knxnet-ip.md](docs/knxnet-ip.md#4-two-catalogue-entries-one-device)
+`product.lock` records the application, version and content of both products,
+and the build fails when a product changed without a new version: raise
+`kApplicationVersion` in `knx_product.hpp`, rebuild, and commit `product.lock`
+with the change. `-DKNX_ETS_LOCK_MODE=warn` reports instead, for iterations that
+never reach ETS. See [docs/knxnet-ip.md](docs/knxnet-ip.md#4-two-catalogue-entries-one-device)
 for the full set of identities that distinguish the two catalogue entries.
 
 The KNX manufacturer ID in the product definition is a **development

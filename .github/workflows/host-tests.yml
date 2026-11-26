@@ -60,12 +60,12 @@ jobs:
         with:
           submodules: recursive
 
-      # The ETS export is a nested host build with its own compiler
-      # requirements; it is not what this job checks.
+      # A KNX image builds its ETS product too, and checks it against
+      # product.lock: a product change without a new application version fails
+      # here. xmlschema lets the build validate the product file.
       - name: Build
         shell: bash
-        env:
-          HABINARI_ETS_EXPORT: "OFF"
         run: |
           . "$IDF_PATH/export.sh"
+          python -m pip install --quiet xmlschema
           tools/build_variants.sh ${{ matrix.variant }}

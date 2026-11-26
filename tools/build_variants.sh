@@ -14,8 +14,9 @@
 #   tools/build_variants.sh --prod     release-trim them: sdkconfig.defaults.prod
 #                                      is layered last, into build_<name>_prod
 #
-# HABINARI_ETS_EXPORT=OFF in the environment skips the ETS export (CI does, as
-# it needs a C++23 host compiler next to the ESP-IDF toolchain).
+# A KNX image also builds its ETS product (README, "ETS product"), which needs
+# a C++23 host compiler next to the ESP-IDF toolchain; KNX_ETS_PRODUCT=OFF in
+# the environment skips it.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,19 +67,11 @@ for name in "${selected[@]}"; do
     fi
 
     echo "=== ${name} -> ${build_dir} ==============================="
-    # The ETS export only means anything for a KNX image, and regenerating it
-    # from a build that has no KNX application would be misleading. Both KNX
-    # variants export: they are two catalogue entries for one device model, and
-    # each build refreshes its own.
-    ets_export=OFF
-    case "${name}" in
-        knx|knxip) ets_export="${HABINARI_ETS_EXPORT:-ON}" ;;
-    esac
-
+    # A KNX image builds its ETS product; the others have none.
     idf.py -B "${build_dir}" \
            -DSDKCONFIG="${build_dir}/sdkconfig" \
            -DSDKCONFIG_DEFAULTS="${defaults}" \
-           -DHABINARI_ETS_EXPORT="${ets_export}" \
+           -DKNX_ETS_PRODUCT="${KNX_ETS_PRODUCT:-ON}" \
            build
 
     grep -E "^CONFIG_HABINARI_(PROTOCOL_[A-Z]+|KNX_MEDIUM_[A-Z0-9]+|OOB_BLE)=y" "${build_dir}/sdkconfig" \

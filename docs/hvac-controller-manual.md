@@ -154,13 +154,12 @@ and not a fault.
 ### 3.1 The product file
 
 The ETS catalogue entry is generated from the firmware, so it can never drift
-from what the device actually does. Each firmware build regenerates
-`ets_export/habinari_tp1_ets.knxprod.xml`. To obtain an importable
-`.knxprod`, run that XML through OpenKNXproducer on a host that has it
-installed:
+from what the device actually does. Each firmware build writes it next to the
+image, in `build_knx/dist/habinari_tp1/`. To obtain an importable `.knxprod`,
+pack it on a PC with ETS6 and OpenKNXproducer installed:
 
-```powershell
-tools/ets_export/package_with_openknxproducer.ps1
+```
+python components/KNstaX/tools/ets_product/ets_product.py pack build_knx/dist
 ```
 
 Then in ETS: **Catalog → Import…** and select the resulting `.knxprod`.
